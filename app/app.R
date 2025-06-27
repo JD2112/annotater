@@ -50,9 +50,18 @@ ui <- page_fluid(
   card(
     card_header("📂 Upload Input Files"),
     fluidRow(
-      column(4, fileInput("bed", "BED file", accept = ".bed")),
-      column(4, fileInput("annotation", "GTF/GFF3 file", accept = c(".gtf", ".gff3"))),
-      column(4, fileInput("vcf", "VCF file (optional)", accept = ".vcf"))
+    column(4,
+        fileInput("bed", "BED file", accept = ".bed"),
+        tags$a(href = "test.bed", "⬇️ Download example BED", target = "_blank", download = NA)
+    ),
+    column(4,
+        fileInput("annotation", "GTF/GFF3 file", accept = c(".gtf", ".gff3")),
+        tags$a(href = "test.gff3", "⬇️ Download example GTF/GFF3", target = "_blank", download = NA)
+    ),
+    column(4,
+        fileInput("vcf", "VCF file (optional)", accept = ".vcf"),
+        tags$a(href = "test.vcf", "⬇️ Download example VCF", target = "_blank", download = NA)
+    )
     ),
     textInput("output", "Output filename", value = "annotated_output.tsv"),
     actionButton("run", "🚀 Run Annotation", class = "btn-primary")
@@ -148,7 +157,7 @@ server <- function(input, output, session) {
         incProgress(0.2)
 
         cmd <- sprintf(
-          "Rscript /app/annotater.R -b %s -a %s %s -o %s",
+          "Rscript annotater.R -b %s -a %s %s -o %s",
           shQuote(bed_path),
           shQuote(ann_path),
           if (!is.null(vcf_path)) paste("-v", shQuote(vcf_path)) else "",
