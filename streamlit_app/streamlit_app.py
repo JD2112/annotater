@@ -492,20 +492,56 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
     if show_stats:
         col1, col2, col3, col4 = st.columns(4)
         
+        # Calculate overlap stats
+        if 'has_overlap' in result_df.columns:
+            overlapping = result_df['has_overlap'].sum()
+            non_overlapping = len(result_df) - overlapping
+        else:
+            overlapping = len(result_df)
+            non_overlapping = 0
+        
         with col1:
-            st.metric("Total Annotations", f"{len(result_df):,}")
+            st.metric("Total Entries", f"{len(result_df):,}")
         
         with col2:
-            unique_coords = result_df['coord_chr'].nunique() if 'coord_chr' in result_df.columns else "N/A"
-            st.metric("Unique Coordinates", unique_coords)
+            st.metric("Overlapping", f"{overlapping:,}", 
+                     help="Coordinates with annotation overlap")
         
         with col3:
-            unique_chrs = result_df['coord_chr'].nunique() if 'coord_chr' in result_df.columns else "N/A"
-            st.metric("Chromosomes", unique_chrs)
+            st.metric("Intergenic", f"{non_overlapping:,}",
+                     help="Coordinates without annotation overlap")
         
         with col4:
-            annot_rate = (len(result_df) / len(coord_df) * 100) if len(coord_df) > 0 else 0
-            st.metric("Annotation Rate", f"{annot_rate:.1f}%")
+            annot_rate = (overlapping / len(result_df) * 100) if len(result_df) > 0 else 0
+            st.metric("Overlap Rate", f"{annot_rate:.1f}%")
+    
+    # Results filter
+    st.markdown("### 🔍 Filter Results")
+    
+    filter_col1, filter_col2 = st.columns([1, 3])
+    
+    with filter_col1:
+        result_filter = st.radio(
+            "Show entries:",
+            options=["All", "Overlapping only", "Intergenic only"],
+            horizontal=True,
+            help="Filter results by overlap status"
+        )
+    
+    # Apply filter
+    display_df = result_df.copy()
+    if 'has_overlap' in display_df.columns:
+        if result_filter == "Overlapping only":
+            display_df = display_df[display_df['has_overlap'] == True]
+            st.info(f"📋 Showing **{len(display_df):,}** overlapping coordinates")
+        elif result_filter == "Intergenic only":
+            display_df = display_df[display_df['has_overlap'] == False]
+            st.info(f"📋 Showing **{len(display_df):,}** intergenic coordinates (no overlap)")
+        else:
+            st.info(f"📋 Showing **all {len(display_df):,}** coordinates")
+    
+    # Use display_df for all subsequent displays
+    result_df = display_df
     
     # Feature Distribution Charts
     st.markdown("### 📈 Summary Charts")
