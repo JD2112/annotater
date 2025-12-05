@@ -590,23 +590,33 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
     # Gene List Export
     st.markdown("### 🧬 Gene List Export")
     
-    # Try to find gene names in the results - expanded search
+    # Try to find gene names in the results - prioritize annotation columns
     gene_col = None
+    # Priority order: annotation gene names > annotation IDs > coordinate names (last resort)
     possible_gene_cols = [
-        'gene_name', 'Name', 'gene_id', 'ID', 'annot_name', 'name',
-        'annot_Name', 'annot_gene_name', 'annot_ID', 'annot_gene_id',
-        'coord_name', 'gene', 'Gene', 'GENE', 'symbol', 'Symbol'
+        # Annotation gene names (highest priority)
+        'annot_Name', 'annot_gene_name', 'annot_name',
+        # Raw gene names (might exist without prefix)
+        'gene_name', 'Name',
+        # Annotation IDs (less preferred but usable)
+        'annot_gene_id', 'annot_ID', 'gene_id', 'ID',
+        # Generic
+        'gene', 'Gene', 'GENE', 'symbol', 'Symbol',
+        # Coordinate names (lowest priority - these are YOUR region names, not gene names)
+        # 'coord_name' - intentionally excluded to avoid confusion
     ]
     
     for col in possible_gene_cols:
         if col in result_df.columns:
-            gene_col = col
-            break
-    
-    # Also check if there's an attributes column we can parse
-    if gene_col is None:
-        for col in result_df.columns:
-            if 'attr' in col.lower() or 'name' in col.lower():
+            # For annotation columns, also check if they have valid data
+            if col.startswith('annot_'):
+                # Check if this column has non-null values (not all -1 or .)
+                valid_values = result_df[col].dropna()
+                valid_values = valid_values[~valid_values.astype(str).isin(['-1', '.', 'nan', ''])]
+                if len(valid_values) > 0:
+                    gene_col = col
+                    break
+            else:
                 gene_col = col
                 break
     
