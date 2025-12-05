@@ -185,8 +185,8 @@ class GFFParser:
         """Parse the attributes column into separate columns"""
         df = df.copy()
         
-        # Extract common attributes
-        common_attrs = ['gene_id', 'gene_name', 'transcript_id', 'gene_type', 'gene_biotype']
+        # Extract common attributes (including GFF3 Name and ID)
+        common_attrs = ['ID', 'Name', 'gene_id', 'gene_name', 'transcript_id', 'gene_type', 'gene_biotype', 'Parent']
         
         for attr in common_attrs:
             df[attr] = df['attributes'].apply(
