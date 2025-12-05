@@ -678,11 +678,18 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
                     key="gene_csv"
                 )
                 
+                # Copy to clipboard blocks
+                with st.expander("📋 Copy to clipboard"):
+                    st.caption("One gene per line:")
+                    st.code(gene_text, language="text")
+                    st.caption("Comma-separated:")
+                    st.code(gene_csv, language="text")
+                
                 st.markdown("---")
                 st.markdown("**📌 Paste into:**")
                 st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
                 st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
-                st.markdown("• [DAVID](https://david.ncifcrf.gov)")
+                st.markdown("• [DAVID](https://davidbioinformatics.nih.gov/tools.jsp)")
                 st.markdown("• [STRING](https://string-db.org)")
         else:
             st.info("ℹ️ No valid gene names found in results")
