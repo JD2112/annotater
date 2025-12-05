@@ -178,7 +178,7 @@ def main():
         2. **Upload your annotation file** (GFF, GTF, or custom format)
         3. **Configure settings** (optional - auto-detection works for most cases)
         4. **Click "Run Annotation"**
-        5. **Download results**
+        5. **Explore results and download**
         
         ### Supported Formats
         
@@ -192,13 +192,34 @@ def main():
         - BED (as annotation source)
         - Custom formats (BioMart, UCSC Table Browser)
         
-        ### Features
+        ### Key Features
         
         - ✅ Automatic chromosome ID standardization
         - ✅ Coordinate system conversion (0-based ↔ 1-based)
         - ✅ Support for SNPs (single positions)
         - ✅ Fast processing using bedtools
         - ✅ Multiple annotation modes
+        
+        ### 🔬 Feature Type Filter
+        
+        Filter annotations by type before processing:
+        - Select **gene**, **exon**, **CDS**, **UTR**, etc.
+        - Reduces noise by focusing on relevant features
+        - Found in the sidebar under "Feature Filter"
+        
+        ### 📊 Summary Charts
+        
+        After annotation, view interactive visualizations:
+        - **Pie chart**: Distribution of feature types
+        - **Bar chart**: Annotations per chromosome
+        - **Top 10 genes**: Most frequently annotated genes
+        
+        ### 🧬 Gene List Export
+        
+        Export gene names for downstream analysis:
+        - Download as **.txt** (one gene per line)
+        - Download as **.csv** (comma-separated)
+        - Ready to paste into **g:Profiler**, **Enrichr**, **DAVID**, or **STRING**
         """)
     
     # File uploads
