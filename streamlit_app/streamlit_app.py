@@ -382,6 +382,15 @@ def main():
                     target_chr_style,
                     feature_types
                 )
+        
+        # Display results from session state if available (for filter persistence)
+        elif 'result_df' in st.session_state:
+            display_results(
+                st.session_state.result_df,
+                st.session_state.result_coord_df,
+                st.session_state.result_annot_df,
+                st.session_state.show_stats
+            )
     
     # Footer
     st.markdown("---")
@@ -470,6 +479,12 @@ def run_annotation(
             
             st.success(f"✅ Annotation complete! Found {len(result_df):,} results.")
             
+            # Store results in session state for persistence
+            st.session_state.result_df = result_df
+            st.session_state.result_coord_df = coord_df
+            st.session_state.result_annot_df = annot_df
+            st.session_state.show_stats = show_stats
+            
             # Step 4: Display results
             display_results(result_df, coord_df, annot_df, show_stats)
             
@@ -515,35 +530,7 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
             annot_rate = (overlapping / len(result_df) * 100) if len(result_df) > 0 else 0
             st.metric("Overlap Rate", f"{annot_rate:.1f}%")
     
-    # Results filter
-    st.markdown("### 🔍 Filter Results")
-    
-    filter_col1, filter_col2 = st.columns([1, 3])
-    
-    with filter_col1:
-        result_filter = st.radio(
-            "Show entries:",
-            options=["All", "Overlapping only", "Intergenic only"],
-            horizontal=True,
-            help="Filter results by overlap status"
-        )
-    
-    # Apply filter
-    display_df = result_df.copy()
-    if 'has_overlap' in display_df.columns:
-        if result_filter == "Overlapping only":
-            display_df = display_df[display_df['has_overlap'] == True]
-            st.info(f"📋 Showing **{len(display_df):,}** overlapping coordinates")
-        elif result_filter == "Intergenic only":
-            display_df = display_df[display_df['has_overlap'] == False]
-            st.info(f"📋 Showing **{len(display_df):,}** intergenic coordinates (no overlap)")
-        else:
-            st.info(f"📋 Showing **all {len(display_df):,}** coordinates")
-    
-    # Use display_df for all subsequent displays
-    result_df = display_df
-    
-    # Feature Distribution Charts
+    # Feature Distribution Charts (using full data, not filtered)
     st.markdown("### 📈 Summary Charts")
     
     chart_col1, chart_col2 = st.columns(2)
@@ -557,18 +544,23 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
         else:
             feature_col = None
         
-        if feature_col and result_df[feature_col].notna().any():
-            feature_counts = result_df[feature_col].value_counts()
-            
-            fig_pie = px.pie(
-                values=feature_counts.values,
-                names=feature_counts.index,
-                title="Feature Type Distribution",
-                color_discrete_sequence=px.colors.qualitative.Set2
-            )
-            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-            fig_pie.update_layout(showlegend=True, height=350)
-            st.plotly_chart(fig_pie, use_container_width=True)
+        if feature_col:
+            # Exclude -1 and . from pie chart
+            valid_features = result_df[result_df[feature_col].astype(str).isin(['-1', '.', 'nan']) == False]
+            if len(valid_features) > 0:
+                feature_counts = valid_features[feature_col].value_counts()
+                
+                fig_pie = px.pie(
+                    values=feature_counts.values,
+                    names=feature_counts.index,
+                    title="Feature Type Distribution",
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                fig_pie.update_layout(showlegend=True, height=350)
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("ℹ️ No feature type data available for chart")
         else:
             st.info("ℹ️ No feature type data available for chart")
     
@@ -598,84 +590,128 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
     # Gene List Export
     st.markdown("### 🧬 Gene List Export")
     
-    # Try to find gene names in the results
+    # Try to find gene names in the results - expanded search
     gene_col = None
-    for col in ['gene_name', 'Name', 'gene_id', 'ID', 'annot_name', 'name']:
+    possible_gene_cols = [
+        'gene_name', 'Name', 'gene_id', 'ID', 'annot_name', 'name',
+        'annot_Name', 'annot_gene_name', 'annot_ID', 'annot_gene_id',
+        'coord_name', 'gene', 'Gene', 'GENE', 'symbol', 'Symbol'
+    ]
+    
+    for col in possible_gene_cols:
         if col in result_df.columns:
             gene_col = col
             break
     
+    # Also check if there's an attributes column we can parse
+    if gene_col is None:
+        for col in result_df.columns:
+            if 'attr' in col.lower() or 'name' in col.lower():
+                gene_col = col
+                break
+    
     if gene_col:
-        # Extract unique gene names
+        # Extract unique gene names, filtering out invalid values
         gene_list = result_df[gene_col].dropna().unique()
-        gene_list = [str(g) for g in gene_list if str(g).strip() and str(g) != 'nan']
+        gene_list = [str(g) for g in gene_list 
+                     if str(g).strip() 
+                     and str(g) != 'nan' 
+                     and str(g) != '.' 
+                     and str(g) != '-1'
+                     and not str(g).startswith('-')]
         
-        gene_col1, gene_col2 = st.columns([2, 1])
-        
-        with gene_col1:
-            st.info(f"📋 Found **{len(gene_list):,}** unique genes")
+        if len(gene_list) > 0:
+            gene_col1, gene_col2 = st.columns([2, 1])
             
-            # Show top genes
-            if len(gene_list) > 0:
-                top_genes = result_df[gene_col].value_counts().head(10)
+            with gene_col1:
+                st.info(f"📋 Found **{len(gene_list):,}** unique genes/features from column `{gene_col}`")
                 
-                fig_top = px.bar(
-                    x=top_genes.values,
-                    y=top_genes.index,
-                    orientation='h',
-                    title="Top 10 Genes (by annotation count)",
-                    labels={'x': 'Count', 'y': 'Gene'},
-                    color=top_genes.values,
-                    color_continuous_scale='Viridis'
+                # Show top genes
+                valid_gene_data = result_df[~result_df[gene_col].astype(str).isin(['-1', '.', 'nan', ''])]
+                if len(valid_gene_data) > 0:
+                    top_genes = valid_gene_data[gene_col].value_counts().head(10)
+                    
+                    fig_top = px.bar(
+                        x=top_genes.values,
+                        y=top_genes.index,
+                        orientation='h',
+                        title="Top 10 (by annotation count)",
+                        labels={'x': 'Count', 'y': 'Gene/Feature'},
+                        color=top_genes.values,
+                        color_continuous_scale='Viridis'
+                    )
+                    fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_top, use_container_width=True)
+            
+            with gene_col2:
+                st.markdown("**Quick Actions:**")
+                
+                # Gene list as text for copying
+                gene_text = "\n".join(sorted(gene_list))
+                
+                st.download_button(
+                    label="📥 Download Gene List (.txt)",
+                    data=gene_text,
+                    file_name="gene_list.txt",
+                    mime="text/plain",
+                    use_container_width=True
                 )
-                fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_top, use_container_width=True)
-        
-        with gene_col2:
-            st.markdown("**Quick Actions:**")
-            
-            # Gene list as text for copying
-            gene_text = "\n".join(sorted(gene_list))
-            
-            st.download_button(
-                label="📥 Download Gene List (.txt)",
-                data=gene_text,
-                file_name="gene_list.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
-            
-            # Comma-separated for pasting
-            gene_csv = ", ".join(sorted(gene_list))
-            st.download_button(
-                label="📥 Comma-separated (.csv)",
-                data=gene_csv,
-                file_name="gene_list.csv",
-                mime="text/plain",
-                use_container_width=True,
-                key="gene_csv"
-            )
-            
-            st.markdown("---")
-            st.markdown("**📌 Paste into:**")
-            st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
-            st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
-            st.markdown("• [DAVID](https://david.ncifcrf.gov)")
-            st.markdown("• [STRING](https://string-db.org)")
+                
+                # Comma-separated for pasting
+                gene_csv = ", ".join(sorted(gene_list))
+                st.download_button(
+                    label="📥 Comma-separated (.csv)",
+                    data=gene_csv,
+                    file_name="gene_list.csv",
+                    mime="text/plain",
+                    use_container_width=True,
+                    key="gene_csv"
+                )
+                
+                st.markdown("---")
+                st.markdown("**📌 Paste into:**")
+                st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
+                st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
+                st.markdown("• [DAVID](https://david.ncifcrf.gov)")
+                st.markdown("• [STRING](https://string-db.org)")
+        else:
+            st.info("ℹ️ No valid gene names found in results")
     else:
-        st.info("ℹ️ No gene name column found in results")
+        st.info("ℹ️ No gene name column found in results. Columns available: " + ", ".join(result_df.columns.tolist()[:10]))
     
-    # Results table
+    # Results table with filter
     st.markdown("### 📄 Annotated Data")
-    st.dataframe(result_df, use_container_width=True, height=400)
     
-    # Download options
-    st.markdown("### ⬇️ Download Full Results")
+    # Filter toggle just above table
+    if 'has_overlap' in result_df.columns:
+        result_filter = st.radio(
+            "Filter:",
+            options=["All", "Overlapping only", "Intergenic only"],
+            horizontal=True,
+            key="result_filter"
+        )
+        
+        # Apply filter to display dataframe
+        if result_filter == "Overlapping only":
+            display_df = result_df[result_df['has_overlap'] == True]
+        elif result_filter == "Intergenic only":
+            display_df = result_df[result_df['has_overlap'] == False]
+        else:
+            display_df = result_df
+        
+        st.caption(f"Showing {len(display_df):,} of {len(result_df):,} entries")
+    else:
+        display_df = result_df
+    
+    st.dataframe(display_df, use_container_width=True, height=400)
+    
+    # Download options (use filtered data)
+    st.markdown("### ⬇️ Download Results")
     
     download_col1, download_col2, download_col3 = st.columns(3)
     
     with download_col1:
-        csv = result_df.to_csv(index=False)
+        csv = display_df.to_csv(index=False)
         st.download_button(
             label="📥 Download CSV",
             data=csv,
@@ -685,7 +721,7 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
         )
     
     with download_col2:
-        tsv = result_df.to_csv(index=False, sep='\t')
+        tsv = display_df.to_csv(index=False, sep='\t')
         st.download_button(
             label="📥 Download TSV",
             data=tsv,
@@ -700,7 +736,7 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
             from io import BytesIO
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                result_df.to_excel(writer, index=False, sheet_name='Annotations')
+                display_df.to_excel(writer, index=False, sheet_name='Annotations')
             
             st.download_button(
                 label="📥 Download Excel",
