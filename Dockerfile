@@ -1,47 +1,44 @@
-# Use a specific Shiny image to ensure compatibility
-FROM rocker/shiny:4.3.3
+# Use Python 3.10 slim image
+FROM python:3.10-slim
 
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y \
-        bedtools \
-        libcurl4-openssl-dev \
-        libssl-dev \
-        libxml2-dev \
-        zlib1g-dev \
-        libxt-dev \
-        libhdf5-dev \
-        libncurses-dev \
-        libbz2-dev \
-        liblzma-dev \
-        libzstd-dev \
-        libmagick++-dev \
-        libharfbuzz-dev \
-        libfribidi-dev && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+# Install system dependencies including bedtools and build dependencies
+RUN apt-get update && apt-get install -y \
+    bedtools \
+    build-essential \
+    zlib1g-dev \
+    libbz2-dev \
+    liblzma-dev \
+    libcurl4-openssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN Rscript -e 'install.packages(c("renv"))'
-COPY /renv.lock /srv/shiny-server/renv.lock
-RUN Rscript -e 'setwd("/srv/shiny-server/");renv::restore();'
+# Set working directory
+WORKDIR /app
 
-# Copy the app files (scripts, data, etc.)
-RUN rm -rf /srv/shiny-server/*
-COPY /app/ /srv/shiny-server/
+# Copy requirements first for better caching
+COPY requirements.txt .
 
-# Make sure shiny has UID 999 and owns the directory
-RUN SHINY_UID=$(id -u shiny 2>/dev/null || echo 0) && \
-    if [ "$SHINY_UID" -ne 999 ]; then \
-        userdel -r shiny || true && \
-        id -u 999 &>/dev/null && userdel -r $(id -un 999) || true && \
-        useradd -u 999 -m -s /bin/bash shiny; \
-    fi && \
-    chown -R shiny:shiny /srv/shiny-server /var/lib/shiny-server /var/log/shiny-server
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
+COPY streamlit_app/ ./streamlit_app/
+COPY data/ ./data/
 
-# Run as shiny user
-USER shiny
-EXPOSE 3838
+# Create temp directory
+RUN mkdir -p /tmp/annotator && chmod 777 /tmp/annotator
 
-# Launch app
-CMD ["/usr/bin/shiny-server"]
+# Expose Streamlit port
+EXPOSE 8501
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+
+# Set environment variables
+ENV STREAMLIT_SERVER_HEADLESS=true \
+    STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll \
+    STREAMLIT_SERVER_ENABLE_CORS=false \
+    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false
+
+# Run Streamlit app as a module
+CMD ["python", "-m", "streamlit", "run", "streamlit_app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]

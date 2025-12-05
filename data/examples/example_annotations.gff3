@@ -1,0 +1,10 @@
+##gff-version 3
+# Example GFF3 annotation file
+chr1	RefSeq	gene	50000	150000	.	+	.	ID=gene:ENSG001;Name=GENE1;biotype=protein_coding
+chr1	RefSeq	exon	99000	101000	.	+	.	ID=exon:ENSE001;Parent=gene:ENSG001
+chr1	RefSeq	exon	120000	122000	.	+	.	ID=exon:ENSE002;Parent=gene:ENSG001
+chr2	RefSeq	gene	100000	200000	.	-	.	ID=gene:ENSG002;Name=GENE2;biotype=protein_coding
+chr2	RefSeq	exon	149000	152000	.	-	.	ID=exon:ENSE003;Parent=gene:ENSG002
+chr2	RefSeq	exon	180000	182000	.	-	.	ID=exon:ENSE004;Parent=gene:ENSG002
+chrX	RefSeq	gene	40000	60000	.	+	.	ID=gene:ENSG003;Name=GENEX;biotype=protein_coding
+chrX	RefSeq	exon	48000	53000	.	+	.	ID=exon:ENSE005;Parent=gene:ENSG003

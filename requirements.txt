@@ -1,0 +1,26 @@
+# Core dependencies
+streamlit>=1.30.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Genomics tools
+pybedtools>=0.9.1
+pyranges>=0.0.129
+pysam>=0.22.0
+
+# File handling
+openpyxl>=3.1.0  # Excel export
+
+# Visualization
+plotly>=5.18.0
+altair>=5.2.0
+
+# Utilities
+python-magic>=0.4.27  # File type detection
+validators>=0.22.0  # Input validation
+
+# Development & Testing (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.12.0
+ruff>=0.1.0
