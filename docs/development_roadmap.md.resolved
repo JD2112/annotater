@@ -1,0 +1,1108 @@
+# Genomic Coordinate Annotation Tool - Development Roadmap
+
+## Executive Summary
+
+This roadmap outlines the development of **AnnotateR**, a web-based tool for genomic coordinate annotation that addresses the fragmentation and lack of standards in coordinate systems, chromosome IDs, and file formats commonly encountered in bioinformatics.
+
+## Framework Recommendation: **Streamlit** ✅
+
+After analyzing both options, I recommend **Streamlit** for the following reasons:
+
+### Why Streamlit over Shiny?
+
+| Aspect | Streamlit | Shiny |
+|--------|-----------|-------|
+| **Development Speed** | ⚡ Faster - Pure Python, minimal boilerplate | Slower - More verbose R code |
+| **Learning Curve** | 📚 Gentler - Pythonic and intuitive | Steeper - Reactive programming model |
+| **Performance** | 🚀 Better for data processing - NumPy/Pandas optimized | Good but slower for large datasets |
+| **Deployment** | 🐳 Simpler Docker setup | More complex with Shiny Server |
+| **Modern UI** | ✨ Built-in modern components | Requires more custom CSS/JS |
+| **Community** | 🌟 Rapidly growing, ML/Data Science focus | Mature but R-specific |
+| **Tool Integration** | 🔧 Easy access to bedtools, pybedtools, pandas | Limited to R packages |
+
+**Key Advantage**: Python ecosystem has superior tools for genomic data handling:
+- `pybedtools` - Python wrapper for bedtools
+- `pandas` - Fast data manipulation
+- `pyranges` - Modern genomic interval operations
+- `pysam` - BAM/SAM/VCF parsing
+
+Your current Shiny app can be kept as an alternative frontend, but Streamlit will be the primary interface.
+
+---
+
+## Technology Stack
+
+### Core Technologies
+- **Frontend**: Streamlit (Python 3.10+)
+- **Coordinate Operations**: `pybedtools` + `bedtools` (C++ backend)
+- **Data Processing**: `pandas`, `numpy`, `pyranges`
+- **File Parsing**: `pysam` (VCF/BCF), `pysam`, custom parsers
+- **Containerization**: Docker + Docker Compose
+- **Deployment**: SciLifeLab serve (Docker-based)
+
+### Optional/Advanced
+- **Caching**: Redis for session management (if needed)
+- **Monitoring**: Prometheus + Grafana (for production usage analytics)
+- **CI/CD**: GitHub Actions for automated testing and deployment
+
+---
+
+## Development Phases
+
+### Phase 1: Foundation & Architecture (Week 1-2)
+
+#### 1.1 Project Setup
+- [x] Initialize Git repository
+- [ ] Create project structure:
+  ```
+  annotator/
+  ├── app/
+  │   ├── __init__.py
+  │   ├── streamlit_app.py      # Main Streamlit app
+  │   ├── core/                  # Core logic
+  │   │   ├── __init__.py
+  │   │   ├── parsers.py         # File format parsers
+  │   │   ├── chromosome.py      # Chr ID standardization
+  │   │   ├── coordinates.py     # Coordinate system handling
+  │   │   └── annotator.py       # Annotation engine
+  │   ├── utils/
+  │   │   ├── __init__.py
+  │   │   ├── validators.py      # Input validation
+  │   │   └── helpers.py         # Helper functions
+  │   └── config/
+  │       ├── __init__.py
+  │       └── settings.py        # Configuration
+  ├── tests/
+  │   ├── test_parsers.py
+  │   ├── test_coordinates.py
+  │   └── test_integration.py
+  ├── data/
+  │   └── examples/              # Example files
+  ├── docs/
+  │   ├── user_guide.md
+  │   └── api_reference.md
+  ├── Dockerfile
+  ├── docker-compose.yml
+  ├── requirements.txt
+  ├── README.md
+  └── .env.example
+  ```
+
+#### 1.2 Core Module Design
+- [ ] Design chromosome ID mapping system
+- [ ] Design coordinate conversion system
+- [ ] Design file format parser interface
+- [ ] Create configuration management
+
+#### Deliverables
+- ✅ Project structure
+- ✅ Architecture documentation
+- ✅ Technology choices documented
+
+---
+
+### Phase 2: File Parsers & Format Support (Week 2-3)
+
+#### 2.1 Standard Format Parsers
+
+##### BED Format
+```python
+class BEDParser:
+    """
+    Support for BED3, BED6, BED12 formats
+    Auto-detect number of columns
+    Validate chromosome, start, end
+    """
+    def parse(filepath, zero_based=True)
+    def validate()
+    def to_dataframe()
+```
+
+##### GFF/GTF Format
+```python
+class GFFParser:
+    """
+    Support for GFF2, GFF3, GTF formats
+    Parse attributes field
+    Extract gene/transcript annotations
+    """
+    def parse(filepath)
+    def filter_features(feature_type)
+    def to_dataframe()
+```
+
+##### VCF Format
+```python
+class VCFParser:
+    """
+    Use pysam for VCF parsing
+    Handle single nucleotide variants
+    Convert to coordinate ranges
+    """
+    def parse(filepath)
+    def extract_variants()
+    def to_bed_format()
+```
+
+#### 2.2 Custom Format Support
+
+##### BioMart Parser
+```python
+class BioMartParser:
+    """
+    Auto-detect BioMart export format
+    Column header parsing
+    Flexible column mapping
+    """
+    KNOWN_HEADERS = {
+        'chromosome': ['Chromosome/scaffold name', 'chr', 'chromosome'],
+        'start': ['Gene start (bp)', 'start', 'start_position'],
+        'end': ['Gene end (bp)', 'end', 'end_position']
+    }
+```
+
+##### UCSC Table Browser Parser
+```python
+class UCSCParser:
+    """
+    Support common UCSC formats:
+    - refGene
+    - knownGene
+    - bed-like formats
+    """
+    def detect_format()
+    def parse_ucsc_table()
+```
+
+##### Generic CSV/TSV Parser
+```python
+class CustomParser:
+    """
+    User-guided column mapping
+    Delimiter auto-detection
+    Header detection
+    """
+    def auto_detect_delimiter()
+    def preview_columns()
+    def map_columns(chr_col, start_col, end_col=None)
+```
+
+#### 2.3 File Type Detection
+```python
+class FormatDetector:
+    """
+    Auto-detect file format based on:
+    - File extension
+    - Content analysis
+    - Header patterns
+    """
+    def detect(filepath)
+    def suggest_parser()
+```
+
+#### Deliverables
+- ✅ All standard format parsers implemented
+- ✅ Custom format support with column mapping
+- ✅ Auto-detection system
+- ✅ Unit tests for each parser
+
+---
+
+### Phase 3: Coordinate System & Chromosome Handling (Week 3-4)
+
+#### 3.1 Chromosome ID Standardization
+
+##### Challenge
+Different sources use different chromosome naming:
+- UCSC: `chr1`, `chr2`, ..., `chrX`, `chrY`, `chrM`
+- Ensembl: `1`, `2`, ..., `X`, `Y`, `MT`
+- NCBI/RefSeq: `NC_000001.11`, etc.
+
+##### Solution: Chromosome Mapper
+```python
+class ChromosomeMapper:
+    """
+    Bidirectional mapping between chromosome naming conventions
+    """
+    MAPPINGS = {
+        'ucsc_to_ensembl': {'chr1': '1', 'chrM': 'MT', ...},
+        'ensembl_to_ucsc': {'1': 'chr1', 'MT': 'chrM', ...},
+        'ucsc_to_ncbi': {...},
+    }
+    
+    def detect_style(chromosomes: List[str]) -> str
+    def convert(chrom: str, from_style: str, to_style: str) -> str
+    def standardize_all(df: pd.DataFrame, target_style: str) -> pd.DataFrame
+    def find_mismatches(coord_chroms, annot_chroms) -> List[str]
+    def suggest_conversion() -> Dict
+```
+
+##### User Alerts
+```python
+def validate_chromosome_compatibility(coord_file, annot_file):
+    """
+    Alert user if chromosome IDs differ
+    Suggest automatic conversion
+    Show sample mismatches
+    """
+    coord_style = detect_style(coord_file.chromosomes)
+    annot_style = detect_style(annot_file.chromosomes)
+    
+    if coord_style != annot_style:
+        st.warning(f"""
+        ⚠️ Chromosome ID mismatch detected!
+        - Coordinate file uses: {coord_style} (e.g., {coord_file.chromosomes[0]})
+        - Annotation file uses: {annot_style} (e.g., {annot_file.chromosomes[0]})
+        
+        Would you like to automatically convert to match?
+        """)
+```
+
+#### 3.2 Coordinate System Handling
+
+##### 0-based vs 1-based Conversion
+```python
+class CoordinateConverter:
+    """
+    Handle coordinate system conversions
+    
+    0-based (BED, BAM): [start, end) - half-open interval
+    1-based (GFF, GTF, SAM): [start, end] - closed interval
+    """
+    
+    FORMATS = {
+        'bed': {'base': 0, 'interval': 'half_open'},
+        'gff': {'base': 1, 'interval': 'closed'},
+        'gtf': {'base': 1, 'interval': 'closed'},
+        'vcf': {'base': 1, 'interval': 'closed'},
+        'sam': {'base': 1, 'interval': 'closed'},
+    }
+    
+    @staticmethod
+    def convert(start, end=None, from_system='0-based', to_system='1-based'):
+        """
+        Convert coordinates between systems
+        
+        Examples:
+        - 0-based [100, 200) -> 1-based [101, 200]
+        - 1-based [101, 200] -> 0-based [100, 200)
+        """
+        if from_system == '0-based' and to_system == '1-based':
+            return start + 1, end
+        elif from_system == '1-based' and to_system == '0-based':
+            return start - 1, end
+        return start, end
+    
+    @staticmethod
+    def detect_system(file_format: str) -> str:
+        """Auto-detect based on file format"""
+        return '0-based' if FORMATS[file_format]['base'] == 0 else '1-based'
+```
+
+#### 3.3 SNP (Single Coordinate) Support
+
+```python
+class CoordinateNormalizer:
+    """
+    Handle both single position (SNPs) and intervals (ranges)
+    """
+    
+    def normalize(chr, start, end=None, is_snp=False):
+        """
+        If single coordinate (SNP):
+        - start = position
+        - end = position (or position + 1 for 0-based)
+        
+        If interval:
+        - start = start position
+        - end = end position
+        """
+        if end is None or is_snp:
+            # Single position
+            return chr, start, start + 1  # Convert to interval
+        return chr, start, end
+```
+
+#### Deliverables
+- ✅ Chromosome ID mapper with common conventions
+- ✅ Automatic mismatch detection and user alerts
+- ✅ Coordinate system converter
+- ✅ SNP support
+- ✅ Comprehensive unit tests
+
+---
+
+### Phase 4: Annotation Engine (Week 4-5)
+
+#### 4.1 Intersection Strategy
+
+Use **`pybedtools`** for fast, memory-efficient operations:
+
+```python
+import pybedtools
+import pandas as pd
+
+class AnnotationEngine:
+    """
+    High-performance coordinate intersection using bedtools
+    """
+    
+    def __init__(self, use_strand=False, min_overlap=None):
+        self.use_strand = use_strand
+        self.min_overlap = min_overlap
+    
+    def intersect(self, coord_df, annot_df, how='inner'):
+        """
+        Perform intersection between coordinates and annotations
+        
+        Args:
+            coord_df: DataFrame with chr, start, end
+            annot_df: Annotation DataFrame
+            how: 'inner', 'left', 'both' (see bedtools -wa -wb)
+        
+        Returns:
+            Annotated DataFrame
+        """
+        # Convert to BedTool objects
+        coords_bed = pybedtools.BedTool.from_dataframe(coord_df)
+        annot_bed = pybedtools.BedTool.from_dataframe(annot_df)
+        
+        # Perform intersection
+        result = coords_bed.intersect(
+            annot_bed,
+            wa=True,  # Write original coord entry
+            wb=True,  # Write original annotation entry
+            s=self.use_strand,  # Require same strand
+            f=self.min_overlap if self.min_overlap else None
+        )
+        
+        # Convert back to DataFrame
+        return result.to_dataframe()
+    
+    def closest(self, coord_df, annot_df, max_distance=None):
+        """
+        Find closest annotation for each coordinate
+        Useful when no overlap exists
+        """
+        coords_bed = pybedtools.BedTool.from_dataframe(coord_df)
+        annot_bed = pybedtools.BedTool.from_dataframe(annot_df)
+        
+        result = coords_bed.closest(
+            annot_bed,
+            d=True,  # Report distance
+            t='first'  # Report first match (closest)
+        )
+        
+        return result.to_dataframe()
+```
+
+#### 4.2 Annotation Modes
+
+```python
+ANNOTATION_MODES = {
+    'overlap': 'Find annotations overlapping coordinates (default)',
+    'contains': 'Find annotations completely containing coordinates',
+    'within': 'Find annotations completely within coordinates',
+    'closest': 'Find nearest annotation (even without overlap)',
+}
+```
+
+#### 4.3 Performance Optimization
+
+```python
+class PerformanceOptimizer:
+    """
+    Optimize for large files
+    """
+    
+    @staticmethod
+    def chunk_process(large_file, chunk_size=100000):
+        """Process large files in chunks"""
+        chunks = pd.read_csv(large_file, chunksize=chunk_size)
+        results = []
+        for chunk in chunks:
+            result = annotate(chunk)
+            results.append(result)
+        return pd.concat(results)
+    
+    @staticmethod
+    def memory_estimate(file_size_mb):
+        """Estimate memory requirements"""
+        # Rule of thumb: 5x file size in memory
+        return file_size_mb * 5
+```
+
+#### Deliverables
+- ✅ Fast annotation engine using bedtools
+- ✅ Multiple intersection modes
+- ✅ Performance optimizations for large files
+- ✅ Progress tracking
+
+---
+
+### Phase 5: Streamlit User Interface (Week 5-6)
+
+#### 5.1 Application Layout
+
+```python
+import streamlit as st
+
+def main():
+    st.set_page_config(
+        page_title="AnnotateR - Genomic Coordinate Annotation",
+        page_icon="🧬",
+        layout="wide"
+    )
+    
+    # Sidebar
+    with st.sidebar:
+        st.title("⚙️ Configuration")
+        
+        # Coordinate system settings
+        st.subheader("Coordinate System")
+        coord_system = st.selectbox(
+            "Input file coordinate system",
+            options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF)"]
+        )
+        
+        annot_system = st.selectbox(
+            "Annotation file coordinate system",
+            options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF)"]
+        )
+        
+        # Chromosome ID handling
+        st.subheader("Chromosome IDs")
+        chr_handling = st.radio(
+            "Chromosome ID handling",
+            options=["Auto-detect and convert", "Manual selection"]
+        )
+        
+        if chr_handling == "Manual selection":
+            coord_chr_style = st.selectbox(
+                "Coordinate file style",
+                ["UCSC (chr1)", "Ensembl (1)", "NCBI (NC_)"]
+            )
+            annot_chr_style = st.selectbox(
+                "Annotation file style",
+                ["UCSC (chr1)", "Ensembl (1)", "NCBI (NC_)"]
+            )
+        
+        # Annotation mode
+        st.subheader("Annotation Mode")
+        mode = st.selectbox(
+            "Intersection mode",
+            options=list(ANNOTATION_MODES.keys()),
+            format_func=lambda x: f"{x}: {ANNOTATION_MODES[x]}"
+        )
+        
+        # Advanced options
+        with st.expander("🔧 Advanced Options"):
+            use_strand = st.checkbox("Consider strand information")
+            min_overlap = st.slider(
+                "Minimum overlap fraction",
+                0.0, 1.0, 0.0,
+                help="Require minimum fraction of overlap (0 = any overlap)"
+            )
+    
+    # Main content
+    st.title("🧬 AnnotateR")
+    st.markdown("**Genomic Coordinate Annotation Tool**")
+    st.markdown("---")
+    
+    # File uploads
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.subheader("📁 Coordinate File")
+        coord_file = st.file_uploader(
+            "Upload coordinate file",
+            type=['bed', 'txt', 'csv', 'tsv', 'vcf'],
+            help="BED, VCF, or custom format"
+        )
+        
+        if coord_file:
+            # Show file preview
+            preview_file(coord_file, "coordinate")
+    
+    with col2:
+        st.subheader("📁 Annotation File")
+        annot_file = st.file_uploader(
+            "Upload annotation file",
+            type=['gff', 'gtf', 'gff3', 'bed', 'txt', 'csv', 'tsv'],
+            help="GFF, GTF, BED, or custom format"
+        )
+        
+        if annot_file:
+            preview_file(annot_file, "annotation")
+    
+    # Run annotation
+    if coord_file and annot_file:
+        if st.button("🚀 Run Annotation", type="primary"):
+            run_annotation(coord_file, annot_file, mode, coord_system, annot_system)
+```
+
+#### 5.2 Column Mapping Interface (for Custom Files)
+
+```python
+def show_column_mapper(df, file_type):
+    """
+    Interactive column mapping for custom files
+    """
+    st.subheader(f"🗺️ Map Columns - {file_type}")
+    
+    col_names = df.columns.tolist()
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        chr_col = st.selectbox(
+            "Chromosome column",
+            options=col_names,
+            index=auto_detect_column(col_names, 'chromosome')
+        )
+    
+    with col2:
+        start_col = st.selectbox(
+            "Start position column",
+            options=col_names,
+            index=auto_detect_column(col_names, 'start')
+        )
+    
+    with col3:
+        # Optional end column
+        end_col = st.selectbox(
+            "End position column (optional for SNPs)",
+            options=['None'] + col_names,
+            index=0
+        )
+    
+    # Additional columns to keep
+    keep_cols = st.multiselect(
+        "Additional columns to include in output",
+        options=[c for c in col_names if c not in [chr_col, start_col, end_col]],
+        default=[]
+    )
+    
+    return {
+        'chr': chr_col,
+        'start': start_col,
+        'end': end_col if end_col != 'None' else None,
+        'keep': keep_cols
+    }
+```
+
+#### 5.3 Results Display & Download
+
+```python
+def display_results(result_df):
+    """
+    Display annotation results with download options
+    """
+    st.success(f"✅ Annotation complete! Found {len(result_df)} overlapping features.")
+    
+    # Summary statistics
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Total Annotations", len(result_df))
+    col2.metric("Unique Coordinates", result_df['coord_id'].nunique())
+    col3.metric("Chromosomes", result_df['chr'].nunique())
+    col4.metric("Feature Types", result_df.get('feature', result_df.columns[0]).nunique())
+    
+    # Preview
+    st.subheader("📊 Results Preview")
+    st.dataframe(result_df.head(100), use_container_width=True)
+    
+    # Download options
+    st.subheader("⬇️ Download Results")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        # TSV download
+        tsv = result_df.to_csv(sep='\t', index=False)
+        st.download_button(
+            label="Download as TSV",
+            data=tsv,
+            file_name="annotated_coordinates.tsv",
+            mime="text/tab-separated-values"
+        )
+    
+    with col2:
+        # CSV download
+        csv = result_df.to_csv(index=False)
+        st.download_button(
+            label="Download as CSV",
+            data=csv,
+            file_name="annotated_coordinates.csv",
+            mime="text/csv"
+        )
+    
+    with col3:
+        # BED download (if applicable)
+        if all(col in result_df.columns for col in ['chr', 'start', 'end']):
+            bed = result_df[['chr', 'start', 'end']].to_csv(sep='\t', index=False, header=False)
+            st.download_button(
+                label="Download as BED",
+                data=bed,
+                file_name="annotated_coordinates.bed",
+                mime="text/plain"
+            )
+```
+
+#### Deliverables
+- ✅ Complete Streamlit interface
+- ✅ Column mapping for custom files
+- ✅ Real-time validation and warnings
+- ✅ Results display with download options
+
+---
+
+### Phase 6: Testing & Validation (Week 6-7)
+
+#### 6.1 Unit Tests
+
+```python
+# tests/test_coordinates.py
+def test_coordinate_conversion():
+    """Test 0-based to 1-based conversion"""
+    start, end = CoordinateConverter.convert(100, 200, '0-based', '1-based')
+    assert start == 101
+    assert end == 200
+
+def test_chromosome_mapping():
+    """Test chromosome ID conversion"""
+    mapper = ChromosomeMapper()
+    assert mapper.convert('chr1', 'ucsc', 'ensembl') == '1'
+    assert mapper.convert('1', 'ensembl', 'ucsc') == 'chr1'
+
+# tests/test_parsers.py
+def test_bed_parser():
+    """Test BED file parsing"""
+    parser = BEDParser()
+    df = parser.parse('tests/data/test.bed')
+    assert 'chr' in df.columns
+    assert 'start' in df.columns
+    assert 'end' in df.columns
+```
+
+#### 6.2 Integration Tests
+
+```python
+# tests/test_integration.py
+def test_full_annotation_workflow():
+    """Test complete annotation workflow"""
+    # Load files
+    coords = BEDParser().parse('tests/data/coordinates.bed')
+    annots = GFFParser().parse('tests/data/annotations.gff')
+    
+    # Standardize chromosomes
+    coords = ChromosomeMapper().standardize(coords, 'ucsc')
+    annots = ChromosomeMapper().standardize(annots, 'ucsc')
+    
+    # Annotate
+    engine = AnnotationEngine()
+    result = engine.intersect(coords, annots)
+    
+    assert len(result) > 0
+    assert 'gene_id' in result.columns
+```
+
+#### 6.3 Test Data
+
+Create comprehensive test datasets:
+- Small files for unit tests (10-100 lines)
+- Medium files for integration tests (1,000-10,000 lines)
+- Large files for performance tests (100,000+ lines)
+- Edge cases: mixed chromosome styles, missing data, etc.
+
+#### Deliverables
+- ✅ Comprehensive test suite (>80% coverage)
+- ✅ Test datasets
+- ✅ CI/CD pipeline with GitHub Actions
+
+---
+
+### Phase 7: Docker & Deployment (Week 7-8)
+
+#### 7.1 Dockerfile
+
+```dockerfile
+# Dockerfile
+FROM python:3.10-slim
+
+# Install bedtools (C++ backend for fast operations)
+RUN apt-get update && apt-get install -y \
+    bedtools \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY app/ ./app/
+COPY data/examples/ ./data/examples/
+
+# Expose Streamlit port
+EXPOSE 8501
+
+# Health check
+HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
+
+# Run Streamlit app
+CMD ["streamlit", "run", "app/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+```
+
+#### 7.2 Docker Compose (for development)
+
+```yaml
+# docker-compose.yml
+version: '3.8'
+
+services:
+  annotator:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./app:/app/app
+      - ./data:/app/data
+    environment:
+      - STREAMLIT_SERVER_HEADLESS=true
+      - STREAMLIT_SERVER_FILE_WATCHER_TYPE=poll
+    restart: unless-stopped
+```
+
+#### 7.3 SciLifeLab Serve Deployment
+
+Based on SciLifeLab's deployment requirements:
+
+```bash
+# Build and tag
+docker build -t annotator:latest .
+
+# Test locally
+docker run -p 8501:8501 annotator:latest
+
+# Push to registry (SciLifeLab's container registry)
+docker tag annotator:latest registry.serve.scilifelab.se/annotator:latest
+docker push registry.serve.scilifelab.se/annotator:latest
+```
+
+#### 7.4 Configuration for Production
+
+```python
+# app/config/settings.py
+import os
+
+class Settings:
+    # App configuration
+    APP_NAME = "AnnotateR"
+    VERSION = "1.0.0"
+    
+    # File size limits
+    MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", 500))
+    
+    # Performance
+    CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 100000))
+    MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
+    
+    # Temporary files
+    TEMP_DIR = os.getenv("TEMP_DIR", "/tmp/annotator")
+    CLEANUP_AFTER_HOURS = int(os.getenv("CLEANUP_AFTER_HOURS", 24))
+    
+    # Logging
+    LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+```
+
+#### Deliverables
+- ✅ Production-ready Dockerfile
+- ✅ Docker Compose for development
+- ✅ Deployment documentation
+- ✅ Configuration management
+
+---
+
+### Phase 8: Documentation & Polish (Week 8)
+
+#### 8.1 User Guide
+
+```markdown
+# AnnotateR User Guide
+
+## Quick Start
+
+1. **Upload your coordinate file** (BED, VCF, or custom format)
+2. **Upload your annotation file** (GFF, GTF, or custom format)
+3. **Configure settings** (optional - auto-detection works for most cases)
+4. **Click "Run Annotation"**
+5. **Download results**
+
+## Supported File Formats
+
+### Input Coordinates
+- BED (BED3, BED6, BED12)
+- VCF (variant positions)
+- Custom TSV/CSV with chr, start, end columns
+
+### Annotations
+- GFF3
+- GTF
+- GFF2
+- BED (as annotation source)
+- Custom formats (BioMart, UCSC Table Browser)
+
+## Chromosome ID Handling
+
+AnnotateR automatically detects and converts between:
+- UCSC style: chr1, chr2, ..., chrX, chrY, chrM
+- Ensembl style: 1, 2, ..., X, Y, MT
+- NCBI style: NC_000001.11, etc.
+
+If files use different styles, you'll see a warning with option to auto-convert.
+
+## Coordinate Systems
+
+- **0-based, half-open** [start, end): BED, BAM
+- **1-based, closed** [start, end]: GFF, GTF, SAM, VCF
+
+AnnotateR converts automatically based on file format detection.
+
+## Examples
+
+[Include screenshots and examples]
+```
+
+#### 8.2 API Reference
+
+Document all core functions for developers who might want to use the library programmatically.
+
+#### 8.3 FAQ
+
+Common questions:
+- "Why are my results empty?" → Chromosome ID mismatch
+- "How large files can I process?" → Up to 500MB by default
+- "Can I use this offline?" → Yes, via Docker
+- etc.
+
+#### Deliverables
+- ✅ Comprehensive user guide
+- ✅ API reference
+- ✅ FAQ
+- ✅ Tutorial videos (optional)
+
+---
+
+## Additional Features & Ideas
+
+### 🎯 High Priority Enhancements
+
+#### 1. **Batch Processing** 
+Allow users to upload multiple coordinate files and annotate them all at once.
+
+```python
+def batch_annotate(coord_files, annot_file, settings):
+    results = {}
+    for coord_file in coord_files:
+        result = annotate(coord_file, annot_file, settings)
+        results[coord_file.name] = result
+    return results
+```
+
+#### 2. **Preset Annotation Sources**
+Pre-load common annotation databases:
+- GENCODE (human, mouse)
+- Ensembl
+- RefSeq
+- UCSC Known Genes
+
+Users can select from dropdown instead of uploading:
+```python
+PRESET_ANNOTATIONS = {
+    'GENCODE v44 (Human GRCh38)': 'path/to/gencode.v44.annotation.gff3.gz',
+    'GENCODE vM33 (Mouse GRCm39)': 'path/to/gencode.vM33.annotation.gff3.gz',
+    'RefSeq (Human)': 'path/to/refseq_human.gff',
+}
+```
+
+#### 3. **Annotation Statistics & Plots**
+Generate summary statistics and visualizations:
+- Number of coordinates per chromosome
+- Feature type distribution (genes, exons, etc.)
+- Overlap size distribution
+- Interactive plots with Plotly
+
+```python
+import plotly.express as px
+
+def plot_chromosome_distribution(result_df):
+    fig = px.bar(
+        result_df.groupby('chr').size().reset_index(name='count'),
+        x='chr', y='count',
+        title='Annotations per Chromosome'
+    )
+    return fig
+```
+
+#### 4. **Feature Filtering**
+Allow users to filter annotations by feature type:
+- Only genes
+- Only exons
+- Only CDS
+- Custom feature types
+
+#### 5. **Distance to Nearest Feature**
+For coordinates without overlaps, show distance to nearest feature:
+```python
+def annotate_with_distance(coords, annots, max_distance=10000):
+    """
+    Annotate coordinates and include distance to nearest feature
+    """
+    overlaps = intersect(coords, annots)
+    no_overlap = coords[~coords.index.isin(overlaps.index)]
+    
+    nearest = find_nearest(no_overlap, annots, max_distance)
+    
+    return pd.concat([overlaps, nearest])
+```
+
+#### 6. **Session Management**
+Save user settings and recent analyses:
+- Remember column mappings for custom files
+- Save favorite settings
+- Session history
+
+#### 7. **Export Formats**
+Support multiple output formats:
+- TSV/CSV (current)
+- BED (coordinates + custom columns)
+- JSON (for programmatic use)
+- Excel (with formatted tables)
+
+### 🔮 Future Enhancements
+
+#### 1. **REST API**
+Create a REST API for programmatic access:
+```python
+from fastapi import FastAPI, UploadFile
+
+app = FastAPI()
+
+@app.post("/annotate")
+async def annotate_api(
+    coord_file: UploadFile,
+    annot_file: UploadFile,
+    settings: dict
+):
+    result = annotate(coord_file, annot_file, settings)
+    return {"status": "success", "data": result.to_dict()}
+```
+
+#### 2. **Command-Line Interface**
+```bash
+annotator --coordinates input.bed \
+          --annotation genes.gff \
+          --output result.tsv \
+          --coord-system 0-based \
+          --chr-style ucsc
+```
+
+#### 3. **Multi-species Support**
+Pre-configured settings for common model organisms:
+- Human (GRCh38, hg38)
+- Mouse (GRCm39, mm39)
+- Zebrafish, Drosophila, etc.
+
+#### 4. **Integration with Galaxy/LIMS**
+Make it compatible with Galaxy workflows or LIMS systems used at SciLifeLab.
+
+#### 5. **Annotation Caching**
+Cache common annotation files to speed up repeated analyses:
+```python
+import diskcache
+
+cache = diskcache.Cache('/tmp/annot_cache')
+
+@cache.memoize(expire=3600*24*7)  # 1 week cache
+def load_annotation(file_path):
+    return parse_annotation(file_path)
+```
+
+---
+
+## Timeline Summary
+
+| Phase | Duration | Key Deliverables |
+|-------|----------|------------------|
+| 1. Foundation | 1-2 weeks | Project setup, architecture |
+| 2. File Parsers | 1 week | All format parsers |
+| 3. Coordinate Handling | 1 week | Chr ID mapper, coordinate converter |
+| 4. Annotation Engine | 1 week | Fast intersection using bedtools |
+| 5. UI Development | 1-2 weeks | Streamlit interface |
+| 6. Testing | 1 week | Comprehensive test suite |
+| 7. Deployment | 1 week | Docker, SciLifeLab deployment |
+| 8. Documentation | 1 week | User guide, tutorials |
+| **Total** | **8-10 weeks** | Production-ready tool |
+
+---
+
+## Risk Mitigation
+
+### Technical Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| Large file performance | High | Implement chunked processing, progress bars, file size warnings |
+| Memory issues | High | Stream processing, cleanup temp files, set memory limits |
+| Chromosome mismatch | Medium | Auto-detection + validation + user warnings |
+| Parsing edge cases | Medium | Extensive testing with diverse datasets |
+
+### Deployment Risks
+
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| SciLifeLab serve compatibility | Medium | Test deployment early, follow their guidelines |
+| User adoption | Medium | Clear documentation, tutorial videos, example datasets |
+| Support burden | Low | Comprehensive FAQ, error messages, logging |
+
+---
+
+## Success Metrics
+
+### Technical Metrics
+- ✅ Handles files up to 500MB
+- ✅ Processes 100K coordinates in < 30 seconds
+- ✅ >95% accuracy in chromosome ID detection
+- ✅ >99% test coverage for core modules
+
+### User Metrics
+- ✅ Positive feedback from beta testers
+- ✅ Regular usage by SciLifeLab researchers
+- ✅ Low error rate (< 5% failed annotations)
+
+---
+
+## Next Steps
+
+1. **Review and approve this roadmap**
+2. **Decide on Streamlit vs Shiny** (recommendation: Streamlit)
+3. **Set up development environment**
+4. **Begin Phase 1: Foundation**
+
+---
+
+## Questions for Discussion
+
+1. **Framework choice**: Are you comfortable with Python/Streamlit, or prefer R/Shiny?
+2. **Deployment timeline**: When do you need this in production?
+3. **User base**: How many concurrent users do you expect?
+4. **Support**: Will this be self-service or will you provide support?
+5. **Preset annotations**: Which annotation databases should be pre-loaded?
+
+---
+
+**Ready to start building?** Let me know if you'd like to proceed with this roadmap, and I can begin implementing Phase 1!

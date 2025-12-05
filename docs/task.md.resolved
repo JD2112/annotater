@@ -1,0 +1,61 @@
+# Genomic Coordinate Annotation Tool - Development Tasks
+
+## Phase 1: Requirements Analysis & Architecture Design ✅
+- [x] Review existing codebase
+- [x] Analyze user requirements
+- [x] Create detailed development roadmap
+- [x] Design system architecture
+- [x] Choose framework (Streamlit)
+- [x] Define technology stack
+- [x] Create project structure
+- [x] Set up core modules
+- [x] Create configuration system
+- [x] Write initial tests
+- [x] Docker containerization
+- [x] Update documentation
+
+## Phase 2: Core Features Implementation
+- [x] File format parsers (BED, GFF, GTF, VCF)
+- [x] Custom file format support
+- [x] Chromosome ID standardization
+- [x] 0-based vs 1-based coordinate handling
+- [x] Coordinate intersection engine
+- [x] SNP (single coordinate) support
+- [ ] Performance optimization and testing with large files
+- [ ] Additional format parsers (BioMart, UCSC specific)
+
+## Phase 3: User Interface Development
+- [x] File upload interface
+- [x] Column mapping interface for custom files  
+- [x] Coordinate system selector
+- [x] Progress indicators
+- [x] Results display
+- [x] Download functionality
+- [ ] Advanced UI polish (charts, visualizations)
+- [ ] Preset annotation databases
+- [ ] Batch processing UI
+
+## Phase 4: Validation & Testing
+- [x] Unit tests for coordinate conversion
+- [x] Unit tests for chromosome mapping
+- [x] Unit tests for file parsing
+- [ ] Integration tests with real files
+- [ ] End-to-end testing
+- [ ] Performance benchmarking
+- [ ] Load testing
+
+## Phase 5: Deployment
+- [x] Docker containerization
+- [x] Docker Compose for development
+- [ ] SciLifeLab serve deployment
+- [x] Documentation (README)
+- [ ] User guide (detailed)
+- [ ] Video tutorials
+- [ ] CI/CD pipeline setup
+
+## Next Steps (Priority)
+1. Test the Streamlit app locally
+2. Run unit tests
+3. Create sample data for testing
+4. Performance testing with large files
+5. Deploy to SciLifeLab serve

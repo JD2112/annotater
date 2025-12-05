@@ -1,0 +1,7 @@
+# Example BED file with genomic coordinates
+chr1	100000	100500	region1	100	+
+chr1	200000	200300	region2	200	+
+chr2	150000	151000	region3	150	-
+chr2	300000	300200	region4	180	+
+chrX	50000	52000	regionX	250	+
+chrY	75000	75500	regionY	120	+
