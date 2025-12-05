@@ -77,8 +77,7 @@ class AnnotationEngine:
             
         finally:
             # Cleanup temporary files
-            coord_bed.delete_temporary_files()
-            annot_bed.delete_temporary_files()
+            pybedtools.cleanup()
         
         return result_df
     
