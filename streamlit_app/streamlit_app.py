@@ -31,6 +31,8 @@ from config import Settings
 
 import streamlit as st
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 
 # Page configuration
@@ -133,6 +135,19 @@ def main():
             options=list(Settings.ANNOTATION_MODES.keys()),
             format_func=lambda x: f"{x.title()}: {Settings.ANNOTATION_MODES[x]['description']}"
         )
+        
+        # Feature type filter (for GFF/GTF files)
+        st.subheader("🔬 Feature Filter")
+        
+        feature_types = st.multiselect(
+            "Filter by feature type",
+            options=["gene", "transcript", "exon", "CDS", "5UTR", "3UTR", "start_codon", "stop_codon"],
+            default=["gene"],
+            help="Only include these feature types from annotation file (GFF/GTF)"
+        )
+        
+        if not feature_types:
+            st.warning("⚠️ No features selected - all features will be included")
         
         # Advanced options
         with st.expander("🔧 Advanced Options"):
@@ -343,7 +358,8 @@ def main():
                     min_overlap,
                     show_stats,
                     chr_handling == "Auto-convert if needed",
-                    target_chr_style
+                    target_chr_style,
+                    feature_types
                 )
     
     # Footer
@@ -366,7 +382,8 @@ def run_annotation(
     min_overlap: float,
     show_stats: bool,
     auto_convert_chr: bool,
-    target_chr_style: str = None
+    target_chr_style: str = None,
+    feature_types: list = None
 ):
     """Execute annotation workflow"""
     
@@ -384,6 +401,17 @@ def run_annotation(
             if not is_valid:
                 st.error(f"Annotation validation failed: {error}")
                 return
+            
+            # Step 1.5: Filter annotation by feature type
+            if feature_types and 'feature' in annot_df.columns:
+                original_count = len(annot_df)
+                annot_df = annot_df[annot_df['feature'].isin(feature_types)]
+                filtered_count = len(annot_df)
+                st.info(f"🔬 Filtered annotations: {filtered_count:,} features (from {original_count:,})")
+                
+                if filtered_count == 0:
+                    st.warning("⚠️ No annotations match the selected feature types!")
+                    return
             
             # Step 2: Check chromosome compatibility
             st.info("🧩 Checking chromosome IDs...")
@@ -422,15 +450,15 @@ def run_annotation(
             st.success(f"✅ Annotation complete! Found {len(result_df):,} results.")
             
             # Step 4: Display results
-            display_results(result_df, coord_df, show_stats)
+            display_results(result_df, coord_df, annot_df, show_stats)
             
         except Exception as e:
             st.error(f"❌ Error during annotation: {str(e)}")
             st.exception(e)
 
 
-def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, show_stats: bool):
-    """Display annotation results"""
+def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: pd.DataFrame, show_stats: bool):
+    """Display annotation results with charts and gene list"""
     
     st.markdown("---")
     st.subheader("📊 Results")
@@ -458,12 +486,134 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, show_stats:
             annot_rate = (len(result_df) / len(coord_df) * 100) if len(coord_df) > 0 else 0
             st.metric("Annotation Rate", f"{annot_rate:.1f}%")
     
+    # Feature Distribution Charts
+    st.markdown("### 📈 Summary Charts")
+    
+    chart_col1, chart_col2 = st.columns(2)
+    
+    with chart_col1:
+        # Feature type distribution pie chart
+        if 'annot_feature' in result_df.columns:
+            feature_col = 'annot_feature'
+        elif 'feature' in result_df.columns:
+            feature_col = 'feature'
+        else:
+            feature_col = None
+        
+        if feature_col and result_df[feature_col].notna().any():
+            feature_counts = result_df[feature_col].value_counts()
+            
+            fig_pie = px.pie(
+                values=feature_counts.values,
+                names=feature_counts.index,
+                title="Feature Type Distribution",
+                color_discrete_sequence=px.colors.qualitative.Set2
+            )
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            fig_pie.update_layout(showlegend=True, height=350)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.info("ℹ️ No feature type data available for chart")
+    
+    with chart_col2:
+        # Chromosome distribution bar chart
+        if 'coord_chr' in result_df.columns:
+            chr_col = 'coord_chr'
+        elif 'chr' in result_df.columns:
+            chr_col = 'chr'
+        else:
+            chr_col = None
+        
+        if chr_col:
+            chr_counts = result_df[chr_col].value_counts().head(15)  # Top 15 chromosomes
+            
+            fig_bar = px.bar(
+                x=chr_counts.index,
+                y=chr_counts.values,
+                title="Annotations per Chromosome (Top 15)",
+                labels={'x': 'Chromosome', 'y': 'Count'},
+                color=chr_counts.values,
+                color_continuous_scale='Blues'
+            )
+            fig_bar.update_layout(showlegend=False, height=350)
+            st.plotly_chart(fig_bar, use_container_width=True)
+    
+    # Gene List Export
+    st.markdown("### 🧬 Gene List Export")
+    
+    # Try to find gene names in the results
+    gene_col = None
+    for col in ['gene_name', 'Name', 'gene_id', 'ID', 'annot_name', 'name']:
+        if col in result_df.columns:
+            gene_col = col
+            break
+    
+    if gene_col:
+        # Extract unique gene names
+        gene_list = result_df[gene_col].dropna().unique()
+        gene_list = [str(g) for g in gene_list if str(g).strip() and str(g) != 'nan']
+        
+        gene_col1, gene_col2 = st.columns([2, 1])
+        
+        with gene_col1:
+            st.info(f"📋 Found **{len(gene_list):,}** unique genes")
+            
+            # Show top genes
+            if len(gene_list) > 0:
+                top_genes = result_df[gene_col].value_counts().head(10)
+                
+                fig_top = px.bar(
+                    x=top_genes.values,
+                    y=top_genes.index,
+                    orientation='h',
+                    title="Top 10 Genes (by annotation count)",
+                    labels={'x': 'Count', 'y': 'Gene'},
+                    color=top_genes.values,
+                    color_continuous_scale='Viridis'
+                )
+                fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_top, use_container_width=True)
+        
+        with gene_col2:
+            st.markdown("**Quick Actions:**")
+            
+            # Gene list as text for copying
+            gene_text = "\n".join(sorted(gene_list))
+            
+            st.download_button(
+                label="📥 Download Gene List (.txt)",
+                data=gene_text,
+                file_name="gene_list.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+            
+            # Comma-separated for pasting
+            gene_csv = ", ".join(sorted(gene_list))
+            st.download_button(
+                label="📥 Comma-separated (.csv)",
+                data=gene_csv,
+                file_name="gene_list.csv",
+                mime="text/plain",
+                use_container_width=True,
+                key="gene_csv"
+            )
+            
+            st.markdown("---")
+            st.markdown("**📌 Paste into:**")
+            st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
+            st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
+            st.markdown("• [DAVID](https://david.ncifcrf.gov)")
+            st.markdown("• [STRING](https://string-db.org)")
+    else:
+        st.info("ℹ️ No gene name column found in results")
+    
     # Results table
     st.markdown("### 📄 Annotated Data")
     st.dataframe(result_df, use_container_width=True, height=400)
     
     # Download options
-    st.markdown("### ⬇️ Download Results")
+    st.markdown("### ⬇️ Download Full Results")
     
     download_col1, download_col2, download_col3 = st.columns(3)
     
