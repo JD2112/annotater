@@ -178,12 +178,23 @@ class AnnotationEngine:
             return result_df
         
         # Build column names based on actual output
-        # bedtools intersect -wa -wb outputs: coord_cols + annot_cols
+        # bedtools intersect -wa -wb outputs: coord_cols (reordered) + annot_cols (reordered)
         num_result_cols = len(result_df.columns)
         
-        # Standard BED coordinate columns (first 3-6 columns from input)
-        coord_col_names = list(coord_df.columns)
-        annot_col_names = list(annot_df.columns)
+        # Helper to get expected column order in BED format
+        def get_bed_ordered_cols(df):
+            # 1. chr, start, end always come first
+            core_cols = ['chr', 'start', 'end']
+            
+            # 2. columns that were skipped in core
+            extra_cols = [col for col in df.columns if col not in core_cols]
+            
+            # 3. Join them - this is how _df_to_bedtool constructs the file
+            # Note: _df_to_bedtool keeps up to 9 extra columns
+            return core_cols + extra_cols[:9]
+            
+        coord_col_names = get_bed_ordered_cols(coord_df)
+        annot_col_names = get_bed_ordered_cols(annot_df)
         
         # Build column name list
         col_names = []
