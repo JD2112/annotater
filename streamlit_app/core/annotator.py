@@ -88,10 +88,10 @@ class AnnotationEngine:
         bed_df['start'] = bed_df['start'].astype(int)
         bed_df['end'] = bed_df['end'].astype(int)
         
-        # Add additional columns if present
+        # Add additional columns - keep more for GFF files which have Name, ID, etc.
         extra_cols = [col for col in df.columns if col not in ['chr', 'start', 'end']]
-        for col in extra_cols[:3]:  # BED format supports up to 12 columns, keep first 3 extra
-            bed_df[col] = df[col].astype(str)
+        for col in extra_cols[:9]:  # Keep up to 9 extra columns (enough for GFF attributes)
+            bed_df[col] = df[col].astype(str).fillna('.')
         
         # Create BedTool
         return pybedtools.BedTool.from_dataframe(bed_df)
