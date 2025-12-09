@@ -764,6 +764,108 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
             )
         except ImportError:
             st.caption("Excel export requires openpyxl")
+    
+    # VCF Download (only if input was VCF)
+    if 'coord_format' in st.session_state and st.session_state.coord_format == 'vcf':
+        st.markdown("### 🧬 VCF Export")
+        st.info("Reconstructed VCF with annotations added to INFO field.")
+        
+        vcf_content = convert_df_to_vcf(display_df)
+        st.download_button(
+            label="📥 Download Annotated VCF",
+            data=vcf_content,
+            file_name="annotated_variants.vcf",
+            mime="application/octet-stream",
+            use_container_width=True,
+            key="download_vcf"
+        )
+
+
+def convert_df_to_vcf(df: pd.DataFrame) -> str:
+    """
+    Convert results DataFrame back to VCF format.
+    Reconstructs standard columns and adds annotations to INFO.
+    """
+    lines = [
+        "##fileformat=VCFv4.2",
+        "##source=AnnotatorApp",
+        f"##date={pd.Timestamp.now().strftime('%Y%m%d')}",
+        "##INFO=<ID=ANNOT,Number=.,Type=String,Description=\"Annotations added by AnnotatorApp formatted as Key=Value\">",
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+    ]
+    
+    # Map internal columns to VCF standard columns
+    # Note: df uses 0-based start, VCF uses 1-based POS (which equals end for SNPs)
+    # So we use coord_end as POS
+    
+    res = df.copy()
+    
+    # Ensure required columns exist, fill with '.' if missing
+    required_map = {
+        'coord_chr': 'CHROM',
+        'coord_end': 'POS',
+        'coord_id': 'ID',
+        'coord_ref': 'REF',
+        'coord_alt': 'ALT',
+        'coord_qual': 'QUAL',
+        'coord_filter': 'FILTER'
+    }
+    
+    # Check which columns we actually have
+    available_map = {}
+    for int_col, vcf_col in required_map.items():
+        if int_col in df.columns:
+            available_map[int_col] = vcf_col
+        # Special handling if coord_ prefix is missing
+        elif int_col.replace('coord_', '') in df.columns:
+             available_map[int_col.replace('coord_', '')] = vcf_col
+    
+    if not available_map:
+        return "##Error: Could not reconstruct VCF. Missing coordinate columns."
+
+    # Identify annotation columns for INFO field
+    annot_cols = [c for c in df.columns if c.startswith('annot_') and c not in ['annot_chr', 'annot_start', 'annot_end', 'has_overlap']]
+    
+    vcf_rows = []
+    
+    for _, row in res.iterrows():
+        # Build standard fields
+        fields = []
+        fields.append(str(row.get('coord_chr', row.get('chr', '.'))))
+        
+        # POS: Convert 0-based end back to 1-based POS
+        # Internal: start=9, end=10 -> VCF POS=10
+        fields.append(str(row.get('coord_end', row.get('end', '.'))))
+        
+        fields.append(str(row.get('coord_id', row.get('id', '.'))))
+        fields.append(str(row.get('coord_ref', row.get('ref', '.'))))
+        fields.append(str(row.get('coord_alt', row.get('alt', '.'))))
+        fields.append(str(row.get('coord_qual', row.get('qual', '.'))))
+        fields.append(str(row.get('coord_filter', row.get('filter', '.'))))
+        
+        # Build INFO field
+        info_parts = []
+        
+        # Add annotations
+        annot_parts = []
+        for col in annot_cols:
+            val = str(row[col])
+            if val and val not in ['.', 'nan', '-1', 'None']:
+                key = col.replace('annot_', '')
+                # Clean value for VCF compatibility
+                clean_val = val.replace(';', '|').replace(' ', '_').replace('=', ':')
+                annot_parts.append(f"{key}={clean_val}")
+        
+        if annot_parts:
+            info_parts.append(";".join(annot_parts))
+        else:
+            info_parts.append(".")
+            
+        fields.append(";".join(info_parts))
+        
+        vcf_rows.append("\t".join(fields))
+        
+    return "\n".join(lines + vcf_rows)
 
 
 if __name__ == "__main__":
