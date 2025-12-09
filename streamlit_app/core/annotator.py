@@ -88,10 +88,10 @@ class AnnotationEngine:
         bed_df['start'] = bed_df['start'].astype(int)
         bed_df['end'] = bed_df['end'].astype(int)
         
-        # Add additional columns if present
+        # Add additional columns - keep more for GFF files which have Name, ID, etc.
         extra_cols = [col for col in df.columns if col not in ['chr', 'start', 'end']]
-        for col in extra_cols[:3]:  # BED format supports up to 12 columns, keep first 3 extra
-            bed_df[col] = df[col].astype(str)
+        for col in extra_cols[:9]:  # Keep up to 9 extra columns (enough for GFF attributes)
+            bed_df[col] = df[col].astype(str).fillna('.')
         
         # Create BedTool
         return pybedtools.BedTool.from_dataframe(bed_df)
@@ -169,7 +169,7 @@ class AnnotationEngine:
         """
         # Convert to DataFrame
         try:
-            result_df = bedtool.to_dataframe()
+            result_df = bedtool.to_dataframe(header=None)
         except Exception:
             # If conversion fails, return empty DataFrame
             return pd.DataFrame()
@@ -177,25 +177,56 @@ class AnnotationEngine:
         if result_df.empty:
             return result_df
         
-        # Determine number of columns from each source
-        coord_cols = min(len(coord_df.columns), 6)  # BED uses max 6 standard cols
-        annot_cols = min(len(annot_df.columns), 6)
+        # Build column names based on actual output
+        # bedtools intersect -wa -wb outputs: coord_cols (reordered) + annot_cols (reordered)
+        num_result_cols = len(result_df.columns)
         
-        # Rename columns
+        # Helper to get expected column order in BED format
+        def get_bed_ordered_cols(df):
+            # 1. chr, start, end always come first
+            core_cols = ['chr', 'start', 'end']
+            
+            # 2. columns that were skipped in core
+            extra_cols = [col for col in df.columns if col not in core_cols]
+            
+            # 3. Join them - this is how _df_to_bedtool constructs the file
+            # Note: _df_to_bedtool keeps up to 9 extra columns
+            return core_cols + extra_cols[:9]
+            
+        coord_col_names = get_bed_ordered_cols(coord_df)
+        annot_col_names = get_bed_ordered_cols(annot_df)
+        
+        # Build column name list
         col_names = []
         
-        # Coordinate columns
-        col_names.extend([f"coord_{col}" for col in coord_df.columns[:coord_cols]])
+        # Add coordinate columns with prefix
+        for i, col in enumerate(coord_col_names):
+            if i < num_result_cols:
+                col_names.append(f"coord_{col}")
         
-        # Annotation columns
-        col_names.extend([f"annot_{col}" for col in annot_df.columns[:annot_cols]])
+        # Add annotation columns with prefix
+        coord_count = len(coord_col_names)
+        for i, col in enumerate(annot_col_names):
+            if coord_count + i < num_result_cols:
+                col_names.append(f"annot_{col}")
         
         # Distance column (for closest mode)
-        if self.mode == "closest" and len(result_df.columns) > coord_cols + annot_cols:
+        if self.mode == "closest" and len(col_names) < num_result_cols:
             col_names.append("distance")
         
-        # Assign column names
-        result_df.columns = col_names[:len(result_df.columns)]
+        # Pad with generic names if needed
+        while len(col_names) < num_result_cols:
+            col_names.append(f"col_{len(col_names)}")
+        
+        # Assign column names (only as many as we have)
+        result_df.columns = col_names[:num_result_cols]
+        
+        # Clean up -1 values for display (replace with empty or "No overlap")
+        # Keep numeric -1 for filtering but add a status column
+        if 'annot_chr' in result_df.columns:
+            result_df['has_overlap'] = result_df['annot_chr'] != '.'
+            result_df['has_overlap'] = result_df['has_overlap'] & (result_df['annot_chr'] != -1)
+            result_df['has_overlap'] = result_df['has_overlap'] & (result_df['annot_chr'].astype(str) != '-1')
         
         return result_df
     
