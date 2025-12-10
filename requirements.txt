@@ -7,6 +7,8 @@ numpy>=1.24.0
 pybedtools>=0.9.1
 pyranges>=0.0.129
 pysam>=0.22.0
+polars>=0.20.0
+polars-bio>=0.2.0
 
 # File handling
 openpyxl>=3.1.0  # Excel export
