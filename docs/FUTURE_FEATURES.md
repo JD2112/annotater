@@ -11,12 +11,33 @@ This document outlines planned features and improvements for AnnotateR. Features
 - [x] Chromosome distribution bar chart
 - [x] Top 10 genes visualization
 - [x] Gene list export for pathway analysis tools
+- [x] Basic VCF support (0-based coordinate fix & valid export) [New]
 
 ---
 
 ## 🎯 High Priority (Next Release)
 
-### 1. Genome Assembly Detector & Warning
+### 1. Merge VCF Support & Enhance Annotations
+**Problem:** VCF support is currently basic and on a separate feature branch. Annotations are dumped into a single INFO string.
+
+**Solution:**
+- Merge `feature/vcf-support` into main.
+- Parse GFF attributes (biotype, etc.) and add as structured VCF annotations (ANN field).
+- Optimize for large VCFs (streaming output).
+
+**Effort:** Medium
+
+### 2. Polars-Bio Engine Integration
+**Problem:** Need a high-performance alternative to `bedtools` for large datasets or pure Python/Rust environments.
+
+**Solution:**
+- Evaluate `polars-bio` (Rust-backed, high performance).
+- Compare `overlap`, `nearest`, and `coverage` functions with `bedtools`.
+- Implement as selectable "Fast Engine" or fallback.
+
+**Effort:** High (new dependency & logic)
+
+### 3. Genome Assembly Detector & Warning
 **Problem:** Users often don't know if their coordinates are from hg19 vs hg38, or mm10 vs mm39.
 
 **Solution:**
