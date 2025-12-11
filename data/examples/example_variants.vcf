@@ -1,0 +1,17 @@
+##fileformat=VCFv4.2
+##fileDate=20240101
+##source=ExampleVCF
+##reference=hg38
+##contig=<ID=chr1,length=248956422>
+##contig=<ID=chr2,length=242193529>
+##contig=<ID=chrX,length=156040895>
+##INFO=<ID=DP,Number=1,Type=Integer,Description="Total Depth">
+##INFO=<ID=AF,Number=A,Type=Float,Description="Allele Frequency">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read Depth">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SAMPLE1
+chr1	100000	rs1	G	A	30	PASS	DP=14;AF=0.5	GT:DP	0/1:14
+chr1	120050	rs2	T	C	40	PASS	DP=20;AF=1.0	GT:DP	1/1:20
+chr1	200000	rs3	A	G	50	PASS	DP=10;AF=0.5	GT:DP	0/1:10
+chr2	150000	rs4	C	T	35	PASS	DP=15;AF=0.5	GT:DP	0/1:15
+chrX	50000	rs5	G	T	60	PASS	DP=30;AF=1.0	GT:DP	1/1:30

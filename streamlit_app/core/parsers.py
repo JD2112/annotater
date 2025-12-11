@@ -238,8 +238,8 @@ class VCFParser:
             for record in vcf:
                 variants.append({
                     'chr': record.chrom,
-                    'start': record.pos,  # VCF is 1-based
-                    'end': record.pos,    # Single position for SNPs
+                    'start': record.pos - 1,  # Convert to 0-based
+                    'end': record.pos,        # End is exclusive in BED
                     'id': record.id,
                     'ref': record.ref,
                     'alt': ','.join([str(a) for a in record.alts]) if record.alts else '',
@@ -266,7 +266,9 @@ class VCFParser:
         )
         
         # Add end column (same as start for SNPs)
+        # Convert to 0-based BED coordinates
         df['end'] = df['start']
+        df['start'] = df['start'] - 1
         
         return df[['chr', 'start', 'end', 'id', 'ref', 'alt', 'qual', 'filter']]
 
