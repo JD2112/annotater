@@ -13,6 +13,7 @@ from streamlit_app.core import (
     BEDParser,
     GFFParser
 )
+from streamlit_app.core.schema import MalformedFileError
 
 
 class TestChromosomeMapper:
@@ -136,18 +137,37 @@ class TestParsers:
     """Test file parsers"""
     
     def test_bed_parser(self, tmp_path):
-        """Test BED file parsing"""
-        # Create temporary BED file
+        """
+        Test BED file parsing with the canonical validation contract.
+
+        The historical fixture mixed valid rows with a malformed line
+        (``region1`` has a single field) and previously expected the
+        malformed record to be silently dropped. Under the canonical
+        contract (PLAN Task 2) invalid input MUST fail explicitly with a
+        precise error instead of silently discarding records.
+        """
         bed_file = tmp_path / "test.bed"
         bed_file.write_text("chr1\t100\t200\nregion1\nchr2\t300\t400\tregion2\n")
-        
+
+        with pytest.raises(MalformedFileError, match="line 2"):
+            BEDParser.parse(str(bed_file))
+
+    def test_bed_parser_valid_variable_width(self, tmp_path):
+        """Valid variable-width BED rows parse to the canonical core columns."""
+        bed_file = tmp_path / "test.bed"
+        bed_file.write_text("chr1\t100\t200\nchr2\t300\t400\tregion2\n")
+
         df = BEDParser.parse(str(bed_file))
-        
+
         assert len(df) == 2
         assert 'chr' in df.columns
         assert 'start' in df.columns
         assert 'end' in df.columns
         assert df['chr'].tolist() == ['chr1', 'chr2']
+        assert df['start'].tolist() == [100, 300]
+        assert df['end'].tolist() == [200, 400]
+        assert pd.isna(df['name'].iloc[0])
+        assert df['name'].iloc[1] == 'region2'
     
     def test_bed_validation(self):
         """Test BED format validation"""
