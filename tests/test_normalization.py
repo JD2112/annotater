@@ -948,6 +948,107 @@ class TestCanonicalResultSchema:
             )
 
 
+class TestMalformedMatchedRows:
+    """
+    Malformed matched backend rows (has_overlap=True) must be rejected,
+    never silently coerced into a valid-looking canonical row. Unmatched
+    rows still canonicalize their annotation fields to missing.
+    """
+
+    def _coord_df(self):
+        return pd.DataFrame(
+            {
+                "chr": ["chr1", "chr1"],
+                "start": [100, 100],
+                "end": [200, 200],
+                "region": ["r1", "r1"],
+            }
+        )
+
+    def _annot_df(self):
+        return pd.DataFrame(
+            {
+                "chr": ["chr1"],
+                "start": [90],
+                "end": [150],
+                "feature": ["geneA"],
+            }
+        )
+
+    def _raw(self, **overrides):
+        base = {
+            "coord_chr": ["chr1", "chr1"],
+            "coord_start": ["100", "100"],
+            "coord_end": ["200", "200"],
+            "coord_region": ["r1", "r1"],
+            "annot_chr": ["chr1", "."],
+            "annot_start": ["90", "."],
+            "annot_end": ["150", "."],
+            "annot_feature": ["geneA", "."],
+            "has_overlap": [True, False],
+        }
+        base.update(overrides)
+        return pd.DataFrame(base)
+
+    def test_non_numeric_matched_annot_start_rejected(self):
+        raw = self._raw(annot_start=["not-a-number", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_start"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_non_numeric_matched_annot_end_rejected(self):
+        raw = self._raw(annot_end=["x", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_end"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_non_integer_matched_annot_start_rejected(self):
+        raw = self._raw(annot_start=["90.5", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_start"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_missing_matched_annot_chr_rejected(self):
+        raw = self._raw(annot_chr=[".", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_chr"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_zero_width_matched_annotation_interval_rejected(self):
+        raw = self._raw(annot_start=["100", "."], annot_end=["100", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_end"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_reversed_matched_annotation_interval_rejected(self):
+        raw = self._raw(annot_start=["150", "."], annot_end=["90", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_end"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_negative_matched_annot_start_rejected(self):
+        raw = self._raw(annot_start=["-5", "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_start"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_malformed_query_interval_rejected(self):
+        raw = self._raw(coord_start=["200", "100"], coord_end=["200", "200"])
+        with pytest.raises(CanonicalSchemaError, match="coord_end"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_negative_query_start_rejected(self):
+        raw = self._raw(coord_start=["-1", "100"])
+        with pytest.raises(CanonicalSchemaError, match="coord_start"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_unmatched_rows_still_canonicalize_sentinels_to_missing(self):
+        # Junk annotation values on unmatched rows are discarded to
+        # canonical missing (not an error); the matched row is valid.
+        raw = self._raw(
+            annot_chr=["chr1", "garbage"],
+            annot_start=["90", "-1"],
+            annot_end=["150", "."],
+            annot_feature=["geneA", "sentinel"],
+        )
+        out = canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+        unmatched = out.loc[~out["has_overlap"]]
+        annot_cols = [c for c in out.columns if c.startswith("annot_")]
+        assert unmatched[annot_cols].isna().all().all()
+        assert out.loc[out["has_overlap"], "annot_start"].tolist() == [90]
 
 
 if __name__ == "__main__":

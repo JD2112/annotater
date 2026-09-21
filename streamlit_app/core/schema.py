@@ -31,6 +31,9 @@ Canonical annotation result (the public output contract)
 - missing values are dataframe-native missing (``pd.NA``); backend
   sentinels such as ``"."`` or ``"-1"`` are normalized away on unmatched
   rows and must never appear in public output
+- matched rows (``has_overlap=True``) must carry a valid canonical
+  annotation interval; malformed matched coordinates are rejected rather
+  than coerced to missing
 - ``has_overlap`` is boolean
 - duplicated input rows are preserved, never collapsed
 
@@ -207,11 +210,19 @@ def canonicalize_annotation_result(
       (including backend-suffixed columns such as ``_1``/``_2``/
       ``_right``);
     - requires ``has_overlap`` and normalizes it to boolean;
+    - requires query coordinates to be valid canonical intervals on
+      every row (``coord_chr`` present, integer ``coord_start >= 0``,
+      integer ``coord_end > coord_start``);
+    - requires matched rows (``has_overlap=True``) to carry a valid
+      canonical annotation interval (``annot_chr`` present, integer
+      ``annot_start >= 0``, integer ``annot_end > annot_start``);
+      malformed matched annotation coordinates are rejected with
+      ``CanonicalSchemaError`` rather than coerced to missing;
     - converts coordinate fields to integer dtypes;
     - replaces all ``annot_*`` values on unmatched rows with canonical
       missing (``pd.NA``), so sentinels like ``"."``/``"-1"`` never leak;
     - reorders columns to the deterministic canonical order.
-
+    
     Row order is preserved exactly as the engine emitted it; duplicated
     rows are never collapsed. An empty result yields an empty frame with
     the full canonical schema.
@@ -247,14 +258,88 @@ def canonicalize_annotation_result(
         )
     out[HAS_OVERLAP_COLUMN] = has_overlap.astype(bool)
     matched = out[HAS_OVERLAP_COLUMN]
-
+    
+    # Query coordinates: valid canonical intervals on every row.
+    # The string sentinel "." (a documented backend missing value)
+    # counts as missing here.
     out["coord_chr"] = out["coord_chr"].astype(object)
+    coord_chr_missing = out["coord_chr"].isna() | out["coord_chr"].astype(
+        str
+    ).str.strip().eq(".")
+    if coord_chr_missing.any():
+        rows = out.index[coord_chr_missing].tolist()
+        raise CanonicalSchemaError(
+            f"coord_chr must be present on every row; missing at row(s) {rows[:5]}"
+        )
     for column in ("coord_start", "coord_end"):
         numeric = pd.to_numeric(out[column], errors="coerce")
         if numeric.isna().any():
-            raise CanonicalSchemaError(f"{column} must be present on every row")
+            rows = out.index[numeric.isna()].tolist()
+            raise CanonicalSchemaError(
+                f"{column} must be a valid integer on every row; invalid at row(s) {rows[:5]}"
+            )
+        if not (numeric == numeric.round()).all():
+            rows = out.index[numeric != numeric.round()].tolist()
+            raise CanonicalSchemaError(
+                f"{column} must be integer-valued on every row; non-integer at row(s) {rows[:5]}"
+            )
         out[column] = numeric.astype("int64")
-
+    if (out["coord_start"] < 0).any():
+        rows = out.index[out["coord_start"] < 0].tolist()
+        raise CanonicalSchemaError(
+            f"coord_start must be >= 0; violated at row(s) {rows[:5]}"
+        )
+    if not (out["coord_end"] > out["coord_start"]).all():
+        rows = out.index[out["coord_end"] <= out["coord_start"]].tolist()
+        raise CanonicalSchemaError(
+            f"coord_end must be > coord_start; violated at row(s) {rows[:5]}"
+        )
+    
+    # Matched rows must already carry a valid canonical annotation
+    # interval: malformed matched values are rejected, never coerced to
+    # missing (that would fabricate a valid-looking canonical row).
+    if matched.any():
+        annot_numeric = {}
+        for column in ("annot_start", "annot_end"):
+            numeric = pd.to_numeric(out[column], errors="coerce")
+            bad = matched & numeric.isna()
+            if bad.any():
+                rows = out.index[bad].tolist()
+                raise CanonicalSchemaError(
+                    f"{column} must be a valid integer on matched rows; invalid at row(s) {rows[:5]}"
+                )
+            non_int = matched & (numeric != numeric.round())
+            if non_int.any():
+                rows = out.index[non_int].tolist()
+                raise CanonicalSchemaError(
+                    f"{column} must be integer-valued on matched rows; non-integer at row(s) {rows[:5]}"
+                )
+            annot_numeric[column] = numeric
+        m = out.index[matched]
+        if annot_numeric["annot_start"].loc[m].lt(0).any():
+            rows = m[annot_numeric["annot_start"].loc[m].lt(0)].tolist()
+            raise CanonicalSchemaError(
+                f"annot_start must be >= 0 on matched rows; violated at row(s) {rows[:5]}"
+            )
+        if not (annot_numeric["annot_end"].loc[m] > annot_numeric["annot_start"].loc[m]).all():
+            rows = m[
+                annot_numeric["annot_end"].loc[m] <= annot_numeric["annot_start"].loc[m]
+            ].tolist()
+            raise CanonicalSchemaError(
+                f"annot_end must be > annot_start on matched rows; violated at row(s) {rows[:5]}"
+            )
+        if (
+            out["annot_chr"].loc[m].isna()
+            | out["annot_chr"].loc[m].astype(str).str.strip().eq(".")
+        ).any():
+            rows = m[
+                out["annot_chr"].loc[m].isna()
+                | out["annot_chr"].loc[m].astype(str).str.strip().eq(".")
+            ].tolist()
+            raise CanonicalSchemaError(
+                f"annot_chr must be present on matched rows; missing at row(s) {rows[:5]}"
+            )
+    
     out["annot_chr"] = out["annot_chr"].astype(object)
     for column in ("annot_start", "annot_end"):
         out[column] = pd.to_numeric(out[column], errors="coerce").astype("Int64")

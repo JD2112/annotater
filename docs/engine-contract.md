@@ -128,7 +128,7 @@ Sorting by chromosome text alone is insufficient because lexical chromosome orde
 
 Canonical output SHOULD use dataframe-native missing values (`pd.NA`/nullable representation where practical) rather than bedtools sentinel strings/numbers.
 
-Input-side VCF `.` values (FILTER = filters not applied, QUAL, ID, INFO, FORMAT/sample fields) are normalized to canonical missing at parse time; in particular FILTER `.` MUST NOT be rendered as `PASS` (see the VCF section of `docs/architecture.md`).
+Input-side VCF `.` values (FILTER = filters not applied, QUAL, ID, INFO, FORMAT/sample fields) are normalized to canonical missing at parse time; in particular FILTER `.` MUST NOT be rendered as `PASS` (see the VCF section of `docs/architecture.md`). In results, unmatched rows receive canonical missing in every `annot_*` field, while matched rows must carry a valid canonical annotation interval — malformed matched coordinates are rejected, never coerced to missing (which would fabricate a valid-looking row).
 
 Conversion to textual sentinels belongs only in an export format that requires them.
 

@@ -152,7 +152,11 @@ The contract machinery lives in `streamlit_app/core/schema.py`.
 `canonicalize_annotation_result` enforces the exact canonical column
 set, boolean `has_overlap`, integer coordinate dtypes, canonical
 missing (`pd.NA`) in every `annot_*` field of unmatched rows, and the
-deterministic column order. The
+deterministic column order. Malformed query intervals (any row) and
+malformed matched annotation coordinates — non-numeric or non-integer
+coordinates, missing annotation chromosome, zero-width or reversed
+intervals — are rejected with `CanonicalSchemaError` rather than coerced
+to missing, which would fabricate a valid-looking row. The
 `coord_`/`annot_` prefixes are
 reserved — source metadata may not use them — and any backend-suffixed
 leakage (`_1`, `_2`, `_right`) is rejected because the expected column
