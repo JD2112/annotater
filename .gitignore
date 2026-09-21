@@ -38,7 +38,6 @@ htmlcov/
 *.swp
 *.swo
 *~
-.DS_Store
 
 # Logs
 *.log
@@ -51,10 +50,12 @@ htmlcov/
 # Data (keep examples)
 /data/*
 !/data/examples/
+.DS_Store
 
 # Environment
 .env
 .env.local
+.pi
 
 # Docker
 .dockerignore
