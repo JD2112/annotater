@@ -83,7 +83,7 @@ class BEDParser:
     """Parser for BED format files"""
     
     @staticmethod
-    def parse(filepath: str, **kwargs) -> pd.DataFrame:
+    def parse(filepath: str, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
         """
         Parse BED file (BED3, BED6, or BED12)
         
@@ -93,29 +93,54 @@ class BEDParser:
         Returns:
             DataFrame with columns: chr, start, end, [name, score, strand, ...]
         """
-        # BED files have no header
-        df = pd.read_csv(
-            filepath,
-            sep='\t',
-            header=None,
-            comment='#',
-            **kwargs
-        )
-        
-        # Assign column names based on number of columns
-        ncols = len(df.columns)
-        
-        if ncols >= 3:
-            df.columns = ['chr', 'start', 'end'] + [f'col{i}' for i in range(4, ncols + 1)]
-        
-        if ncols >= 4:
-            df.rename(columns={'col4': 'name'}, inplace=True)
-        if ncols >= 5:
-            df.rename(columns={'col5': 'score'}, inplace=True)
-        if ncols >= 6:
-            df.rename(columns={'col6': 'strand'}, inplace=True)
-        
-        return df
+        if use_polars_bio:
+            try:
+                import polars_bio as pb
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Polars-bio parsing timed out")
+                
+                # Set 5 second timeout
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(5)
+                
+                try:
+                    lf = pb.scan_bed(filepath)
+                    df = lf.collect().to_pandas()
+                    signal.alarm(0)  # Cancel alarm
+                    # Schema guard: the app expects raw 0-based chr/start/end
+                    # columns; fall back to the standard parser on mismatch.
+                    if not {'chr', 'start', 'end'}.issubset(df.columns):
+                        raise ValueError(f"unexpected polars-bio BED schema: {list(df.columns)}")
+                    return df
+                except Exception:
+                    signal.alarm(0)  # Cancel alarm
+                    # Fallback to pandas parser
+                    pass
+            except Exception:
+                pass
+        # Fallback to standard parser
+        if True:
+            # BED files have no header
+            df = pd.read_csv(
+                filepath,
+                sep='\t',
+                header=None,
+                comment='#',
+                **kwargs
+            )
+            # Assign column names based on number of columns
+            ncols = len(df.columns)
+            if ncols >= 3:
+                df.columns = ['chr', 'start', 'end'] + [f'col{i}' for i in range(4, ncols + 1)]
+            if ncols >= 4:
+                df.rename(columns={'col4': 'name'}, inplace=True)
+            if ncols >= 5:
+                df.rename(columns={'col5': 'score'}, inplace=True)
+            if ncols >= 6:
+                df.rename(columns={'col6': 'strand'}, inplace=True)
+            return df
     
     @staticmethod
     def validate(df: pd.DataFrame) -> Tuple[bool, Optional[str]]:
@@ -149,7 +174,7 @@ class GFFParser:
     """Parser for GFF/GTF format files"""
     
     @staticmethod
-    def parse(filepath: str, feature_types: Optional[List[str]] = None, **kwargs) -> pd.DataFrame:
+    def parse(filepath: str, feature_types: Optional[List[str]] = None, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
         """
         Parse GFF/GTF file
         
@@ -161,24 +186,48 @@ class GFFParser:
         Returns:
             DataFrame with genomic features
         """
-        # Read GFF/GTF (9 standard columns)
-        df = pd.read_csv(
-            filepath,
-            sep='\t',
-            header=None,
-            comment='#',
-            names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
-            **kwargs
-        )
-        
-        # Filter by feature type if specified
-        if feature_types:
-            df = df[df['feature'].isin(feature_types)]
-        
-        # Parse attributes column
-        df = GFFParser._parse_attributes(df)
-        
-        return df
+        if use_polars_bio:
+            try:
+                import polars_bio as pb
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Polars-bio parsing timed out")
+                
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(5)
+                
+                try:
+                    lf = pb.scan_gff(filepath)
+                    df = lf.collect().to_pandas()
+                    signal.alarm(0)
+                    # Schema guard: the app expects chr/start/end/feature
+                    # columns; fall back to the standard parser on mismatch.
+                    if not {'chr', 'start', 'end', 'feature'}.issubset(df.columns):
+                        raise ValueError(f"unexpected polars-bio GFF schema: {list(df.columns)}")
+                    if feature_types:
+                        df = df[df['feature'].isin(feature_types)]
+                    return df
+                except Exception:
+                    signal.alarm(0)
+                    pass
+            except Exception:
+                pass
+        # Fallback to standard parser
+        if True:
+            # Read GFF/GTF (9 standard columns)
+            df = pd.read_csv(
+                filepath,
+                sep='\t',
+                header=None,
+                comment='#',
+                names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
+                **kwargs
+            )
+            if feature_types:
+                df = df[df['feature'].isin(feature_types)]
+            df = GFFParser._parse_attributes(df)
+            return df
     
     @staticmethod
     def _parse_attributes(df: pd.DataFrame) -> pd.DataFrame:
@@ -220,7 +269,7 @@ class VCFParser:
     """Parser for VCF format files"""
     
     @staticmethod
-    def parse(filepath: str, **kwargs) -> pd.DataFrame:
+    def parse(filepath: str, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
         """
         Parse VCF file using pysam
         
@@ -230,29 +279,52 @@ class VCFParser:
         Returns:
             DataFrame with variant information
         """
-        variants = []
-        
-        try:
-            vcf = pysam.VariantFile(filepath)
-            
-            for record in vcf:
-                variants.append({
-                    'chr': record.chrom,
-                    'start': record.pos - 1,  # Convert to 0-based
-                    'end': record.pos,        # End is exclusive in BED
-                    'id': record.id,
-                    'ref': record.ref,
-                    'alt': ','.join([str(a) for a in record.alts]) if record.alts else '',
-                    'qual': record.qual,
-                    'filter': ','.join(record.filter.keys()) if record.filter else 'PASS'
-                })
-            
-            vcf.close()
-        except Exception as e:
-            # Fallback to simple parsing if pysam fails
-            return VCFParser._simple_parse(filepath)
-        
-        return pd.DataFrame(variants)
+        if use_polars_bio:
+            try:
+                import polars_bio as pb
+                import signal
+                
+                def timeout_handler(signum, frame):
+                    raise TimeoutError("Polars-bio parsing timed out")
+                
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(5)
+                
+                try:
+                    lf = pb.scan_vcf(filepath)
+                    df = lf.collect().to_pandas()
+                    signal.alarm(0)
+                    # Schema/data guard: VCF directive lines (>>fileFormat, etc.)
+                    # can surface as rows with missing positions; fall back to pysam.
+                    if not {'chr', 'start', 'end'}.issubset(df.columns) or df['start'].isna().any():
+                        raise ValueError("unexpected polars-bio VCF output")
+                    return df
+                except Exception:
+                    signal.alarm(0)
+                    pass
+            except Exception:
+                pass
+        # Fallback to standard parser
+        if True:
+            variants = []
+            try:
+                vcf = pysam.VariantFile(filepath)
+                for record in vcf:
+                    variants.append({
+                        'chr': record.chrom,
+                        'start': record.pos - 1,  # Convert to 0-based
+                        'end': record.pos,        # End is exclusive in BED
+                        'id': record.id,
+                        'ref': record.ref,
+                        'alt': ','.join([str(a) for a in record.alts]) if record.alts else '',
+                        'qual': record.qual,
+                        'filter': ','.join(record.filter.keys()) if record.filter else 'PASS'
+                    })
+                vcf.close()
+            except Exception as e:
+                # Fallback to simple parsing if pysam fails
+                return VCFParser._simple_parse(filepath)
+            return pd.DataFrame(variants)
     
     @staticmethod
     def _simple_parse(filepath: str) -> pd.DataFrame:

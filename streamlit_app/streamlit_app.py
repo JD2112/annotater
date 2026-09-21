@@ -24,7 +24,10 @@ from core import (
     GFFParser,
     VCFParser,
     CustomParser,
-    AnnotationEngine
+    AnnotationEngine,
+    BedtoolsEngine,
+    PolarsBioEngine,
+    get_summary_stats
 )
 from utils import FileValidator, DataValidator, format_file_size, save_uploaded_file
 from config import Settings
@@ -95,6 +98,15 @@ def main():
     with st.sidebar:
         st.header("⚙️ Configuration")
         
+        # Engine Selection (New!)
+        st.subheader("🚀 Processing Engine")
+        engine_choice = st.selectbox(
+            "Annotation Engine",
+            options=["Bedtools (Standard)", "Polars-Bio (Fast, Experimental)"],
+            index=0,
+            help="Bedtools uses pybedtools. Polars-Bio uses a high-performance Rust backend."
+        )
+        
         # Coordinate system settings
         st.subheader("📐 Coordinate System")
         
@@ -148,7 +160,7 @@ def main():
         
         if not feature_types:
             st.warning("⚠️ No features selected - all features will be included")
-        
+            
         # Advanced options
         with st.expander("🔧 Advanced Options"):
             use_strand = st.checkbox(
@@ -166,161 +178,98 @@ def main():
                 "Show summary statistics",
                 value=True
             )
-    
+            
+        settings = {
+            "coord_system": coord_system_option,
+            "annot_system": annot_system_option,
+            "chr_handling": chr_handling,
+            "target_chr_style": target_chr_style,
+            "mode": mode,
+            "feature_types": feature_types,
+            "engine": engine_choice
+        }
+        
     # Main content area
+    tab1, tab2, tab3 = st.tabs(["📤 Upload & Annotate", "📊 Results", "ℹ️ Help"])
     
-    # Introduction
-    with st.expander("📖 How to Use", expanded=False):
-        st.markdown("""
-        ### Quick Start
+    with tab1:
+        st.markdown("### 1. Upload Files")
         
-        1. **Upload your coordinate file** (BED, VCF, or custom format)
-        2. **Upload your annotation file** (GFF, GTF, or custom format)
-        3. **Configure settings** (optional - auto-detection works for most cases)
-        4. **Click "Run Annotation"**
-        5. **Explore results and download**
+        col1, col2 = st.columns(2)
         
-        ### Supported Formats
+        with col1:
+            st.info("Input Coordinates (BED, VCF, etc.)")
+            coord_file = st.file_uploader("Choose coordinate file", type=["bed", "txt", "tsv", "csv", "vcf"])
+            
+            # Show file info if uploaded
+            if coord_file:
+                st.caption(f"Size: {format_file_size(coord_file.size)}")
         
-        **Input Coordinates:**
-        - BED (BED3, BED6, BED12)
-        - VCF (variant positions)
-        - Custom TSV/CSV with chr, start, end columns
-        
-        **Annotations:**
-        - GFF3, GTF, GFF2
-        - BED (as annotation source)
-        - Custom formats (BioMart, UCSC Table Browser)
-        
-        ### Key Features
-        
-        - ✅ Automatic chromosome ID standardization
-        - ✅ Coordinate system conversion (0-based ↔ 1-based)
-        - ✅ Support for SNPs (single positions)
-        - ✅ Fast processing using bedtools
-        - ✅ Multiple annotation modes
-        
-        ### 🔬 Feature Type Filter
-        
-        Filter annotations by type before processing:
-        - Select **gene**, **exon**, **CDS**, **UTR**, etc.
-        - Reduces noise by focusing on relevant features
-        - Found in the sidebar under "Feature Filter"
-        
-        ### 📊 Summary Charts
-        
-        After annotation, view interactive visualizations:
-        - **Pie chart**: Distribution of feature types
-        - **Bar chart**: Annotations per chromosome
-        - **Top 10 genes**: Most frequently annotated genes
-        
-        ### 🧬 Gene List Export
-        
-        Export gene names for downstream analysis:
-        - Download as **.txt** (one gene per line)
-        - Download as **.csv** (comma-separated)
-        - Ready to paste into **g:Profiler**, **Enrichr**, **DAVID**, or **STRING**
-        """)
+        with col2:
+            st.info("Annotation File (GTF, GFF, BED)")
+            annot_file = st.file_uploader("Choose annotation file", type=["gtf", "gff", "gff3", "bed"])
+            
+            if annot_file:
+                st.caption(f"Size: {format_file_size(annot_file.size)}")
+                
+        # Run annotation button (placeholder for logic below)
     
-    # File uploads
-    st.markdown("---")
-    st.subheader("📁 Upload Files")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("#### Coordinate File")
-        coord_file = st.file_uploader(
-            "Upload coordinate file",
-            type=['bed', 'vcf', 'txt', 'csv', 'tsv'],
-            help="File with genomic coordinates to annotate",
-            key="coord_upload"
-        )
-        
-        if coord_file:
-            # Validate file
-            is_valid, error_msg = FileValidator.validate_file_size(coord_file)
-            if not is_valid:
-                st.error(f"❌ {error_msg}")
-                coord_file = None
-            else:
-                file_size = format_file_size(coord_file.size)
-                st.success(f"✅ Loaded: {coord_file.name} ({file_size})")
-    
-    with col2:
-        st.markdown("#### Annotation File")
-        annot_file = st.file_uploader(
-            "Upload annotation file",
-            type=['gff', 'gtf', 'gff3', 'bed', 'txt', 'csv', 'tsv'],
-            help="File with genomic annotations",
-            key="annot_upload"
-        )
-        
-        if annot_file:
-            # Validate file
-            is_valid, error_msg = FileValidator.validate_file_size(annot_file)
-            if not is_valid:
-                st.error(f"❌ {error_msg}")
-                annot_file = None
-            else:
-                file_size = format_file_size(annot_file.size)
-                st.success(f"✅ Loaded: {annot_file.name} ({file_size})")
-    
-    # Process files if both are uploaded
-    if coord_file and annot_file:
-        st.markdown("---")
-        
         # Preview files
-        with st.expander("👀 Preview Files", expanded=True):
-            preview_col1, preview_col2 = st.columns(2)
-            
-            with preview_col1:
-                st.markdown("**Coordinate File Preview**")
-                try:
-                    # Save and parse coordinate file
-                    coord_path = save_uploaded_file(coord_file)
-                    coord_format = FormatDetector.detect(str(coord_path))
-                    
-                    if coord_format == "bed":
-                        coord_df = BEDParser.parse(str(coord_path))
-                    elif coord_format == "vcf":
-                        coord_df = VCFParser.parse(str(coord_path))
+        if coord_file or annot_file:
+            with st.expander("👀 Preview Files", expanded=True):
+                preview_col1, preview_col2 = st.columns(2)
+                
+                with preview_col1:
+                    st.markdown("**Coordinate File Preview**")
+                    if coord_file:
+                        try:
+                            # Save and parse coordinate file
+                            coord_path = save_uploaded_file(coord_file)
+                            coord_format = FormatDetector.detect(str(coord_path))
+                            use_polars_bio = engine_choice.startswith("Polars-Bio")
+                            if coord_format == "bed":
+                                coord_df = BEDParser.parse(str(coord_path), use_polars_bio=use_polars_bio)
+                            elif coord_format == "vcf":
+                                coord_df = VCFParser.parse(str(coord_path), use_polars_bio=use_polars_bio)
+                            else:
+                                coord_df = CustomParser.parse(str(coord_path))
+                            st.dataframe(coord_df.head(10), use_container_width=True)
+                            st.caption(f"Format: {coord_format.upper()} | Rows: {len(coord_df):,}")
+                            # Store in session state
+                            st.session_state.coord_df = coord_df
+                            st.session_state.coord_format = coord_format
+                        except Exception as e:
+                            st.error(f"Error parsing file: {str(e)}")
                     else:
-                        coord_df = CustomParser.parse(str(coord_path))
-                    
-                    st.dataframe(coord_df.head(10), use_container_width=True)
-                    st.caption(f"Format: {coord_format.upper()} | Rows: {len(coord_df):,}")
-                    
-                    # Store in session state
-                    st.session_state.coord_df = coord_df
-                    st.session_state.coord_format = coord_format
-                    
-                except Exception as e:
-                    st.error(f"Error parsing file: {str(e)}")
-            
-            with preview_col2:
-                st.markdown("**Annotation File Preview**")
-                try:
-                    # Save and parse annotation file
-                    annot_path = save_uploaded_file(annot_file)
-                    annot_format = FormatDetector.detect(str(annot_path))
-                    
-                    if annot_format in ["gff", "gtf"]:
-                        annot_df = GFFParser.parse(str(annot_path))
-                    elif annot_format == "bed":
-                        annot_df = BEDParser.parse(str(annot_path))
+                        st.info("Waiting for upload...")
+                
+                with preview_col2:
+                    st.markdown("**Annotation File Preview**")
+                    if annot_file:
+                        try:
+                            # Save and parse annotation file
+                            annot_path = save_uploaded_file(annot_file)
+                            annot_format = FormatDetector.detect(str(annot_path))
+                            use_polars_bio = engine_choice.startswith("Polars-Bio")
+                            
+                            if annot_format in ["gff", "gtf"]:
+                                annot_df = GFFParser.parse(str(annot_path), feature_types=feature_types, use_polars_bio=use_polars_bio)
+                            elif annot_format == "bed":
+                                annot_df = BEDParser.parse(str(annot_path), use_polars_bio=use_polars_bio)
+                            else:
+                                annot_df = CustomParser.parse(str(annot_path))
+                            
+                            st.dataframe(annot_df.head(10), use_container_width=True)
+                            st.caption(f"Format: {annot_format.upper()} | Rows: {len(annot_df):,}")
+                            
+                            # Store in session state
+                            st.session_state.annot_df = annot_df
+                            st.session_state.annot_format = annot_format
+                            
+                        except Exception as e:
+                            st.error(f"Error parsing file: {str(e)}")
                     else:
-                        annot_df = CustomParser.parse(str(annot_path))
-                    
-                    st.dataframe(annot_df.head(10), use_container_width=True)
-                    st.caption(f"Format: {annot_format.upper()} | Rows: {len(annot_df):,}")
-                    
-                    # Store in session state
-                    st.session_state.annot_df = annot_df
-                    st.session_state.annot_format = annot_format
-                    
-                except Exception as e:
-                    st.error(f"Error parsing file: {str(e)}")
+                        st.info("Waiting for upload...")
         
         # Column mapping for custom files
         if 'coord_df' in st.session_state and st.session_state.coord_format == "custom":
@@ -380,7 +329,8 @@ def main():
                     show_stats,
                     chr_handling == "Auto-convert if needed",
                     target_chr_style,
-                    feature_types
+                    feature_types,
+                    engine_choice
                 )
         
         # Display results from session state if available (for filter persistence)
@@ -413,7 +363,8 @@ def run_annotation(
     show_stats: bool,
     auto_convert_chr: bool,
     target_chr_style: str = None,
-    feature_types: list = None
+    feature_types: list = None,
+    engine_type: str = None
 ):
     """Execute annotation workflow"""
     
@@ -469,11 +420,21 @@ def run_annotation(
             # Step 3: Annotate
             st.info(f"🎯 Running {mode} annotation...")
             
-            engine = AnnotationEngine(
-                use_strand=use_strand,
-                min_overlap=min_overlap if min_overlap > 0 else None,
-                mode=mode
-            )
+            # Select engine based on setting (passed as argument or check session/global?)
+            # Ideally pass engine_type to this function
+            
+            if "Polars-Bio" in engine_type:
+                engine = PolarsBioEngine(
+                    use_strand=use_strand,
+                    min_overlap=min_overlap if min_overlap > 0 else None,
+                    mode=mode
+                )
+            else:
+                engine = BedtoolsEngine(
+                    use_strand=use_strand,
+                    min_overlap=min_overlap if min_overlap > 0 else None,
+                    mode=mode
+                )
             
             result_df = engine.intersect(coord_df, annot_df, how="left")
             
@@ -537,45 +498,37 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
     
     with chart_col1:
         # Feature type distribution pie chart
-        if 'annot_feature' in result_df.columns:
-            feature_col = 'annot_feature'
-        elif 'feature' in result_df.columns:
-            feature_col = 'feature'
-        else:
-            feature_col = None
-        
-        if feature_col:
-            # Exclude -1 and . from pie chart
-            valid_features = result_df[result_df[feature_col].astype(str).isin(['-1', '.', 'nan']) == False]
-            if len(valid_features) > 0:
-                feature_counts = valid_features[feature_col].value_counts()
-                
-                fig_pie = px.pie(
-                    values=feature_counts.values,
-                    names=feature_counts.index,
-                    title="Feature Type Distribution",
-                    color_discrete_sequence=px.colors.qualitative.Set2
-                )
-                fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                fig_pie.update_layout(showlegend=True, height=350)
-                st.plotly_chart(fig_pie, use_container_width=True)
+            # Harmonize feature column detection for both engines
+            feature_col_candidates = [
+                'annot_feature', 'feature', 'coord_feature_2', 'coord_feature', 'feature_2'
+            ]
+            feature_col = next((col for col in feature_col_candidates if col in result_df.columns), None)
+            if feature_col:
+                valid_features = result_df[result_df[feature_col].astype(str).isin(['-1', '.', 'nan']) == False]
+                if len(valid_features) > 0:
+                    feature_counts = valid_features[feature_col].value_counts()
+                    fig_pie = px.pie(
+                        values=feature_counts.values,
+                        names=feature_counts.index,
+                        title="Feature Type Distribution",
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+                    fig_pie.update_layout(showlegend=True, height=350)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.info("ℹ️ No feature type data available for chart")
             else:
                 st.info("ℹ️ No feature type data available for chart")
-        else:
-            st.info("ℹ️ No feature type data available for chart")
     
     with chart_col2:
         # Chromosome distribution bar chart
-        if 'coord_chr' in result_df.columns:
-            chr_col = 'coord_chr'
-        elif 'chr' in result_df.columns:
-            chr_col = 'chr'
-        else:
-            chr_col = None
-        
+        chr_col_candidates = [
+            'coord_chr', 'chr', 'coord_chrom_1', 'coord_chrom_2', 'chrom', 'chrom_1', 'chrom_2'
+        ]
+        chr_col = next((col for col in chr_col_candidates if col in result_df.columns), None)
         if chr_col:
-            chr_counts = result_df[chr_col].value_counts().head(15)  # Top 15 chromosomes
-            
+            chr_counts = result_df[chr_col].value_counts().head(15)
             fig_bar = px.bar(
                 x=chr_counts.index,
                 y=chr_counts.values,
@@ -619,46 +572,35 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
             else:
                 gene_col = col
                 break
-    
-    if gene_col:
-        # Extract unique gene names, filtering out invalid values
-        gene_list = result_df[gene_col].dropna().unique()
-        gene_list = [str(g) for g in gene_list 
-                     if str(g).strip() 
-                     and str(g) != 'nan' 
-                     and str(g) != '.' 
-                     and str(g) != '-1'
-                     and not str(g).startswith('-')]
+
+    if gene_col and len(result_df) > 0:
+        # Extract unique gene names
+        gene_list = result_df[gene_col].dropna().unique().tolist()
+        # Filter out placeholder values
+        gene_list = [g for g in gene_list if str(g) not in ['-1', '.', 'nan', '']]
         
-        if len(gene_list) > 0:
-            gene_col1, gene_col2 = st.columns([2, 1])
-            
+        if gene_list:
+            gene_col1, gene_col2 = st.columns([1, 1])
             with gene_col1:
-                st.info(f"📋 Found **{len(gene_list):,}** unique genes/features from column `{gene_col}`")
+                # Count genes
+                top_genes = result_df[gene_col].value_counts().head(10)
                 
-                # Show top genes
-                valid_gene_data = result_df[~result_df[gene_col].astype(str).isin(['-1', '.', 'nan', ''])]
-                if len(valid_gene_data) > 0:
-                    top_genes = valid_gene_data[gene_col].value_counts().head(10)
-                    
-                    fig_top = px.bar(
-                        x=top_genes.values,
-                        y=top_genes.index,
-                        orientation='h',
-                        title="Top 10 (by annotation count)",
-                        labels={'x': 'Count', 'y': 'Gene/Feature'},
-                        color=top_genes.values,
-                        color_continuous_scale='Viridis'
-                    )
-                    fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
-                    st.plotly_chart(fig_top, use_container_width=True)
-            
+                fig_top = px.bar(
+                    x=top_genes.values,
+                    y=top_genes.index,
+                    orientation='h',
+                    title="Top 10 (by annotation count)",
+                    labels={'x': 'Count', 'y': 'Gene/Feature'},
+                    color=top_genes.values,
+                    color_continuous_scale='Viridis'
+                )
+                fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
+                st.plotly_chart(fig_top, use_container_width=True)
+
             with gene_col2:
                 st.markdown("**Quick Actions:**")
-                
                 # Gene list as text for copying
                 gene_text = "\n".join(sorted(gene_list))
-                
                 st.download_button(
                     label="📥 Download Gene List (.txt)",
                     data=gene_text,
@@ -666,7 +608,6 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
                     mime="text/plain",
                     use_container_width=True
                 )
-                
                 # Comma-separated for pasting
                 gene_csv = ", ".join(sorted(gene_list))
                 st.download_button(
@@ -677,23 +618,20 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
                     use_container_width=True,
                     key="gene_csv"
                 )
-                
                 # Copy to clipboard blocks
                 with st.expander("📋 Copy to clipboard"):
                     st.caption("One gene per line:")
                     st.code(gene_text, language="text")
                     st.caption("Comma-separated:")
                     st.code(gene_csv, language="text")
-                
-                st.markdown("---")
-                st.markdown("**📌 Paste into:**")
-                st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
-                st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
-                st.markdown("• [DAVID](https://davidbioinformatics.nih.gov/tools.jsp)")
-                st.markdown("• [STRING](https://string-db.org)")
+                    st.markdown("---")
+                    st.markdown("**📌 Paste into:**")
+                    st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
+                    st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
+                    st.markdown("• [DAVID](https://davidbioinformatics.nih.gov/tools.jsp)")
+                    st.markdown("• [STRING](https://string-db.org)")
         else:
             st.info("ℹ️ No valid gene names found in results")
-    else:
         st.info("ℹ️ No gene name column found in results. Columns available: " + ", ".join(result_df.columns.tolist()[:10]))
     
     # Results table with filter

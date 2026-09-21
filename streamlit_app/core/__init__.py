@@ -9,7 +9,12 @@ from core.parsers import (
     VCFParser,
     CustomParser
 )
-from core.annotator import AnnotationEngine
+from core.annotator import (
+    AnnotationEngine,
+    BedtoolsEngine,
+    PolarsBioEngine,
+    get_summary_stats
+)
 
 __all__ = [
     "ChromosomeMapper",
@@ -21,4 +26,7 @@ __all__ = [
     "VCFParser",
     "CustomParser",
     "AnnotationEngine",
+    "BedtoolsEngine",
+    "PolarsBioEngine",
+    "get_summary_stats",
 ]

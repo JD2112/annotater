@@ -1,0 +1,4 @@
+coord_chrom_1,coord_start_1,coord_end_1,coord_chrom_2,coord_start_2,coord_end_2,coord_source_2,coord_feature_2,coord_score_2,coord_strand_2,coord_frame_2,coord_attributes_2,coord_ID_2,coord_Name_2,coord_gene_id_2,coord_gene_name_2,coord_transcript_id_2,coord_gene_type_2,coord_gene_biotype_2,coord_Parent_2,coord_name_1,coord_score_1,coord_strand_1,has_overlap
+chr1,100000,100500,chr1,50000,150000,RefSeq,gene,.,+,.,ID=gene:ENSG001;Name=GENE1;biotype=protein_coding,gene:ENSG001,GENE1,,,,,,,region1,100,+,True
+chr2,150000,151000,chr2,100000,200000,RefSeq,gene,.,-,.,ID=gene:ENSG002;Name=GENE2;biotype=protein_coding,gene:ENSG002,GENE2,,,,,,,region3,150,-,True
+chrX,50000,52000,chrX,40000,60000,RefSeq,gene,.,+,.,ID=gene:ENSG003;Name=GENEX;biotype=protein_coding,gene:ENSG003,GENEX,,,,,,,regionX,250,+,True
