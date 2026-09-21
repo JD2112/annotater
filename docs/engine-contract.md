@@ -25,6 +25,17 @@ end    integer
 
 Optional fields include strand and arbitrary metadata. Engines MUST preserve enough field provenance to distinguish query metadata from annotation metadata after operations.
 
+The canonical interval table contract (invariants, dtypes, reserved
+names) is defined and validated in `streamlit_app/core/schema.py`
+(`validate_canonical_interval_table`): 0-based half-open
+`[start, end)`, `start >= 0`, `end > start`, `chr` present on every
+row, strand restricted to `+`/`-` or missing, metadata columns
+preserved in source order, and source columns using the reserved
+`coord_`/`annot_` result prefixes rejected. The shared entry point
+that produces such tables is
+`streamlit_app/core/normalization.py::parse_and_normalize`, which takes
+no backend/engine argument.
+
 ## 3. Canonical provenance
 
 Given query columns:
@@ -55,6 +66,14 @@ has_overlap
 ```
 
 A backend-generated schema such as `chrom_1`, `chrom_2`, `start_right`, or bedtools positional fields is intermediate only.
+
+This contract is enforced in code by
+`streamlit_app/core/schema.py::canonicalize_annotation_result`: the
+expected column set is exact, so leaked backend-suffixed columns are
+rejected rather than renamed; `has_overlap` must be boolean; coordinate
+dtypes are normalized; operation-specific columns (e.g. `distance`)
+must be declared explicitly; and row order plus row multiplicity are
+preserved as emitted by the engine.
 
 ## 4. Ordinary overlap
 
@@ -110,6 +129,11 @@ Sorting by chromosome text alone is insufficient because lexical chromosome orde
 Canonical output SHOULD use dataframe-native missing values (`pd.NA`/nullable representation where practical) rather than bedtools sentinel strings/numbers.
 
 Conversion to textual sentinels belongs only in an export format that requires them.
+
+As of Task 2 this is implemented at the canonical layer: on unmatched
+rows every `annot_*` field (coordinates and metadata alike) is set to
+`pd.NA` by `canonicalize_annotation_result`, so backend sentinels
+(`.`, `-1`, ...) cannot reach public output.
 
 ## 9. Minimum-overlap options
 

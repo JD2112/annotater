@@ -70,6 +70,28 @@ Responsibilities:
 
 The parser layer MUST NOT decide which annotation backend will run.
 
+The implemented parsers (`streamlit_app/core/parsers.py`) are explicit
+and line-oriented, and emit **source-level** coordinates; conversion to
+the canonical model happens in the normalization layer:
+
+- **BED** — line-based, variable-width (3 to 12+ columns). Optional
+  fields (`name`, `score`, `strand`) are missing per row where absent.
+  Structurally invalid lines raise `MalformedFileError` with the
+  offending physical line number; records are never silently dropped.
+- **GFF/GTF** — fixed 9-column TSV layout; attributes parsed from the
+  attribute column.
+- **VCF** — the first eight tab-separated fields (CHROM POS ID REF ALT
+  QUAL FILTER INFO) are parsed as text, which is complete per the VCF
+  specification because tabs inside INFO values are escaped. Each
+  variant becomes the interval occupied by its reference sequence,
+  `[POS, POS + max(1, len(REF)) - 1]`, or `[POS, END]` (both 1-based
+  inclusive) when `INFO/END` is present.
+
+VCF parsing deliberately has no external VCF-library dependency: the
+pinned pysam build in this environment does not expose `INFO/END`
+through its record API, and an explicit parser keeps the coordinate
+conversion deterministic and version-independent.
+
 ### Normalization layer
 
 Responsibilities:
@@ -81,6 +103,17 @@ Responsibilities:
 - preserve row identity when needed for left joins and duplicate-safe operations.
 
 This is the semantic boundary shared by both engines.
+
+The implemented boundary is `streamlit_app/core/normalization.py`.
+`parse_and_normalize` is the single entry point through which every
+backend's source files enter canonical space, and it takes **no
+backend/engine argument by design**. Per-format coordinate systems are
+fixed by `FORMAT_COORDINATE_SYSTEMS` (BED: 0-based; GFF/GTF: 1-based;
+VCF: 1-based); a user-declared system applies only to custom tables
+after explicit column mapping (default 0-based, the historical
+effective behavior). `normalize_intervals` enforces the invariants in
+`core/schema.py` and returns deterministic column order:
+`chr, start, end, [strand], <metadata in source order>`.
 
 ### Engine layer
 
@@ -105,6 +138,19 @@ Responsibilities:
 
 Backend-specific suffix conventions belong here or inside the backend implementation, never in UI code.
 
+The contract machinery lives in `streamlit_app/core/schema.py`.
+`canonicalize_annotation_result` enforces the exact canonical column
+set, boolean `has_overlap`, integer coordinate dtypes, canonical
+missing (`pd.NA`) in every `annot_*` field of unmatched rows, and the
+deterministic column order. The `coord_`/`annot_` prefixes are
+reserved — source metadata may not use them — and any backend-suffixed
+leakage (`_1`, `_2`, `_right`) is rejected because the expected column
+set is exact. Operation-specific additions (e.g. `distance` for closest
+mode) must be explicitly declared; anything undeclared is rejected.
+Row order is preserved exactly as the engine emits it; duplicated rows
+are never collapsed. Task 4/5 implements the per-engine adapters that
+map backend output into this contract.
+
 ### UI/export layer
 
 Responsibilities:
@@ -121,6 +167,19 @@ The UI MUST NOT contain backend-specific scientific semantics.
 The target internal interval convention is 0-based, half-open `[start, end)`. Format-specific conversion belongs before backend execution. This model is compatible with BED/bedtools conventions and makes one-base boundary behavior explicit.
 
 Because Polars-Bio can carry coordinate-system metadata when using its own I/O, direct DataFrame paths MUST NOT assume that automatic detection will fix unnormalized application DataFrames. AnnotateR owns its canonical coordinate contract.
+
+Implemented per-format conversion (Task 2):
+
+| Source  | Source convention        | Canonical conversion |
+|---------|--------------------------|----------------------|
+| BED     | 0-based half-open        | unchanged            |
+| GFF/GTF | 1-based inclusive        | `start := start - 1`; `end` unchanged |
+| VCF     | `POS` 1-based            | span `[POS, POS + max(1, len(REF)) - 1]`, or `[POS, END]` when `INFO/END` is present (1-based inclusive), then `start := start - 1` |
+
+VCF span limitation (Task 2): the occupied interval is derived from REF
+length or `INFO/END` only. Broader structural-variant interpretation
+(e.g. ALT-only complex events) is intentionally not performed; variants
+are represented by the interval their reference sequence occupies.
 
 ## 5. Row identity
 
