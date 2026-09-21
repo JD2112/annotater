@@ -65,6 +65,11 @@ GFF3 coordinates are 1-based and inclusive. Conversion to AnnotateR's canonical 
 
 VCF POS is 1-based. Variant interval construction depends on REF/END semantics and must not be treated as a generic BED row without an explicit conversion rule.
 
+### GTF
+
+- GENCODE GTF format:
+  https://www.gencodegenes.org/pages/data_format.html
+
 ## Dataframe/runtime libraries
 
 ### Polars
@@ -97,28 +102,6 @@ Streamlit's native `AppTest` can execute an app headlessly, manipulate widgets, 
 - **Parametrization:** https://docs.pytest.org/en/stable/how-to/parametrize.html
 
 Shared engine-contract tests should prefer parametrization where the same semantic expectation applies to multiple backends.
-
-## Agent orchestration
-
-### Paseo
-
-- **Documentation:** https://paseo.sh/docs/
-- **Providers:** https://paseo.sh/docs/providers
-- **Supported providers:** https://paseo.sh/docs/supported-providers
-- **Git worktrees:** https://paseo.sh/docs/worktrees
-- **Configuration:** https://paseo.sh/docs/configuration
-- **Hub workflows:** https://paseo.sh/docs/hub/workflows
-
-Paseo launches/supervises external coding-agent CLIs rather than supplying its own coding model. Qwen Code is listed in the ACP provider catalog. Git worktrees provide isolated branches/directories for concurrent agent tasks.
-
-For this project, begin with simple one-task worktrees and explicit review. Introduce repository-local `.paseo/workflows/` automation only after the implementation/review loop is understood.
-
-### Qwen Code
-
-- **Project site/docs:** https://qwenlm.github.io/qwen-code-docs/
-- **GitHub:** https://github.com/QwenLM/qwen-code
-
-SciLifeLab-specific model endpoints or authentication are environment configuration and MUST NOT be committed to the repository if they contain credentials.
 
 ## Deployment
 
