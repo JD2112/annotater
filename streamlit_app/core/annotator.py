@@ -4,23 +4,19 @@ Annotation engine for coordinate intersection
 Uses pybedtools for fast, memory-efficient genomic coordinate operations
 """
 
-import pybedtools
-import pandas as pd
-from typing import Optional, Literal, Dict
+import logging
+from abc import ABC, abstractmethod
 from pathlib import Path
+from typing import Dict, List, Literal, Optional, Union
 import tempfile
 
-
-
-import pybedtools
+import numpy as np
 import pandas as pd
 import polars as pl
 import polars_bio as pb
-import numpy as np
-from typing import Optional, Literal, Dict, Union, List
-from pathlib import Path
-import tempfile
-from abc import ABC, abstractmethod
+import pybedtools
+
+logger = logging.getLogger(__name__)
 
 
 class AnnotationEngine(ABC):
@@ -223,18 +219,16 @@ class PolarsBioEngine(AnnotationEngine):
 
     def _join_overlap(self, coord: pl.DataFrame, annot: pl.DataFrame, how: str) -> pl.DataFrame:
         """Wrapper for polars-bio overlap"""
-        import streamlit as st
-        
         # polars-bio uses pb.overlap(df1, df2, output_type="polars.DataFrame")
         # It returns overlapping pairs with columns from both DataFrames
-        
+
+        # Row id lets us restore non-overlapping coordinates when how='left'
+        coord = coord.with_row_index("pb_row_id")
+
         try:
-            # st.info(f"[PolarsBio] Calling pb.overlap with coord shape {coord.shape}, annot shape {annot.shape}")
             # Convert polars DataFrames to pandas for pb.overlap
             coord_pd = coord.to_pandas()
             annot_pd = annot.to_pandas()
-            # st.write("[PolarsBio] coord_pd columns:", coord_pd.columns.tolist())
-            # st.write("[PolarsBio] annot_pd columns:", annot_pd.columns.tolist())
             # Rename 'chr' to 'chrom' for polars-bio compatibility
             if 'chr' in coord_pd.columns:
                 coord_pd = coord_pd.rename(columns={'chr': 'chrom'})
@@ -242,44 +236,35 @@ class PolarsBioEngine(AnnotationEngine):
                 annot_pd = annot_pd.rename(columns={'chr': 'chrom'})
             # Call pb.overlap with pandas DataFrames
             res_pd = pb.overlap(coord_pd, annot_pd, output_type="pandas.DataFrame")
-            # st.success(f"[PolarsBio] pb.overlap succeeded! Result shape: {res_pd.shape}")
-            # Rename back to 'chr' for consistency with our codebase
-            if 'chrom' in res_pd.columns:
-                res_pd = res_pd.rename(columns={'chrom': 'chr'})
             # Convert back to polars
             res = pl.from_pandas(res_pd)
-            return res
         except Exception as e:
             # Log the error and return empty
-            st.error(f"[PolarsBio] pb.overlap failed: {type(e).__name__}: {str(e)}")
-            import traceback
-            st.code(traceback.format_exc())
+            logger.error("[PolarsBio] pb.overlap failed: %s: %s", type(e).__name__, e, exc_info=True)
             return pl.DataFrame()
 
-        # Rename columns to avoid collision (polars-bio suffixes)
-        # Usually it adds _right for duplicates.
-        
-        # If how='left', we need all coords.
-        if how == 'left':
-            # Join result back to original coords to get non-overlaps
-            # This requires a unique ID for coords.
-            # Let's assume we can generate a temporary ID.
-            coord = coord.with_row_index("row_id")
-            # The result from join_overlap usually retains columns from both.
-            # But we need to ensure we link back correctly.
-            # This is complex in Polars without unique keys.
-            # Simplified approach: Use the result as is for now (Inner). 
-            # Real left join support in polars-bio might require explicit join.
-            pass 
+        if how == "left":
+            # Restore coordinates without overlaps by left-joining the overlap
+            # result back onto all coordinates via the row id.
+            id_cols = [c for c in res.columns if "pb_row_id" in c]
+            if id_cols:
+                res = res.rename({id_cols[0]: "pb_row_id"})
+                res = res.with_columns(pl.lit(True).alias("pb_has_overlap"))
+                res = coord.join(res, on="pb_row_id", how="left")
+                res = res.with_columns(
+                    pl.col("pb_has_overlap").fill_null(False).alias("has_overlap")
+                )
+                res = res.drop(["pb_row_id", "pb_has_overlap"])
+            else:
+                # pb.overlap dropped the row id; degrade to inner join
+                logger.warning("[PolarsBio] pb.overlap result has no row id; 'left' degraded to inner join")
 
         return res
 
     def _find_nearest(self, coord: pl.DataFrame, annot: pl.DataFrame) -> pl.DataFrame:
         """Wrapper for polars-bio nearest"""
-        import streamlit as st
-        
         try:
-            st.info(f"[PolarsBio] Calling pb.nearest with coord shape {coord.shape}, annot shape {annot.shape}")
+            logger.debug("[PolarsBio] pb.nearest: coord %s, annot %s", coord.shape, annot.shape)
             # Convert to pandas for pb.nearest
             coord_pd = coord.to_pandas()
             annot_pd = annot.to_pandas()
@@ -292,15 +277,10 @@ class PolarsBioEngine(AnnotationEngine):
             
             # Call pb.nearest with pandas DataFrames
             res_pd = pb.nearest(coord_pd, annot_pd, output_type="pandas.DataFrame")
-            st.success(f"[PolarsBio] pb.nearest succeeded! Result shape: {res_pd.shape}")
-            
-            # Rename back to 'chr' for consistency with our codebase
-            if 'chrom' in res_pd.columns:
-                res_pd = res_pd.rename(columns={'chrom': 'chr'})
-            
+            logger.debug("[PolarsBio] pb.nearest succeeded: %s", res_pd.shape)
             return pl.from_pandas(res_pd)
         except Exception as e:
-            st.error(f"[PolarsBio] pb.nearest failed: {type(e).__name__}: {str(e)}")
+            logger.error("[PolarsBio] pb.nearest failed: %s: %s", type(e).__name__, e, exc_info=True)
             return pl.DataFrame()
 
     def _filter_fraction(self, res: pl.DataFrame, mode: str) -> pl.DataFrame:
@@ -326,6 +306,8 @@ class PolarsBioEngine(AnnotationEngine):
         new_names = {}
         
         for c in cols:
+            if c == 'has_overlap':
+                continue
             if c.endswith("_right"):
                 base = c.replace("_right", "")
                 new_names[c] = f"annot_{base}"
@@ -340,9 +322,10 @@ class PolarsBioEngine(AnnotationEngine):
         
         df = df.rename(columns=new_names)
         
-        # Add has_overlap
-        # If it came from inner join, has_overlap is True.
-        df['has_overlap'] = True
+        # Add has_overlap if the engine didn't already compute it
+        # (inner joins overlap for every row; left joins carry the flag).
+        if 'has_overlap' not in df.columns:
+            df['has_overlap'] = True
         
         return df
 

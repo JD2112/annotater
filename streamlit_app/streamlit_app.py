@@ -102,9 +102,9 @@ def main():
         st.subheader("🚀 Processing Engine")
         engine_choice = st.selectbox(
             "Annotation Engine",
-            options=["Polars-Bio (Fast, Experimental)", "Bedtools (Standard)"],
+            options=["Bedtools (Standard)", "Polars-Bio (Fast, Experimental)"],
             index=0,
-            help="Polars-Bio uses a high-performance Rust backend. Bedtools uses pybedtools."
+            help="Bedtools uses pybedtools. Polars-Bio uses a high-performance Rust backend."
         )
         
         # Coordinate system settings

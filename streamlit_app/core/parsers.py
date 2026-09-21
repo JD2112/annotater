@@ -109,8 +109,12 @@ class BEDParser:
                     lf = pb.scan_bed(filepath)
                     df = lf.collect().to_pandas()
                     signal.alarm(0)  # Cancel alarm
+                    # Schema guard: the app expects raw 0-based chr/start/end
+                    # columns; fall back to the standard parser on mismatch.
+                    if not {'chr', 'start', 'end'}.issubset(df.columns):
+                        raise ValueError(f"unexpected polars-bio BED schema: {list(df.columns)}")
                     return df
-                except (TimeoutError, Exception) as e:
+                except Exception:
                     signal.alarm(0)  # Cancel alarm
                     # Fallback to pandas parser
                     pass
@@ -197,10 +201,14 @@ class GFFParser:
                     lf = pb.scan_gff(filepath)
                     df = lf.collect().to_pandas()
                     signal.alarm(0)
+                    # Schema guard: the app expects chr/start/end/feature
+                    # columns; fall back to the standard parser on mismatch.
+                    if not {'chr', 'start', 'end', 'feature'}.issubset(df.columns):
+                        raise ValueError(f"unexpected polars-bio GFF schema: {list(df.columns)}")
                     if feature_types:
                         df = df[df['feature'].isin(feature_types)]
                     return df
-                except (TimeoutError, Exception) as e:
+                except Exception:
                     signal.alarm(0)
                     pass
             except Exception:
@@ -286,8 +294,12 @@ class VCFParser:
                     lf = pb.scan_vcf(filepath)
                     df = lf.collect().to_pandas()
                     signal.alarm(0)
+                    # Schema/data guard: VCF directive lines (>>fileFormat, etc.)
+                    # can surface as rows with missing positions; fall back to pysam.
+                    if not {'chr', 'start', 'end'}.issubset(df.columns) or df['start'].isna().any():
+                        raise ValueError("unexpected polars-bio VCF output")
                     return df
-                except (TimeoutError, Exception) as e:
+                except Exception:
                     signal.alarm(0)
                     pass
             except Exception:
