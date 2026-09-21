@@ -6,7 +6,7 @@
 
 ```bash
 # 1. Navigate to project directory
-cd /Users/masvo/Documents/repo/annotator
+cd /Users/masvo/Documents/repo/annotater
 
 # 2. Build and start the application
 docker-compose up --build
@@ -124,7 +124,7 @@ streamlit run streamlit_app/streamlit_app.py --server.port=8502
 ### Import Errors
 ```bash
 # Make sure you're in the project directory
-cd /Users/masvo/Documents/repo/annotator
+cd /Users/masvo/Documents/repo/annotater
 
 # Install dependencies again
 pip install -r requirements.txt

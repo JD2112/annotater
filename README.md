@@ -25,8 +25,8 @@ A web-based tool for annotating genomic coordinates with support for multiple fi
 
 ```bash
 # Clone repository
-git clone https://github.com/your-org/annotator.git
-cd annotator
+git clone https://github.com/your-org/annotater.git
+cd annotater
 
 # Build and run with Docker Compose
 docker-compose up
