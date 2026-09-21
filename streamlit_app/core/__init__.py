@@ -1,15 +1,15 @@
 """Core functionality modules"""
 
-from core.chromosome import ChromosomeMapper
-from core.coordinates import CoordinateConverter, CoordinateNormalizer
-from core.parsers import (
+from .chromosome import ChromosomeMapper
+from .coordinates import CoordinateConverter, CoordinateNormalizer
+from .parsers import (
     FormatDetector,
     BEDParser,
     GFFParser,
     VCFParser,
     CustomParser
 )
-from core.annotator import (
+from .annotator import (
     AnnotationEngine,
     BedtoolsEngine,
     PolarsBioEngine,

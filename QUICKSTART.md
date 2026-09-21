@@ -57,21 +57,37 @@ The project includes example files in `data/examples/`:
 
 ---
 
-## 🧪 Run Tests
+## 🧪 Development Environment and Tests
+
+### System dependencies (external binaries, separate from Python packages)
+
+| Dependency | Why it is needed | macOS | Linux (Debian/Ubuntu) |
+| --- | --- | --- | --- |
+| `bedtools` (v2.x) | `BedtoolsEngine` (via `pybedtools`) shells out to the `bedtools` binary; without it, Bedtools-backed tests cannot run | `brew install bedtools` | `sudo apt-get install bedtools` |
+
+`PolarsBioEngine` needs **no** external binary — the Polars-Bio engine is distributed inside the Python package. Install `bedtools` only if you use (or test) the Bedtools backend.
+
+### Python dependencies
 
 ```bash
-# Install test dependencies
-pip install pytest pytest-cov
+# 1. Create virtual environment (recommended)
+python3 -m venv .venv
+source .venv/bin/activate
 
-# Run all tests
-pytest tests/ -v
-
-# Run with coverage
-pytest tests/ --cov=streamlit_app --cov-report=html
-
-# View coverage report
-open htmlcov/index.html
+# 2. Install Python dependencies (includes pytest and pytest-cov)
+pip install -r requirements.txt
 ```
+
+### Run the test suite (single documented command, from the repository root)
+
+```bash
+pytest
+```
+
+- Collection and imports are independent of the working directory and of `PYTHONPATH` (`pytest.ini` pins `testpaths = tests` and `pythonpath = .`). Do not launch Python from inside `streamlit_app/`.
+- Verbose: `pytest tests/ -v`
+- Coverage: `pytest --cov=streamlit_app --cov-report=html` (report in `htmlcov/index.html`)
+- Smoke tests (core imports + engine construction, no interval operations): `pytest tests/test_smoke.py -v`
 
 ---
 
