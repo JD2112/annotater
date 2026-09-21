@@ -3,7 +3,7 @@
 import pandas as pd
 from pathlib import Path
 from typing import Tuple, Optional, List
-from config import Settings
+from ..config import Settings
 
 
 class FileValidator:

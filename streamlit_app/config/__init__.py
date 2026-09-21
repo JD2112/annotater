@@ -1,5 +1,5 @@
 """Configuration module for AnnotateR"""
 
-from config.settings import Settings
+from .settings import Settings
 
 __all__ = ["Settings"]

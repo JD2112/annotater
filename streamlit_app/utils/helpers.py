@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
-from config import Settings
+from ..config import Settings
 
 
 def format_file_size(size_bytes: int) -> str:

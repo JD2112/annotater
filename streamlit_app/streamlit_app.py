@@ -11,11 +11,13 @@ License: GNU GPLv3
 import sys
 from pathlib import Path
 
-# Add the streamlit_app directory to Python path
-sys.path.insert(0, str(Path(__file__).parent))
+# Ensure the repository root is on the Python path so the
+# streamlit_app package (and its subpackages) can be imported
+# no matter where `streamlit run` is invoked from.
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import core modules
-from core import (
+from streamlit_app.core import (
     ChromosomeMapper,
     CoordinateConverter,
     CoordinateNormalizer,
@@ -29,8 +31,8 @@ from core import (
     PolarsBioEngine,
     get_summary_stats
 )
-from utils import FileValidator, DataValidator, format_file_size, save_uploaded_file
-from config import Settings
+from streamlit_app.utils import FileValidator, DataValidator, format_file_size, save_uploaded_file
+from streamlit_app.config import Settings
 
 import streamlit as st
 import pandas as pd
