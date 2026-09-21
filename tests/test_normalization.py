@@ -41,6 +41,7 @@ from streamlit_app.core.schema import (
     canonicalize_annotation_result,
     validate_canonical_interval_table,
 )
+from streamlit_app.streamlit_app import convert_df_to_vcf
 
 
 GFF_HEADER = "##gff-version 3\n"
@@ -526,6 +527,28 @@ class TestVCFMetadataPreservation:
         assert "sample_start" in out.columns
         assert out["sample_start"].iloc[0] == "0/1"
         assert out["start"].tolist() == [100]
+
+    def test_format_header_without_samples_rejected(self, tmp_path):
+        # 9-field #CHROM: a FORMAT column with no sample columns is
+        # inconsistent and must fail explicitly.
+        path = self._write_raw(
+            tmp_path,
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\n"
+            "chr1\t101\t.\tA\tG\t.\t.\t.\n",
+        )
+        with pytest.raises(MalformedFileError, match="FORMAT"):
+            parse_and_normalize(path, fmt="vcf")
+
+    def test_rename_collision_rejected(self, tmp_path):
+        # "sample_start" (kept verbatim) and "start" (renamed to
+        # sample_start) would collide; that must fail explicitly, not
+        # raise a bare ValueError from pandas.
+        header = self._header_with_samples("sample_start", "start")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\t1/1\n"
+        )
+        with pytest.raises(MalformedFileError, match="already"):
+            parse_and_normalize(path, fmt="vcf")
 
     def test_duplicate_sample_names_rejected(self, tmp_path):
         header = self._header_with_samples("S1", "S1")
@@ -1049,6 +1072,77 @@ class TestMalformedMatchedRows:
         annot_cols = [c for c in out.columns if c.startswith("annot_")]
         assert unmatched[annot_cols].isna().all().all()
         assert out.loc[out["has_overlap"], "annot_start"].tolist() == [90]
+
+    def test_missing_query_chr_rejected(self):
+        raw = self._raw(coord_chr=[".", "chr1"])
+        with pytest.raises(CanonicalSchemaError, match="coord_chr"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_non_integer_query_coordinates_rejected(self):
+        raw = self._raw(coord_start=["100.5", "100"])
+        with pytest.raises(CanonicalSchemaError, match="coord_start"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_matched_annot_chr_null_rejected(self):
+        # The pd.NA/None missing path (distinct from the '.' sentinel).
+        raw = self._raw(annot_chr=[None, "."])
+        with pytest.raises(CanonicalSchemaError, match="annot_chr"):
+            canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+
+    def test_integer_valued_floats_accepted(self):
+        # "90.0" is integer-valued: it must be accepted and cast to int,
+        # locking the reject-only-genuinely-fractional boundary.
+        raw = self._raw(annot_start=["90.0", "."], annot_end=["150.0", "."])
+        out = canonicalize_annotation_result(raw, self._coord_df(), self._annot_df())
+        assert out.loc[out["has_overlap"], "annot_start"].tolist() == [90]
+        assert out.loc[out["has_overlap"], "annot_end"].tolist() == [150]
+
+
+class TestVCFExportMissingValues:
+    """
+    convert_df_to_vcf must render canonical missing as the VCF MISSING
+    value '.', never as '<NA>'/'nan' tokens.
+    """
+
+    def _result_df(self, **overrides):
+        base = {
+            "coord_chr": ["chr1"],
+            "coord_start": [100],
+            "coord_id": [pd.NA],
+            "coord_ref": ["A"],
+            "coord_alt": ["G"],
+            "coord_qual": [pd.NA],
+            "coord_filter": [pd.NA],
+            "annot_feature": ["geneA"],
+            "has_overlap": [True],
+        }
+        base.update(overrides)
+        return pd.DataFrame(base)
+
+    def test_missing_id_qual_filter_exported_as_dot(self):
+        vcf = convert_df_to_vcf(self._result_df())
+        record = vcf.splitlines()[-1].split("\t")
+        # CHROM POS ID REF ALT QUAL FILTER INFO
+        assert record == ["chr1", "101", ".", "A", "G", ".", ".", "feature=geneA"]
+
+    def test_passed_filter_and_id_preserved(self):
+        vcf = convert_df_to_vcf(
+            self._result_df(
+                coord_id=["v1"], coord_qual=[20.0], coord_filter=["PASS"]
+            )
+        )
+        record = vcf.splitlines()[-1].split("\t")
+        assert record[2] == "v1"
+        assert record[5] == "20.0"
+        assert record[6] == "PASS"
+
+    def test_missing_annotation_not_leaked_into_info(self):
+        # Unmatched rows carry pd.NA annotations after canonicalization;
+        # they must not leak into INFO as 'FEATURE=<NA>'.
+        vcf = convert_df_to_vcf(self._result_df(annot_feature=[pd.NA]))
+        record = vcf.splitlines()[-1].split("\t")
+        assert record[7] == "."
+        assert "<NA>" not in vcf
 
 
 if __name__ == "__main__":

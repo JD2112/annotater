@@ -282,17 +282,6 @@ class VCFParser:
         """Map the VCF MISSING value ``.`` to canonical missing; keep everything else verbatim."""
         return pd.NA if value == '.' else value
     
-    @staticmethod
-    def _header_samples(header_line: str) -> List[str]:
-        """Sample names from a ``#CHROM`` line (after the 8 fixed columns and FORMAT)."""
-        fields = header_line.split('\t')
-        if len(fields) < 8:
-            raise MalformedFileError(
-                f'#CHROM header line must have at least 8 tab-separated fields, '
-                f'got {len(fields)}'
-            )
-        return fields[9:]
-    
     @classmethod
     def parse(cls, filepath: str) -> pd.DataFrame:
         """
@@ -337,7 +326,8 @@ class VCFParser:
         collides with a parser/core column name (for example a sample
         literally called ``start``): such a column is renamed
         deterministically to ``sample_<name>``. Duplicate sample IDs are
-        not allowed by the specification and are rejected, as are names
+        rejected (sample columns are identified by name in the canonical
+        table), as are names
         using the reserved ``coord_``/``annot_`` prefixes. Data records
         must carry exactly the fields declared by the header (8 fixed +
         FORMAT + n samples when FORMAT/samples are present); records
@@ -382,7 +372,8 @@ class VCFParser:
                             dupes = sorted({n for n in names if names.count(n) > 1})
                             raise MalformedFileError(
                                 f'line {line_number}: duplicate sample ID(s) '
-                                f'{dupes} are not allowed by the VCF specification'
+                                f'{dupes} are rejected because sample columns '
+                                f'are identified by name'
                             )
                         mapped: List[str] = []
                         used = set(cls._COLUMNS) | {'info', 'format', 'strand'}
@@ -394,8 +385,14 @@ class VCFParser:
                                 )
                             # Deterministic rename on collision with a
                             # parser/core column name (e.g. a sample
-                            # called "GT" or "start").
+                            # literally called "start").
                             column = n if n not in used else f'sample_{n}'
+                            if column in used:
+                                raise MalformedFileError(
+                                    f'line {line_number}: sample name {n!r} '
+                                    f'renames to {column!r}, which is already '
+                                    f'in use'
+                                )
                             used.add(column)
                             mapped.append(column)
                         samples = mapped

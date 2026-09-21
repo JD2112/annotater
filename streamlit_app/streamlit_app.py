@@ -760,6 +760,17 @@ def _declared_coordinate_system(option: str):
     return None
 
 
+def _vcf_field(value) -> str:
+    """
+    Render a value as a VCF field: canonical missing (``pd.NA``/``NaN``/``None``)
+    becomes the VCF MISSING value ``.``; anything else is stringified as-is.
+    Prevents ``"<NA>"``/``"nan"`` sentinels from leaking into exports.
+    """
+    if pd.api.types.is_scalar(value) and pd.isna(value):
+        return '.'
+    return str(value)
+
+
 def convert_df_to_vcf(df: pd.DataFrame) -> str:
     """
     Convert results DataFrame back to VCF format.
@@ -810,7 +821,7 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
     for _, row in res.iterrows():
         # Build standard fields
         fields = []
-        fields.append(str(row.get('coord_chr', row.get('chr', '.'))))
+        fields.append(_vcf_field(row.get('coord_chr', row.get('chr', '.'))))
         
         # POS: reconstruct the 1-based VCF position from the canonical start
         # (POS = coord_start + 1)
@@ -820,16 +831,15 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         except (TypeError, ValueError):
             fields.append('.')
         
-        fields.append(str(row.get('coord_id', row.get('id', '.'))))
-        fields.append(str(row.get('coord_ref', row.get('ref', '.'))))
-        fields.append(str(row.get('coord_alt', row.get('alt', '.'))))
+        # ID/REF/ALT: canonical missing must export as '.', never '<NA>'.
+        fields.append(_vcf_field(row.get('coord_id', row.get('id', '.'))))
+        fields.append(_vcf_field(row.get('coord_ref', row.get('ref', '.'))))
+        fields.append(_vcf_field(row.get('coord_alt', row.get('alt', '.'))))
         # QUAL/FILTER: canonical missing (e.g. VCF FILTER "." = filters not
         # applied) must be exported as the VCF MISSING value, not as a
         # rendered "<NA>"/"nan" token.
-        qual_value = row.get('coord_qual', row.get('qual', '.'))
-        filter_value = row.get('coord_filter', row.get('filter', '.'))
-        fields.append('.' if pd.isna(qual_value) else str(qual_value))
-        fields.append('.' if pd.isna(filter_value) else str(filter_value))
+        fields.append(_vcf_field(row.get('coord_qual', row.get('qual', '.'))))
+        fields.append(_vcf_field(row.get('coord_filter', row.get('filter', '.'))))
         
         # Build INFO field
         info_parts = []
@@ -837,8 +847,13 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         # Add annotations
         annot_parts = []
         for col in annot_cols:
-            val = str(row[col])
-            if val and val not in ['.', 'nan', '-1', 'None']:
+            raw_val = row[col]
+            # Canonical missing (unmatched rows after canonicalization)
+            # must not leak into INFO as 'Key=<NA>'.
+            if pd.api.types.is_scalar(raw_val) and pd.isna(raw_val):
+                continue
+            val = str(raw_val)
+            if val and val not in ['.', 'nan', '-1', 'None', '<NA>']:
                 key = col.replace('annot_', '')
                 # Clean value for VCF compatibility
                 clean_val = val.replace(';', '|').replace(' ', '_').replace('=', ':')
