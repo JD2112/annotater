@@ -85,7 +85,17 @@ the canonical model happens in the normalization layer:
   specification because tabs inside INFO values are escaped. Each
   variant becomes the interval occupied by its reference sequence,
   `[POS, POS + max(1, len(REF)) - 1]`, or `[POS, END]` (both 1-based
-  inclusive) when `INFO/END` is present.
+  inclusive) when `INFO/END` is present. Source metadata is preserved:
+  the raw INFO field is kept as an `info` metadata column (VCF `.` →
+  canonical missing), and when the `#CHROM` header declares `FORMAT` and
+  sample columns, `format` plus one column per sample (named from the
+  header, in source order) are kept with `.` → canonical missing; FORMAT
+  sub-fields are not expanded. `FILTER` distinguishes the three spec
+  meanings — `PASS`, a semicolon-separated failed-filter list, and
+  MISSING (`.` = filters not applied → canonical missing, never
+  converted to `PASS`). A sample name colliding with a parser/core
+  column is renamed to `sample_<name>`; duplicate sample IDs and
+  header/record field-count mismatches fail explicitly.
 
 VCF parsing deliberately has no external VCF-library dependency: the
 pinned pysam build in this environment does not expose `INFO/END`
@@ -142,7 +152,8 @@ The contract machinery lives in `streamlit_app/core/schema.py`.
 `canonicalize_annotation_result` enforces the exact canonical column
 set, boolean `has_overlap`, integer coordinate dtypes, canonical
 missing (`pd.NA`) in every `annot_*` field of unmatched rows, and the
-deterministic column order. The `coord_`/`annot_` prefixes are
+deterministic column order. The
+`coord_`/`annot_` prefixes are
 reserved — source metadata may not use them — and any backend-suffixed
 leakage (`_1`, `_2`, `_right`) is rejected because the expected column
 set is exact. Operation-specific additions (e.g. `distance` for closest

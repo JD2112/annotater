@@ -823,8 +823,13 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         fields.append(str(row.get('coord_id', row.get('id', '.'))))
         fields.append(str(row.get('coord_ref', row.get('ref', '.'))))
         fields.append(str(row.get('coord_alt', row.get('alt', '.'))))
-        fields.append(str(row.get('coord_qual', row.get('qual', '.'))))
-        fields.append(str(row.get('coord_filter', row.get('filter', '.'))))
+        # QUAL/FILTER: canonical missing (e.g. VCF FILTER "." = filters not
+        # applied) must be exported as the VCF MISSING value, not as a
+        # rendered "<NA>"/"nan" token.
+        qual_value = row.get('coord_qual', row.get('qual', '.'))
+        filter_value = row.get('coord_filter', row.get('filter', '.'))
+        fields.append('.' if pd.isna(qual_value) else str(qual_value))
+        fields.append('.' if pd.isna(filter_value) else str(filter_value))
         
         # Build INFO field
         info_parts = []

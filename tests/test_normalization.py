@@ -361,11 +361,15 @@ class TestVCFBoundaries:
     def test_vcf_metadata_preserved(self, tmp_path):
         path = self._write_vcf(tmp_path, "chr1\t101\tv1\tA\tG\t.\tPASS\t.\n")
         out = parse_and_normalize(path, fmt="vcf")
-        assert list(out.columns) == ["chr", "start", "end", "id", "ref", "alt", "qual", "filter"]
+        assert list(out.columns) == [
+            "chr", "start", "end", "id", "ref", "alt", "qual", "filter", "info",
+        ]
         assert out["id"].tolist() == ["v1"]
         assert out["ref"].tolist() == ["A"]
         assert out["alt"].tolist() == ["G"]
-        assert out["filter"].tolist() == ["PASS"]
+        assert out["filter"].iloc[0] == "PASS"
+        # INFO "." (no info) is canonical missing, not the string '.'.
+        assert pd.isna(out["info"].iloc[0])
 
     def test_info_end_among_other_info_fields(self, tmp_path):
         # END is extracted from the raw INFO field regardless of other keys.
@@ -382,6 +386,187 @@ class TestVCFBoundaries:
         # Header is 3 physical lines; the data line is line 4.
         with pytest.raises(MalformedFileError, match="line 4"):
             parse_and_normalize(str(vcf), fmt="vcf")
+
+
+class TestVCFFilterSemantics:
+    """
+    FILTER must preserve the VCF specification's distinct meanings
+    (VCF spec 1.6.1, field FILTER):
+
+    - ``PASS``: filters were applied and the record passed them;
+    - a semicolon-separated list of codes: filters that failed;
+    - ``.`` (MISSING): filters were not applied — NOT equivalent to PASS.
+    """
+
+    def _write(self, tmp_path, filt):
+        vcf = tmp_path / "t.vcf"
+        vcf.write_text(VCF_HEADER + f"chr1\t101\t.\tA\tG\t.\t{filt}\t.\n")
+        return str(vcf)
+
+    def test_filter_pass_preserved(self, tmp_path):
+        out = parse_and_normalize(self._write(tmp_path, "PASS"), fmt="vcf")
+        assert out["filter"].iloc[0] == "PASS"
+
+    def test_filter_missing_not_converted_to_pass(self, tmp_path):
+        # "." means filters were not applied; it must remain canonical
+        # missing, never become "PASS".
+        out = parse_and_normalize(self._write(tmp_path, "."), fmt="vcf")
+        assert pd.isna(out["filter"].iloc[0])
+
+    def test_single_failed_filter_preserved(self, tmp_path):
+        out = parse_and_normalize(self._write(tmp_path, "q10"), fmt="vcf")
+        assert out["filter"].iloc[0] == "q10"
+
+    def test_multiple_failed_filters_preserved(self, tmp_path):
+        out = parse_and_normalize(self._write(tmp_path, "q10;LowQual"), fmt="vcf")
+        assert out["filter"].iloc[0] == "q10;LowQual"
+
+
+class TestVCFMetadataPreservation:
+    """
+    Arbitrary INFO content, FORMAT, and sample-level fields must survive
+    parse + normalization with deterministic source column ordering.
+    """
+
+    def _write_raw(self, tmp_path, text):
+        vcf = tmp_path / "t.vcf"
+        vcf.write_text(text)
+        return str(vcf)
+
+    @staticmethod
+    def _header_with_samples(*samples):
+        cols = "CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT"
+        if samples:
+            cols += "\t" + "\t".join(samples)
+        return VCF_HEADER.replace(
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+            "#" + cols + "\n",
+        )
+
+    def test_raw_info_field_preserved_and_span_still_extracted(self, tmp_path):
+        path = self._write_raw(
+            tmp_path,
+            VCF_HEADER + "chr2\t300\tsv1\tA\tT\t.\tPASS\tDP=5;AF=0.3;END=303;SV=DEL\n",
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        # Raw INFO survives verbatim as metadata...
+        assert out["info"].iloc[0] == "DP=5;AF=0.3;END=303;SV=DEL"
+        # ...while END is still extracted for the span calculation.
+        assert out["start"].tolist() == [299]
+        assert out["end"].tolist() == [303]
+
+    def test_info_missing_normalized_without_changing_meaning(self, tmp_path):
+        path = self._write_raw(tmp_path, VCF_HEADER + "chr1\t101\t.\tA\tG\t.\t.\t.\n")
+        out = parse_and_normalize(path, fmt="vcf")
+        assert pd.isna(out["info"].iloc[0])
+
+    def test_format_and_sample_columns_preserved_in_source_order(self, tmp_path):
+        header = self._header_with_samples("S1", "S2")
+        path = self._write_raw(
+            tmp_path,
+            header + "chr1\t101\t.\tA\tG\t.\tPASS\tDP=5\tGT:DP\t0/1:5\t1/1:7\n",
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        # format + sample columns follow the fixed fields, in source order.
+        assert list(out.columns) == [
+            "chr", "start", "end", "id", "ref", "alt", "qual", "filter",
+            "info", "format", "S1", "S2",
+        ]
+        assert out["format"].iloc[0] == "GT:DP"
+        assert out["S1"].iloc[0] == "0/1:5"
+        assert out["S2"].iloc[0] == "1/1:7"
+
+    def test_sample_values_preserved_and_missing_normalized(self, tmp_path):
+        header = self._header_with_samples("S1", "S2")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\t.\n"
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        assert out["S1"].iloc[0] == "0/1"
+        # VCF sample "." is the missing value -> canonical missing.
+        assert pd.isna(out["S2"].iloc[0])
+        # Coordinates unaffected by the sample-level metadata.
+        assert out["start"].tolist() == [100]
+        assert out["end"].tolist() == [101]
+
+    def test_sample_names_come_from_header_not_positions(self, tmp_path):
+        header = self._header_with_samples("tumor", "normal")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t1/1\t0/0\n"
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        assert "tumor" in out.columns and "normal" in out.columns
+        assert out["tumor"].iloc[0] == "1/1"
+        assert out["normal"].iloc[0] == "0/0"
+
+    def test_sample_named_gt_kept_verbatim(self, tmp_path):
+        # "GT" is a legitimate sample name in real files and is not a
+        # parser/core column, so it is kept verbatim as a metadata column.
+        header = self._header_with_samples("GT")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\n"
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        assert "GT" in out.columns
+        assert out["GT"].iloc[0] == "0/1"
+        # Coordinates unaffected.
+        assert out["start"].tolist() == [100]
+        assert out["end"].tolist() == [101]
+
+    def test_sample_name_colliding_with_core_column_renamed_deterministically(
+        self, tmp_path
+    ):
+        # A sample literally named "start" would collide with the interval
+        # columns; it must be renamed deterministically, not rejected.
+        header = self._header_with_samples("start")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\n"
+        )
+        out = parse_and_normalize(path, fmt="vcf")
+        assert "sample_start" in out.columns
+        assert out["sample_start"].iloc[0] == "0/1"
+        assert out["start"].tolist() == [100]
+
+    def test_duplicate_sample_names_rejected(self, tmp_path):
+        header = self._header_with_samples("S1", "S1")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\t1/1\n"
+        )
+        with pytest.raises(MalformedFileError, match="duplicate sample"):
+            parse_and_normalize(path, fmt="vcf")
+
+    def test_reserved_prefix_sample_name_rejected(self, tmp_path):
+        header = self._header_with_samples("coord_x")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\n"
+        )
+        with pytest.raises(MalformedFileError, match="coord_/annot_"):
+            parse_and_normalize(path, fmt="vcf")
+
+    def test_record_with_fewer_sample_fields_rejected(self, tmp_path):
+        header = self._header_with_samples("S1", "S2")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\n"
+        )
+        with pytest.raises(MalformedFileError, match="line 4"):
+            parse_and_normalize(path, fmt="vcf")
+
+    def test_record_with_extra_sample_fields_rejected(self, tmp_path):
+        header = self._header_with_samples("S1")
+        path = self._write_raw(
+            tmp_path, header + "chr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\t1/1\n"
+        )
+        with pytest.raises(MalformedFileError, match="line 4"):
+            parse_and_normalize(path, fmt="vcf")
+
+    def test_sample_fields_without_chrom_header_rejected(self, tmp_path):
+        # No #CHROM line -> sample columns cannot be named -> explicit error.
+        path = self._write_raw(
+            tmp_path,
+            "##fileformat=VCFv4.2\nchr1\t101\t.\tA\tG\t.\t.\t.\tGT\t0/1\n",
+        )
+        with pytest.raises(MalformedFileError, match="no #CHROM"):
+            parse_and_normalize(path, fmt="vcf")
 
 
 # ---------------------------------------------------------------------------
@@ -761,6 +946,8 @@ class TestCanonicalResultSchema:
             canonicalize_annotation_result(
                 raw2, self._coord_df(), self._annot_df(), extra_columns=("distance",)
             )
+
+
 
 
 if __name__ == "__main__":

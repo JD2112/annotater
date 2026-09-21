@@ -277,6 +277,22 @@ class VCFParser:
         match = re.search(r'(?:^|;)END=(\d+)', info_field or '')
         return int(match.group(1)) if match else None
     
+    @staticmethod
+    def _missing(value: str):
+        """Map the VCF MISSING value ``.`` to canonical missing; keep everything else verbatim."""
+        return pd.NA if value == '.' else value
+    
+    @staticmethod
+    def _header_samples(header_line: str) -> List[str]:
+        """Sample names from a ``#CHROM`` line (after the 8 fixed columns and FORMAT)."""
+        fields = header_line.split('\t')
+        if len(fields) < 8:
+            raise MalformedFileError(
+                f'#CHROM header line must have at least 8 tab-separated fields, '
+                f'got {len(fields)}'
+            )
+        return fields[9:]
+    
     @classmethod
     def parse(cls, filepath: str) -> pd.DataFrame:
         """
@@ -296,23 +312,98 @@ class VCFParser:
         text parsing is complete for the fields this app needs. This
         avoids version-dependent behavior of external VCF libraries
         (e.g. pysam builds that do not expose INFO/END through their
-        record API). Structurally invalid data lines raise
+        record API). Structurally invalid lines raise
         MalformedFileError with the offending physical line number —
         records are never silently dropped.
+        
+        Source metadata is preserved (Task 2 metadata-preservation
+        contract):
+        
+        - the raw INFO field is kept as the ``info`` metadata column
+          (``.`` -> canonical missing); INFO/END is also extracted from
+          it for the span calculation;
+        - when the ``#CHROM`` header declares a FORMAT column and sample
+          columns, ``format`` and one column per sample (named from the
+          header, in source order) are preserved with VCF ``.`` mapped
+          to canonical missing; the parser does not expand INFO keys or
+          decode FORMAT sub-fields; the biological meaning of sample
+          values is left untouched;
+        - FILTER is preserved verbatim: ``PASS`` stays ``PASS``, a
+          semicolon-separated failed-filter list stays as-is, and ``.``
+          (filters not applied) is canonical missing — it is NOT
+          converted to ``PASS``.
+        
+        Sample names are used verbatim as column names except when one
+        collides with a parser/core column name (for example a sample
+        literally called ``start``): such a column is renamed
+        deterministically to ``sample_<name>``. Duplicate sample IDs are
+        not allowed by the specification and are rejected, as are names
+        using the reserved ``coord_``/``annot_`` prefixes. Data records
+        must carry exactly the fields declared by the header (8 fixed +
+        FORMAT + n samples when FORMAT/samples are present); records
+        with more or fewer fields fail explicitly.
         
         Args:
             filepath: Path to VCF file
             
         Returns:
-            DataFrame with columns: chr, start, end, id, ref, alt, qual, filter
+            DataFrame with columns: chr, start, end, id, ref, alt, qual,
+            filter, info, [format, <sample columns in header order>]
         """
         rows: List[Dict] = []
+        samples: Optional[List[str]] = None  # None: no #CHROM line seen yet
+        header_expected_fields: Optional[int] = None
         
         with open(filepath, 'r') as handle:
             for line_number, line in enumerate(handle, start=1):
                 line = line.rstrip('\n')
-                if not line.strip() or line.startswith('#'):
+                if not line.strip():
                     continue
+                if line.startswith('#'):
+                    if line.startswith('#CHROM'):
+                        header_fields = line.split('\t')
+                        if len(header_fields) < 8:
+                            raise MalformedFileError(
+                                f'#CHROM header line must have at least 8 '
+                                f'tab-separated fields, got {len(header_fields)}'
+                            )
+                        names = header_fields[9:]
+                        # FORMAT is optional per the VCF specification: it
+                        # is present exactly when sample columns follow it.
+                        # A 9-field header (FORMAT but no samples) is
+                        # inconsistent and rejected.
+                        if len(header_fields) == 9:
+                            raise MalformedFileError(
+                                f'#CHROM header declares a FORMAT column '
+                                f'but no sample columns'
+                            )
+                        has_format = len(names) > 0
+                        if len(set(names)) != len(names):
+                            dupes = sorted({n for n in names if names.count(n) > 1})
+                            raise MalformedFileError(
+                                f'line {line_number}: duplicate sample ID(s) '
+                                f'{dupes} are not allowed by the VCF specification'
+                            )
+                        mapped: List[str] = []
+                        used = set(cls._COLUMNS) | {'info', 'format', 'strand'}
+                        for n in names:
+                            if n.startswith(('coord_', 'annot_')):
+                                raise MalformedFileError(
+                                    f'line {line_number}: sample name {n!r} uses '
+                                    f'the reserved coord_/annot_ result prefixes'
+                                )
+                            # Deterministic rename on collision with a
+                            # parser/core column name (e.g. a sample
+                            # called "GT" or "start").
+                            column = n if n not in used else f'sample_{n}'
+                            used.add(column)
+                            mapped.append(column)
+                        samples = mapped
+                        header_expected_fields = (
+                            8 + (1 if has_format else 0) + len(names)
+                        )
+                    continue
+                
                 fields = line.split('\t')
                 if len(fields) < 8:
                     raise MalformedFileError(
@@ -320,6 +411,21 @@ class VCFParser:
                         f'fields (CHROM POS ID REF ALT QUAL FILTER INFO), '
                         f'got {len(fields)}'
                     )
+                if samples is not None:
+                    expected = header_expected_fields
+                    if len(fields) != expected:
+                        raise MalformedFileError(
+                            f'line {line_number}: expected {expected} tab-separated '
+                            f'fields (8 fixed + FORMAT + {len(samples)} sample '
+                            f'column(s) per the #CHROM header), got {len(fields)}'
+                        )
+                elif len(fields) > 8:
+                    raise MalformedFileError(
+                        f'line {line_number}: record carries {len(fields) - 8} '
+                        f'FORMAT/sample field(s) but the file has no #CHROM '
+                        f'header line declaring them'
+                    )
+                
                 chrom, pos_s, vid, ref, alt, qual, filt, info = fields[:8]
                 try:
                     pos = int(pos_s)
@@ -327,21 +433,40 @@ class VCFParser:
                     raise MalformedFileError(
                         f'line {line_number}: POS must be an integer, got {pos_s!r}'
                     )
+                try:
+                    qual_value = pd.NA if qual == '.' else float(qual)
+                except ValueError:
+                    raise MalformedFileError(
+                        f'line {line_number}: QUAL must be a number or ".", '
+                        f'got {qual!r}'
+                    )
                 span = cls._variant_span(ref, cls._info_end(info), pos)
-                rows.append({
+                row = {
                     'chr': chrom,
                     'start': pos,
                     'end': pos + span - 1,
-                    'id': None if vid == '.' else vid,
+                    'id': cls._missing(vid),
                     'ref': ref,
                     'alt': alt,
-                    'qual': None if qual == '.' else float(qual),
-                    'filter': 'PASS' if filt == '.' else filt,
-                })
+                    'qual': qual_value,
+                    # FILTER semantics (VCF spec 1.6.1/7): PASS, a
+                    # semicolon-separated failed-filter list, or MISSING
+                    # (filters not applied) — never silently converted.
+                    'filter': cls._missing(filt),
+                    'info': cls._missing(info),
+                }
+                if samples is not None and len(samples) > 0:
+                    row['format'] = cls._missing(fields[8])
+                    for i, name in enumerate(samples):
+                        row[name] = cls._missing(fields[9 + i])
+                rows.append(row)
         
+        columns = list(cls._COLUMNS) + ['info']
+        if samples is not None and len(samples) > 0:
+            columns = columns + ['format'] + list(samples)
         if not rows:
-            return pd.DataFrame(columns=cls._COLUMNS)
-        return pd.DataFrame(rows, columns=cls._COLUMNS)
+            return pd.DataFrame(columns=columns)
+        return pd.DataFrame(rows, columns=columns)
 
 
 class CustomParser:

@@ -19,7 +19,11 @@ Coordinate systems
   occupied by the reference sequence per the VCF specification,
   ``[POS, POS + max(1, len(REF)) - 1]``, or ``[POS, END]`` (both
   1-based inclusive) when ``INFO/END`` is present, and this module
-  converts that 1-based span to the canonical half-open form.
+  converts that 1-based span to the canonical half-open form. Source
+  metadata (raw INFO field, FORMAT and sample columns when the header
+  declares them) is retained by the parser as additional metadata
+  columns; VCF ``.`` is mapped to canonical missing without changing
+  biological meaning.
 - ``custom``: no fixed coordinate columns exist before explicit column
   mapping; normalizing a custom file before mapping raises ``ValueError``.
   After mapping, the user's declared coordinate system applies,
