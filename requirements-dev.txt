@@ -1,0 +1,6 @@
+# AnnotateR development dependencies (exact pins, Task 2.5 audit)
+-r requirements.txt
+pytest==9.1.1
+pytest-cov==7.1.0
+black==26.5.1
+ruff==0.16.8

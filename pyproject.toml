@@ -1,0 +1,40 @@
+[project]
+name = "annotater"
+version = "0.1.0"
+description = "AnnotateR: genomic coordinate annotation tool with interchangeable Bedtools and Polars-Bio backends"
+readme = "README.md"
+requires-python = ">=3.12"  # exact pins below (e.g. numpy 2.5.3) require 3.12+
+# Older 3.10/3.11 interpreters are therefore not part of the supported matrix
+# while these exact pins are in place (see docs/implementation-notes.md).
+# SPEC: the supported environment pins bedtools, pybedtools, Polars, and
+# Polars-Bio exactly. All runtime dependencies are exact-pinned to the
+# audited supported environment (docs/implementation-notes.md, Task 2.5).
+dependencies = [
+    "streamlit==1.64.0",
+    "pandas==3.0.6",
+    "numpy==2.5.3",
+    "pybedtools==0.12.1",
+    "pyranges==0.1.4",
+    "polars==1.44.2",
+    "polars-bio==0.35.1",
+    "openpyxl==3.1.5",
+    "plotly==7.1.0",
+    "altair==6.3.0",
+    "python-magic==0.4.27",
+    "validators==0.35.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==9.1.1",
+    "pytest-cov==7.1.0",
+    "black==26.5.1",
+    "ruff==0.16.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["streamlit_app"]
