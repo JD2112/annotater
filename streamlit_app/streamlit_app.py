@@ -29,7 +29,10 @@ from streamlit_app.core import (
     AnnotationEngine,
     BedtoolsEngine,
     PolarsBioEngine,
-    get_summary_stats
+    get_summary_stats,
+    normalize_intervals,
+    parse_and_normalize,
+    CanonicalSchemaError
 )
 from streamlit_app.utils import FileValidator, DataValidator, format_file_size, save_uploaded_file
 from streamlit_app.config import Settings
@@ -115,13 +118,17 @@ def main():
         coord_system_option = st.selectbox(
             "Input coordinates",
             options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF/VCF)"],
-            help="Auto-detect will determine from file format"
+            help=("For known formats (BED/GFF/GTF/VCF) the coordinate system is "
+                  "fixed by the format specification; for custom files this option "
+                  "declares it (default: 0-based half-open).")
         )
         
         annot_system_option = st.selectbox(
             "Annotation coordinates",
             options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF/VCF)"],
-            help="Auto-detect will determine from file format"
+            help=("For known formats (BED/GFF/GTF/VCF) the coordinate system is "
+                  "fixed by the format specification; for custom files this option "
+                  "declares it (default: 0-based half-open).")
         )
         
         # Chromosome ID handling
@@ -228,13 +235,18 @@ def main():
                             # Save and parse coordinate file
                             coord_path = save_uploaded_file(coord_file)
                             coord_format = FormatDetector.detect(str(coord_path))
-                            use_polars_bio = engine_choice.startswith("Polars-Bio")
-                            if coord_format == "bed":
-                                coord_df = BEDParser.parse(str(coord_path), use_polars_bio=use_polars_bio)
-                            elif coord_format == "vcf":
-                                coord_df = VCFParser.parse(str(coord_path), use_polars_bio=use_polars_bio)
-                            else:
+                            if coord_format == "custom":
+                                # No fixed coordinate columns yet; normalize
+                                # only after explicit column mapping.
                                 coord_df = CustomParser.parse(str(coord_path))
+                            else:
+                                # Canonical 0-based half-open, per the format
+                                # specification; independent of engine choice.
+                                coord_df = parse_and_normalize(
+                                    str(coord_path),
+                                    fmt=coord_format,
+                                    declared_system=_declared_coordinate_system(coord_system_option),
+                                )
                             st.dataframe(coord_df.head(10), use_container_width=True)
                             st.caption(f"Format: {coord_format.upper()} | Rows: {len(coord_df):,}")
                             # Store in session state
@@ -252,12 +264,19 @@ def main():
                             # Save and parse annotation file
                             annot_path = save_uploaded_file(annot_file)
                             annot_format = FormatDetector.detect(str(annot_path))
-                            use_polars_bio = engine_choice.startswith("Polars-Bio")
                             
-                            if annot_format in ["gff", "gtf"]:
-                                annot_df = GFFParser.parse(str(annot_path), feature_types=feature_types, use_polars_bio=use_polars_bio)
-                            elif annot_format == "bed":
-                                annot_df = BEDParser.parse(str(annot_path), use_polars_bio=use_polars_bio)
+                            if annot_format in ["gff", "gtf", "bed", "vcf"]:
+                                parse_kwargs = (
+                                    {"feature_types": feature_types}
+                                    if annot_format in ["gff", "gtf"]
+                                    else {}
+                                )
+                                annot_df = parse_and_normalize(
+                                    str(annot_path),
+                                    fmt=annot_format,
+                                    declared_system=_declared_coordinate_system(annot_system_option),
+                                    **parse_kwargs,
+                                )
                             else:
                                 annot_df = CustomParser.parse(str(annot_path))
                             
@@ -307,8 +326,19 @@ def main():
                 if st.button("Apply Column Mapping"):
                     end_col_name = None if end_col == 'None (single positions)' else end_col
                     mapped_df = CustomParser.map_columns(coord_df, chr_col, start_col, end_col_name)
-                    st.session_state.coord_df = mapped_df
-                    st.success("✅ Column mapping applied!")
+                    try:
+                        # Normalize the mapped table to canonical 0-based
+                        # half-open using the declared coordinate system
+                        # (default: 0-based).
+                        mapped_df = normalize_intervals(
+                            mapped_df,
+                            coordinate_system=_declared_coordinate_system(coord_system_option) or "0-based",
+                        )
+                    except CanonicalSchemaError as e:
+                        st.error(f"Mapped table is not valid canonical input: {e}")
+                    else:
+                        st.session_state.coord_df = mapped_df
+                        st.success("✅ Column mapping applied!")
         
         # Similar mapping for annotation file
         if 'annot_df' in st.session_state and st.session_state.annot_format == "custom":
@@ -721,6 +751,15 @@ def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: p
         )
 
 
+def _declared_coordinate_system(option: str):
+    """Map a sidebar coordinate-system selector to an explicit system."""
+    if option.startswith("0-based"):
+        return "0-based"
+    if option.startswith("1-based"):
+        return "1-based"
+    return None
+
+
 def convert_df_to_vcf(df: pd.DataFrame) -> str:
     """
     Convert results DataFrame back to VCF format.
@@ -735,15 +774,15 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
     ]
     
     # Map internal columns to VCF standard columns
-    # Note: df uses 0-based start, VCF uses 1-based POS (which equals end for SNPs)
-    # So we use coord_end as POS
+    # Canonical start is 0-based and equals POS - 1, so POS = coord_start + 1.
+    # (Using coord_end would be wrong for multi-base variants.)
     
     res = df.copy()
     
     # Ensure required columns exist, fill with '.' if missing
     required_map = {
         'coord_chr': 'CHROM',
-        'coord_end': 'POS',
+        'coord_start': 'POS',
         'coord_id': 'ID',
         'coord_ref': 'REF',
         'coord_alt': 'ALT',
@@ -773,9 +812,13 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         fields = []
         fields.append(str(row.get('coord_chr', row.get('chr', '.'))))
         
-        # POS: Convert 0-based end back to 1-based POS
-        # Internal: start=9, end=10 -> VCF POS=10
-        fields.append(str(row.get('coord_end', row.get('end', '.'))))
+        # POS: reconstruct the 1-based VCF position from the canonical start
+        # (POS = coord_start + 1)
+        pos_value = row.get('coord_start', row.get('start', '.'))
+        try:
+            fields.append(str(int(pos_value) + 1))
+        except (TypeError, ValueError):
+            fields.append('.')
         
         fields.append(str(row.get('coord_id', row.get('id', '.'))))
         fields.append(str(row.get('coord_ref', row.get('ref', '.'))))

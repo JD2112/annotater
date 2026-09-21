@@ -15,6 +15,20 @@ from .annotator import (
     PolarsBioEngine,
     get_summary_stats
 )
+from .schema import (
+    CanonicalSchemaError,
+    InvalidIntervalError,
+    MalformedFileError,
+    canonical_result_columns,
+    canonicalize_annotation_result,
+    validate_canonical_interval_table,
+)
+from .normalization import (
+    FORMAT_COORDINATE_SYSTEMS,
+    coordinate_system_for,
+    normalize_intervals,
+    parse_and_normalize,
+)
 
 __all__ = [
     "ChromosomeMapper",
@@ -29,4 +43,14 @@ __all__ = [
     "BedtoolsEngine",
     "PolarsBioEngine",
     "get_summary_stats",
+    "CanonicalSchemaError",
+    "InvalidIntervalError",
+    "MalformedFileError",
+    "canonical_result_columns",
+    "canonicalize_annotation_result",
+    "validate_canonical_interval_table",
+    "FORMAT_COORDINATE_SYSTEMS",
+    "coordinate_system_for",
+    "normalize_intervals",
+    "parse_and_normalize",
 ]

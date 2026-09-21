@@ -8,10 +8,11 @@ Supports:
 """
 
 import pandas as pd
-import pysam
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
 import re
+
+from .schema import MalformedFileError
 
 
 class FormatDetector:
@@ -80,12 +81,26 @@ class FormatDetector:
 
 
 class BEDParser:
-    """Parser for BED format files"""
+    """Parser for BED format files (BED3..BED12+)"""
+    
+    #: Optional BED column names after the required chrom/start/end.
+    #: Deeper fields (7+) keep generic names.
+    _OPTIONAL_COLUMNS = {4: 'name', 5: 'score', 6: 'strand'}
     
     @staticmethod
-    def parse(filepath: str, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
+    def parse(filepath: str) -> pd.DataFrame:
         """
-        Parse BED file (BED3, BED6, or BED12)
+        Parse BED file (BED3, BED6, or BED12+)
+        
+        BED is 0-based half-open [start, end), so the source-level output
+        is already in the canonical coordinate convention; normalization is
+        a no-op for BED coordinates.
+        
+        Variable-width rows are supported: optional fields present on some
+        rows are missing (NA) on rows that lack them. Structurally invalid
+        rows (fewer than 3 fields, or non-integer coordinates) raise
+        MalformedFileError with the offending physical line number —
+        records are never silently dropped.
         
         Args:
             filepath: Path to BED file
@@ -93,54 +108,44 @@ class BEDParser:
         Returns:
             DataFrame with columns: chr, start, end, [name, score, strand, ...]
         """
-        if use_polars_bio:
-            try:
-                import polars_bio as pb
-                import signal
-                
-                def timeout_handler(signum, frame):
-                    raise TimeoutError("Polars-bio parsing timed out")
-                
-                # Set 5 second timeout
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(5)
-                
+        rows: List[Dict] = []
+        max_cols = 3
+        
+        with open(filepath, 'r') as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.rstrip('\n')
+                if not line.strip() or line.startswith('#'):
+                    continue
+                fields = line.split('\t')
+                if len(fields) < 3:
+                    raise MalformedFileError(
+                        f'line {line_number}: expected at least 3 '
+                        f'tab-separated fields, got {len(fields)}'
+                    )
                 try:
-                    lf = pb.scan_bed(filepath)
-                    df = lf.collect().to_pandas()
-                    signal.alarm(0)  # Cancel alarm
-                    # Schema guard: the app expects raw 0-based chr/start/end
-                    # columns; fall back to the standard parser on mismatch.
-                    if not {'chr', 'start', 'end'}.issubset(df.columns):
-                        raise ValueError(f"unexpected polars-bio BED schema: {list(df.columns)}")
-                    return df
-                except Exception:
-                    signal.alarm(0)  # Cancel alarm
-                    # Fallback to pandas parser
-                    pass
-            except Exception:
-                pass
-        # Fallback to standard parser
-        if True:
-            # BED files have no header
-            df = pd.read_csv(
-                filepath,
-                sep='\t',
-                header=None,
-                comment='#',
-                **kwargs
-            )
-            # Assign column names based on number of columns
-            ncols = len(df.columns)
-            if ncols >= 3:
-                df.columns = ['chr', 'start', 'end'] + [f'col{i}' for i in range(4, ncols + 1)]
-            if ncols >= 4:
-                df.rename(columns={'col4': 'name'}, inplace=True)
-            if ncols >= 5:
-                df.rename(columns={'col5': 'score'}, inplace=True)
-            if ncols >= 6:
-                df.rename(columns={'col6': 'strand'}, inplace=True)
-            return df
+                    start = int(fields[1])
+                    end = int(fields[2])
+                except ValueError:
+                    raise MalformedFileError(
+                        f'line {line_number}: start/end must be integers, '
+                        f'got {fields[1]!r}/{fields[2]!r}'
+                    )
+                row = {'chr': fields[0], 'start': start, 'end': end}
+                for index, value in enumerate(fields[3:], start=4):
+                    row[BEDParser._OPTIONAL_COLUMNS.get(index, f'col{index}')] = value
+                max_cols = max(max_cols, len(fields))
+                rows.append(row)
+        
+        if not rows:
+            return pd.DataFrame(columns=['chr', 'start', 'end'])
+        
+        df = pd.DataFrame(rows)
+        ordered = ['chr', 'start', 'end'] + [
+            BEDParser._OPTIONAL_COLUMNS.get(index, f'col{index}')
+            for index in range(4, max_cols + 1)
+            if BEDParser._OPTIONAL_COLUMNS.get(index, f'col{index}') in df.columns
+        ]
+        return df[ordered]
     
     @staticmethod
     def validate(df: pd.DataFrame) -> Tuple[bool, Optional[str]]:
@@ -174,9 +179,15 @@ class GFFParser:
     """Parser for GFF/GTF format files"""
     
     @staticmethod
-    def parse(filepath: str, feature_types: Optional[List[str]] = None, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
+    def parse(
+        filepath: str,
+        feature_types: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
         """
         Parse GFF/GTF file
+        
+        GFF is 1-based inclusive [start, end]; conversion to the canonical
+        0-based half-open model is applied later by normalization, not here.
         
         Args:
             filepath: Path to GFF/GTF file
@@ -186,48 +197,18 @@ class GFFParser:
         Returns:
             DataFrame with genomic features
         """
-        if use_polars_bio:
-            try:
-                import polars_bio as pb
-                import signal
-                
-                def timeout_handler(signum, frame):
-                    raise TimeoutError("Polars-bio parsing timed out")
-                
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(5)
-                
-                try:
-                    lf = pb.scan_gff(filepath)
-                    df = lf.collect().to_pandas()
-                    signal.alarm(0)
-                    # Schema guard: the app expects chr/start/end/feature
-                    # columns; fall back to the standard parser on mismatch.
-                    if not {'chr', 'start', 'end', 'feature'}.issubset(df.columns):
-                        raise ValueError(f"unexpected polars-bio GFF schema: {list(df.columns)}")
-                    if feature_types:
-                        df = df[df['feature'].isin(feature_types)]
-                    return df
-                except Exception:
-                    signal.alarm(0)
-                    pass
-            except Exception:
-                pass
-        # Fallback to standard parser
-        if True:
-            # Read GFF/GTF (9 standard columns)
-            df = pd.read_csv(
-                filepath,
-                sep='\t',
-                header=None,
-                comment='#',
-                names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
-                **kwargs
-            )
-            if feature_types:
-                df = df[df['feature'].isin(feature_types)]
-            df = GFFParser._parse_attributes(df)
-            return df
+        # Read GFF/GTF (9 standard columns)
+        df = pd.read_csv(
+            filepath,
+            sep='\t',
+            header=None,
+            comment='#',
+            names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
+        )
+        if feature_types:
+            df = df[df['feature'].isin(feature_types)]
+        df = GFFParser._parse_attributes(df)
+        return df
     
     @staticmethod
     def _parse_attributes(df: pd.DataFrame) -> pd.DataFrame:
@@ -268,81 +249,99 @@ class GFFParser:
 class VCFParser:
     """Parser for VCF format files"""
     
+    _COLUMNS = ['chr', 'start', 'end', 'id', 'ref', 'alt', 'qual', 'filter']
+    
     @staticmethod
-    def parse(filepath: str, use_polars_bio: bool = False, **kwargs) -> pd.DataFrame:
+    def _variant_span(ref, end_info, pos: int) -> int:
         """
-        Parse VCF file using pysam
+        Number of bases occupied by a variant at 1-based ``pos``.
+        
+        Per the VCF specification the reference interval occupied by a
+        variant is ``[POS, POS + max(1, len(REF)) - 1]``; when ``INFO/END``
+        is present the occupied interval is ``[POS, END]`` (both ends
+        1-based inclusive).
+        """
+        if end_info is not None:
+            span = int(end_info) - pos + 1
+            if span < 1:
+                raise MalformedFileError(
+                    f'VCF variant at POS {pos}: INFO/END {end_info} precedes POS'
+                )
+            return span
+        ref_len = len(ref) if isinstance(ref, str) else 0
+        return max(1, ref_len)
+    
+    @staticmethod
+    def _info_end(info_field) -> Optional[int]:
+        """Extract INFO/END from a raw INFO field, or None when absent."""
+        match = re.search(r'(?:^|;)END=(\d+)', info_field or '')
+        return int(match.group(1)) if match else None
+    
+    @classmethod
+    def parse(cls, filepath: str) -> pd.DataFrame:
+        """
+        Parse VCF file into a source-level 1-based inclusive table.
+        
+        Each variant becomes the interval occupied by its reference
+        sequence (see ``_variant_span``): ``start = POS`` and
+        ``end = POS + span - 1``, both 1-based inclusive. Normalization
+        later converts that span to the canonical 0-based half-open
+        model. Task 2 limitation: the span is derived from INFO/END or
+        REF length only; broader structural-variant interpretation is not
+        performed.
+        
+        Parsing is explicit and line-based: the VCF specification fixes
+        the first eight tab-separated fields (CHROM POS ID REF ALT QUAL
+        FILTER INFO) and tabs inside INFO values are escaped, so plain
+        text parsing is complete for the fields this app needs. This
+        avoids version-dependent behavior of external VCF libraries
+        (e.g. pysam builds that do not expose INFO/END through their
+        record API). Structurally invalid data lines raise
+        MalformedFileError with the offending physical line number —
+        records are never silently dropped.
         
         Args:
             filepath: Path to VCF file
             
         Returns:
-            DataFrame with variant information
+            DataFrame with columns: chr, start, end, id, ref, alt, qual, filter
         """
-        if use_polars_bio:
-            try:
-                import polars_bio as pb
-                import signal
-                
-                def timeout_handler(signum, frame):
-                    raise TimeoutError("Polars-bio parsing timed out")
-                
-                signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(5)
-                
+        rows: List[Dict] = []
+        
+        with open(filepath, 'r') as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.rstrip('\n')
+                if not line.strip() or line.startswith('#'):
+                    continue
+                fields = line.split('\t')
+                if len(fields) < 8:
+                    raise MalformedFileError(
+                        f'line {line_number}: expected at least 8 tab-separated '
+                        f'fields (CHROM POS ID REF ALT QUAL FILTER INFO), '
+                        f'got {len(fields)}'
+                    )
+                chrom, pos_s, vid, ref, alt, qual, filt, info = fields[:8]
                 try:
-                    lf = pb.scan_vcf(filepath)
-                    df = lf.collect().to_pandas()
-                    signal.alarm(0)
-                    # Schema/data guard: VCF directive lines (>>fileFormat, etc.)
-                    # can surface as rows with missing positions; fall back to pysam.
-                    if not {'chr', 'start', 'end'}.issubset(df.columns) or df['start'].isna().any():
-                        raise ValueError("unexpected polars-bio VCF output")
-                    return df
-                except Exception:
-                    signal.alarm(0)
-                    pass
-            except Exception:
-                pass
-        # Fallback to standard parser
-        if True:
-            variants = []
-            try:
-                vcf = pysam.VariantFile(filepath)
-                for record in vcf:
-                    variants.append({
-                        'chr': record.chrom,
-                        'start': record.pos - 1,  # Convert to 0-based
-                        'end': record.pos,        # End is exclusive in BED
-                        'id': record.id,
-                        'ref': record.ref,
-                        'alt': ','.join([str(a) for a in record.alts]) if record.alts else '',
-                        'qual': record.qual,
-                        'filter': ','.join(record.filter.keys()) if record.filter else 'PASS'
-                    })
-                vcf.close()
-            except Exception as e:
-                # Fallback to simple parsing if pysam fails
-                return VCFParser._simple_parse(filepath)
-            return pd.DataFrame(variants)
-    
-    @staticmethod
-    def _simple_parse(filepath: str) -> pd.DataFrame:
-        """Simple VCF parser without pysam (fallback)"""
-        df = pd.read_csv(
-            filepath,
-            sep='\t',
-            comment='#',
-            header=None,
-            names=['chr', 'start', 'id', 'ref', 'alt', 'qual', 'filter', 'info', 'format']
-        )
+                    pos = int(pos_s)
+                except ValueError:
+                    raise MalformedFileError(
+                        f'line {line_number}: POS must be an integer, got {pos_s!r}'
+                    )
+                span = cls._variant_span(ref, cls._info_end(info), pos)
+                rows.append({
+                    'chr': chrom,
+                    'start': pos,
+                    'end': pos + span - 1,
+                    'id': None if vid == '.' else vid,
+                    'ref': ref,
+                    'alt': alt,
+                    'qual': None if qual == '.' else float(qual),
+                    'filter': 'PASS' if filt == '.' else filt,
+                })
         
-        # Add end column (same as start for SNPs)
-        # Convert to 0-based BED coordinates
-        df['end'] = df['start']
-        df['start'] = df['start'] - 1
-        
-        return df[['chr', 'start', 'end', 'id', 'ref', 'alt', 'qual', 'filter']]
+        if not rows:
+            return pd.DataFrame(columns=cls._COLUMNS)
+        return pd.DataFrame(rows, columns=cls._COLUMNS)
 
 
 class CustomParser:
