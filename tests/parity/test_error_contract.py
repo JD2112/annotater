@@ -10,13 +10,13 @@ and *failure of the backend call*.
 
 Deviations captured here:
 
-- ``test_polars_overlap_backend_failure_propagates`` — PolarsBioEngine
-  catches all ``pb.overlap`` exceptions and returns empty (xfail).
-- ``test_polars_nearest_backend_failure_propagates`` — same for
-  ``pb.nearest`` (xfail).
 - ``test_bedtools_result_parsing_failure_propagates`` — DISCOVERED in
-  Task 3: BedtoolsEngine._bedtools_to_df catches all ``to_dataframe``
+  Task 3: BedtoolsEngine._bedtool_to_df catches all ``to_dataframe``
   exceptions and returns an empty DataFrame (xfail).
+
+The Polars-Bio failure-propagation tests (``pb.overlap`` and
+``pb.nearest``) pass since Task 4: the engine no longer swallows backend
+exceptions.
 """
 
 from __future__ import annotations
@@ -76,15 +76,6 @@ def test_malformed_input_raises_instead_of_empty():
         assert not isinstance(excinfo.value, AssertionError)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PolarsBioEngine._join_overlap catches ALL pb.overlap exceptions and "
-        "returns an empty frame (logger.error only), converting a backend "
-        "failure into a scientifically plausible empty result — explicitly "
-        "forbidden by SPEC 9.2. The engine must propagate the error. Task 4."
-    ),
-)
 def test_polars_overlap_backend_failure_propagates(monkeypatch):
     import polars_bio
 
@@ -96,14 +87,6 @@ def test_polars_overlap_backend_failure_propagates(monkeypatch):
         PolarsBioEngine().intersect(_query(), _annot(), how="inner")
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PolarsBioEngine._find_nearest catches ALL pb.nearest exceptions and "
-        "returns an empty frame, converting a backend failure into an empty "
-        "result — explicitly forbidden by SPEC 9.2. Task 4."
-    ),
-)
 def test_polars_nearest_backend_failure_propagates(monkeypatch):
     import polars_bio
 

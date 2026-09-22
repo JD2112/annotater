@@ -51,53 +51,12 @@ class ParityCase:
 
 
 # ---------------------------------------------------------------------------
-# Shared known-deviation reasons (Task 3; detailed inventory in
+# Shared known-deviation reasons (detailed inventory in
 # docs/implementation-notes.md). Reasons name the exact root cause and the
-# normative requirement violated.
+# normative requirement violated. The Task 3 Polars-Bio reasons
+# (non-canonical schema, coordinate-system default, swallowed backend
+# errors, empty-annotation left mode) were resolved in Task 4 and removed.
 # ---------------------------------------------------------------------------
-
-POLARS_SCHEMA_REASON = (
-    "PolarsBioEngine output is not canonical: _post_process prefixes BOTH frames "
-    "with coord_, keeps polars-bio _1/_2 suffixes, leaks the internal pb_row_id "
-    "column (inner mode; left-mode reconstruction drops it), and no annot_* "
-    "columns exist, so canonicalize_annotation_result "
-    "rejects the frame before any semantic comparison (SPEC 6 exact canonical "
-    "column set with provenance prefixes; SPEC 9.2; engine-contract section 3). "
-    "Task 4 result-adapter work."
-)
-
-POLARS_TOUCHING_REASON = (
-    "Two independent known deviations (both Task 4). (1) PolarsBioEngine output is not "
-    "canonical: _post_process prefixes both frames with coord_, keeps polars-bio _1/_2 "
-    "suffixes, leaks pb_row_id (inner mode), and no annot_* columns exist, so "
-    "canonicalize_annotation_result rejects the frame before any semantic comparison "
-    "(SPEC 6; engine-contract section 3). (2) PolarsBioEngine does not declare the "
-    "coordinate system; polars-bio 0.35.1 defaults to 1-based CLOSED intervals, so "
-    "canonical 0-based half-open data is re-interpreted and touching intervals are "
-    "reported as overlapping (SPEC 5; engine-contract section 4)."
-)
-
-POLARS_COORD_SYSTEM_REASON = (
-    "PolarsBioEngine does not declare the coordinate system; polars-bio 0.35.1 "
-    "defaults to 1-based CLOSED intervals (global "
-    "datafusion.bio.coordinate_system_zero_based unset), so canonical 0-based "
-    "half-open data is re-interpreted and touching intervals are reported as "
-    "overlapping (SPEC 5 canonical 0-based half-open model; engine-contract "
-    "section 4: boundary-touching intervals do not overlap). Task 4."
-)
-
-POLARS_SWALLOW_REASON = (
-    "PolarsBioEngine._join_overlap catches ALL pb.overlap exceptions and returns "
-    "an empty DataFrame (logger.error only); SPEC 9.2 forbids swallowing backend "
-    "exceptions and converting them into scientifically plausible empty results. "
-    "Task 4."
-)
-
-POLARS_NEAR_SWALLOW_REASON = (
-    "PolarsBioEngine._find_nearest catches ALL pb.nearest exceptions and returns "
-    "an empty DataFrame; SPEC 9.2 forbids swallowing backend exceptions into "
-    "empty results. Task 4."
-)
 
 BEDTOOLS_EMPTY_LEFT_REASON = (
     "BedtoolsEngine.intersect returns an empty frame whenever EITHER input is "
@@ -131,12 +90,4 @@ BEDTOOLS_LEFT_SENTINELS_REASON = (
 BEDTOOLS_SCHEMA_REASON = (
     "BedtoolsEngine output deviates from the canonical result schema "
     "(SPEC 6; engine-contract section 3)."
-)
-
-POLARS_LEFT_EMPTY_ANNOT_REASON = (
-    "PolarsBioEngine left mode with an empty annotation table preserves the "
-    "query rows (reconstruction works) but the output is not canonical: only "
-    "coord_* and suffixed backend columns exist, no annot_* columns, so "
-    "canonicalize_annotation_result rejects the frame (SPEC 6; Task 4). "
-    "Semantically the row preservation itself is correct."
 )

@@ -15,12 +15,12 @@ xfail marking is EXPLICIT per case and per engine (an empty reason means
 the suite instead of silently xfailing, and a case whose deviation has
 been fixed XPASSes (strict) until its stale marker is removed.
 
-Current per-engine status as of Task 3:
+Current per-engine status as of Task 4:
 
-- Polars-Bio: every case with a non-empty input fails at the
-  canonicalization layer (non-canonical output schema), except the
-  empty-query cases which produce an empty result and pass. Touching /
-  boundary cases additionally carry the coordinate-system deviation.
+- Polars-Bio: conforms to the canonical result contract on the covered
+  parity surface (canonical schema with explicit provenance, 0-based
+  half-open coordinate semantics, deterministic ordering, left-mode
+  reconstruction, backend error propagation).
 - Bedtools: passes every case except the documented xfail reasons below
   (empty-annotation left mode; lossy metadata round-trip for missing and
   numeric-looking string metadata).
@@ -35,9 +35,6 @@ from .fixtures import (
     BEDTOOLS_METADATA_TYPE_REASON,
     CHR,
     ParityCase,
-    POLARS_LEFT_EMPTY_ANNOT_REASON,
-    POLARS_SCHEMA_REASON,
-    POLARS_TOUCHING_REASON,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,35 +47,30 @@ OVERLAP_CASES = [
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR], [10], [20], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "partial_overlap_left",
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR], [5], [15], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "partial_overlap_right",
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR], [15], [25], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "annotation_inside_query",
         interval_table([CHR], [10], [30], gene=["g1"]),
         interval_table([CHR], [15], [20], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "query_inside_annotation",
         interval_table([CHR], [15], [20], gene=["g1"]),
         interval_table([CHR], [10], [30], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "different_chromosomes_no_overlap",
@@ -100,42 +92,36 @@ OVERLAP_CASES = [
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR], [20], [25], feature=["f1"]),
         (),
-        polars_xfail=POLARS_TOUCHING_REASON,
     ),
     ParityCase(
         "one_base_intervals_exact",
         interval_table([CHR], [10], [11], gene=["g1"]),
         interval_table([CHR], [10], [11], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "adjacent_one_base_no_overlap",
         interval_table([CHR], [10], [11], gene=["g1"]),
         interval_table([CHR], [11], [12], feature=["f1"]),
         (),
-        polars_xfail=POLARS_TOUCHING_REASON,
     ),
     ParityCase(
         "one_base_overlap",
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR], [19], [20], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "one_query_two_annotations",
         interval_table([CHR], [10], [30], gene=["g1"]),
         interval_table([CHR, CHR], [5, 25], [15, 35], feature=["f1", "f2"]),
         ((0, 0), (0, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "one_annotation_two_queries",
         interval_table([CHR, CHR], [10, 20], [15, 25], gene=["g1", "g2"]),
         interval_table([CHR], [5], [30], feature=["f1"]),
         ((0, 0), (1, 0)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # q0[10,20): a0[18,22) yes, a1[24,30) no, a2[10,15) yes
@@ -144,21 +130,18 @@ OVERLAP_CASES = [
         interval_table([CHR, CHR], [10, 15], [20, 25], gene=["q0", "q1"]),
         interval_table([CHR] * 3, [18, 24, 10], [22, 30, 15], feature=["a0", "a1", "a2"]),
         ((0, 0), (0, 2), (1, 0), (1, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "duplicate_queries_preserved",
         interval_table([CHR, CHR], [10, 10], [20, 20], gene=["g1", "g2"]),
         interval_table([CHR], [15], [25], feature=["f1"]),
         ((0, 0), (1, 0)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "duplicate_annotations_preserved",
         interval_table([CHR], [10], [20], gene=["g1"]),
         interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"]),
         ((0, 0), (0, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # two identical queries x two identical annotations -> 4 rows, multiplicity
@@ -166,7 +149,6 @@ OVERLAP_CASES = [
         interval_table([CHR, CHR], [10, 10], [20, 20], gene=["g1", "g2"]),
         interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"]),
         ((0, 0), (0, 1), (1, 0), (1, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
 ]
 
@@ -181,7 +163,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [0], [1], gene=["g1"]),
         interval_table([CHR], [0], [1], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # [0,1) vs [1,2): touch at 1 -> no overlap (the 1-based-closed trap)
@@ -189,7 +170,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [0], [1], gene=["g1"]),
         interval_table([CHR], [1], [2], feature=["f1"]),
         (),
-        polars_xfail=POLARS_TOUCHING_REASON,
     ),
     ParityCase(
         # [9,10) vs [10,11): touch at 10 -> no overlap
@@ -197,7 +177,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [9], [10], gene=["g1"]),
         interval_table([CHR], [10], [11], feature=["f1"]),
         (),
-        polars_xfail=POLARS_TOUCHING_REASON,
     ),
     ParityCase(
         # [9,11) vs [10,11): contains base 10 -> overlap
@@ -205,7 +184,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [9], [11], gene=["g1"]),
         interval_table([CHR], [10], [11], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # [0,5) vs [0,10): zero-based containment
@@ -213,7 +191,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [0], [5], gene=["g1"]),
         interval_table([CHR], [0], [10], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # [0,5) vs [0,1): one-base annotation at the zero start
@@ -221,7 +198,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [0], [5], gene=["g1"]),
         interval_table([CHR], [0], [1], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # [0,10) vs [10,20): wide intervals touching at 10 -> no overlap
@@ -229,7 +205,6 @@ BOUNDARY_CASES = [
         interval_table([CHR], [0], [10], gene=["g1"]),
         interval_table([CHR], [10], [20], feature=["f1"]),
         (),
-        polars_xfail=POLARS_TOUCHING_REASON,
     ),
     ParityCase(
         # 'chr0' and 'chr10' are distinct chromosome identifiers even though
@@ -252,7 +227,6 @@ LEFT_CASES = [
         interval_table([CHR], [15], [25], feature=["f1"]),
         ((0, 0),),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "left_unmatched_only",
@@ -260,7 +234,6 @@ LEFT_CASES = [
         interval_table([CHR], [100], [200], feature=["f1"]),
         ((0, None),),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "left_mixed_matched_unmatched",
@@ -268,7 +241,6 @@ LEFT_CASES = [
         interval_table([CHR], [15], [25], feature=["f1"]),
         ((0, 0), (1, None)),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "left_one_query_multiple_hits",
@@ -276,7 +248,6 @@ LEFT_CASES = [
         interval_table([CHR, CHR], [5, 25], [15, 35], feature=["f1", "f2"]),
         ((0, 0), (0, 1)),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "left_duplicate_unmatched_queries",
@@ -284,7 +255,6 @@ LEFT_CASES = [
         interval_table([CHR], [10], [20], feature=["f1"]),
         ((0, None), (1, None)),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "left_all_queries_unmatched",
@@ -292,7 +262,6 @@ LEFT_CASES = [
         interval_table([CHR], [100], [200], feature=["f1"]),
         ((0, None), (1, None)),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # SPEC 7.2: left mode preserves every query row even when the
@@ -303,7 +272,6 @@ LEFT_CASES = [
         ((0, None), (1, None)),
         how="left",
         bedtools_xfail=BEDTOOLS_EMPTY_LEFT_REASON,
-        polars_xfail=POLARS_LEFT_EMPTY_ANNOT_REASON,
     ),
     ParityCase(
         # no query rows -> no result rows (a valid empty result, not a failure)
@@ -341,14 +309,12 @@ METADATA_CASES = [
         interval_table([CHR], [10], [30], feature=["geneA"], score=["high"], id=["q-1"]),
         interval_table([CHR, CHR], [5, 25], [15, 35], feature=["exonA", "exonB"], score=["low1", "low2"], id=["a-1", "a-2"]),
         ((0, 0), (0, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         "metadata_arbitrary_strings",
         interval_table([CHR], [10], [20], name=["region #1 (frag)"]),
         interval_table([CHR], [15], [25], name=["TfAP2: site~A"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # numeric metadata without missing values: bedtools round-trips the
@@ -357,7 +323,6 @@ METADATA_CASES = [
         interval_table([CHR], [10], [20], score=[0.5], id=[7]),
         interval_table([CHR], [15], [25], feature=["f1"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # boolean metadata without missing values
@@ -365,7 +330,6 @@ METADATA_CASES = [
         interval_table([CHR], [10], [20], flag=[True]),
         interval_table([CHR], [15], [25], flag=[False]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # missing metadata on MATCHED rows must be canonical missing (pd.NA),
@@ -375,7 +339,6 @@ METADATA_CASES = [
         interval_table([CHR, CHR], [15, 105], [25, 115], feature=["f1", "f2"]),
         ((0, 0), (1, 1)),
         bedtools_xfail=BEDTOOLS_METADATA_MISSING_REASON,
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # string metadata with numeric-looking values must keep its string type
@@ -384,7 +347,6 @@ METADATA_CASES = [
         interval_table([CHR, CHR], [15, 105], [25, 115], feature=["f1", "f2"]),
         ((0, 0), (1, 1)),
         bedtools_xfail=BEDTOOLS_METADATA_TYPE_REASON,
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # metadata columns must keep their input order in the result
@@ -392,7 +354,6 @@ METADATA_CASES = [
         interval_table([CHR], [10], [20], zeta=["z1"], alpha=["a1"]),
         interval_table([CHR], [15], [25], bb=["b1"], aa=["a2"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # strand values round-trip as metadata (matching itself is tested in
@@ -401,7 +362,6 @@ METADATA_CASES = [
         interval_table([CHR], [10], [20], strand=["+"]),
         interval_table([CHR], [15], [25], strand=["-"]),
         ((0, 0),),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
 ]
 
@@ -416,7 +376,6 @@ ORDERING_CASES = [
         interval_table([CHR, CHR], [2000, 10], [2100, 20], gene=["qA", "qB"]),
         interval_table([CHR, CHR], [1900, 5], [2050, 15], feature=["aW", "aY"]),
         ((0, 0), (1, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # annotation rows are listed out of coordinate order; per-query hit
@@ -425,7 +384,6 @@ ORDERING_CASES = [
         interval_table([CHR], [0], [200], gene=["q"]),
         interval_table([CHR] * 3, [100, 5, 50], [150, 10, 60], feature=["aX", "aY", "aZ"]),
         ((0, 0), (0, 1), (0, 2)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # identical query rows: ordering between the two input rows must come
@@ -434,7 +392,6 @@ ORDERING_CASES = [
         interval_table([CHR, CHR], [10, 10], [20, 20], gene=["g1", "g2"]),
         interval_table([CHR, CHR], [15, 12], [25, 18], feature=["f1", "f2"]),
         ((0, 0), (0, 1), (1, 0), (1, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
     ParityCase(
         # left mode: unmatched query row sits at its own query position,
@@ -444,7 +401,6 @@ ORDERING_CASES = [
         interval_table([CHR, CHR], [5, 25], [15, 35], feature=["f1", "f2"]),
         ((0, 0), (0, 1), (1, None)),
         how="left",
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
 ]
 
@@ -460,7 +416,6 @@ STRAND_CASES = [
         interval_table([CHR, CHR], [10, 2000], [20, 2100], gene=["g1", "g2"], strand=["+", "-"]),
         interval_table([CHR, CHR], [15, 1900], [25, 2050], feature=["f1", "f2"], strand=["-", "+"]),
         ((0, 0), (1, 1)),
-        polars_xfail=POLARS_SCHEMA_REASON,
     ),
 ]
 

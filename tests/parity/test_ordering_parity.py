@@ -43,19 +43,7 @@ def test_ordering_contract(case_engine):
     "engine_cls",
     [
         pytest.param(BedtoolsEngine, id="bedtools"),
-        pytest.param(
-            PolarsBioEngine,
-            id="polars-bio",
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason=(
-                    "PolarsBioEngine output is not canonical (both frames "
-                    "coord_-prefixed, _1/_2 suffixes, pb_row_id leak); "
-                    "canonicalize_annotation_result rejects it before row "
-                    "ordering can be verified (SPEC 6; Task 4)."
-                ),
-            ),
-        ),
+        pytest.param(PolarsBioEngine, id="polars-bio"),
     ],
 )
 def test_identical_runs_are_deterministic(engine_cls):
