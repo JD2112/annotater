@@ -62,8 +62,10 @@ GFF3 coordinates are 1-based and inclusive. Conversion to AnnotateR's canonical 
 ### VCF
 
 - **GA4GH / hts-specs VCF specification repository:** https://github.com/samtools/hts-specs
+- **Normative VCF specification version: VCF v4.5** ("The Variant Call Format Specification, VCFv4.5 and BCFv2.2"): https://github.com/samtools/hts-specs/blob/master/VCFv4.5.tex
+- **Rendered VCF v4.5 PDF:** https://github.com/samtools/hts-specs/blob/master/VCFv4.5.pdf
 
-VCF POS is 1-based. Variant interval construction depends on REF/END semantics and must not be treated as a generic BED row without an explicit conversion rule.
+VCF POS is 1-based. Variant interval construction depends on REF/END semantics and must not be treated as a generic BED row without an explicit conversion rule. AnnotateR's line-based VCF parser implements the fixed eight tab-separated fields (CHROM POS ID REF ALT QUAL FILTER INFO) plus INFO/END span handling; if the parser's supported feature set ever diverges from VCF v4.5, update this section and the parser tests together.
 
 ### GTF
 

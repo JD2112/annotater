@@ -1,9 +1,12 @@
-# Use Python 3.10 slim image
-FROM python:3.10-slim
+# Use Python 3.12 slim image (Task 2.5 supported baseline; exact dependency
+# pins require Python >= 3.12 — see docs/implementation-notes.md)
+FROM python:3.12-slim
 
-# Install system dependencies including bedtools and build dependencies
+# Install system dependencies including bedtools, build dependencies, and curl
+# (curl is required by the HEALTHCHECK below)
 RUN apt-get update && apt-get install -y \
     bedtools \
+    curl \
     build-essential \
     zlib1g-dev \
     libbz2-dev \

@@ -1,0 +1,56 @@
+name: python-tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: pytest (Python 3.12, ${{ matrix.os }})
+    # Python 3.12 is the currently tested and supported runtime. 3.13/3.14
+    # satisfy requires-python but are NOT part of the tested CI matrix;
+    # 3.10/3.11 cannot install the exact pins at all (e.g. numpy==2.5.3).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # System dependency: pybedtools uses the bedtools binary from PATH
+      # (no embedded-binary mode; see docs/implementation-notes.md).
+      - name: Install bedtools (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bedtools
+          bedtools --version
+
+      - name: Install bedtools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install bedtools
+          bedtools --version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Record runtime versions
+        run: |
+          python - <<'EOF'
+          import pybedtools, polars, polars_bio
+          print("pybedtools", pybedtools.__version__)
+          print("polars", polars.__version__)
+          print("polars-bio", getattr(polars_bio, "__version__", "unknown"))
+          EOF
+
+      - name: Run test suite
+        run: pytest

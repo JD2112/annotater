@@ -1,27 +1,24 @@
-# Core dependencies
-streamlit>=1.30.0
-pandas>=2.0.0
-numpy>=1.24.0
+# AnnotateR runtime dependencies
+#
+# Exact pins per the dependency/runtime policy established by Task 2.5 for
+# the audited reproducible environment (SPEC.md imposes no pinning
+# requirement). These pins match the audited supported environment
+# recorded in docs/implementation-notes.md (Task 2.5, Python 3.12.14).
+# Python 3.12 is the currently tested and supported runtime.
+streamlit==1.64.0
+pandas==3.0.6
+numpy==2.5.3
 
-# Genomics tools
-pybedtools>=0.9.1
-pyranges>=0.0.129
-polars>=0.20.0
-polars-bio>=0.2.0
+# Genomics tools (exact pins per Task 2.5 policy)
+pybedtools==0.12.1
+polars==1.44.2
+polars-bio==0.35.1
 
 # File handling
-openpyxl>=3.1.0  # Excel export
+openpyxl==3.1.5  # Excel export (streamlit_app/streamlit_app.py uses pd.ExcelWriter(engine='openpyxl'))
 
 # Visualization
-plotly>=5.18.0
-altair>=5.2.0
-
-# Utilities
-python-magic>=0.4.27  # File type detection
-validators>=0.22.0  # Input validation
-
-# Development & Testing (optional)
-pytest>=7.4.0
-pytest-cov>=4.1.0
-black>=23.12.0
-ruff>=0.1.0
+plotly==7.1.0
+# NOTE: altair, pyranges, python-magic and validators were audited in Task 2.5
+# and removed: no imports, dynamic imports, tests, or documentation-supported
+# workflow uses them (altair is still pulled in transitively by streamlit).
