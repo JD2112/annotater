@@ -86,16 +86,6 @@ def test_bedtools_raw_inner_output_is_canonical():
     assert list(raw.columns) == list(canonical_result_columns(coord_df, annot_df))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BedtoolsEngine raw left-mode output keeps bedtools -loj sentinel "
-        "values ('.' and '-1') in unmatched annotation fields instead of "
-        "canonical missing values (SPEC 6; engine-contract sections 6/8). "
-        "Today the canonical adapter masks this at the public level; the "
-        "engine itself must emit canonical missing directly. Task 5."
-    ),
-)
 def test_bedtools_raw_left_unmatched_uses_canonical_missing():
     raw = run_engine(
         BedtoolsEngine,

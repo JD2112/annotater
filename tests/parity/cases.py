@@ -271,7 +271,6 @@ LEFT_CASES = [
         interval_table([], [], [], feature=[]),
         ((0, None), (1, None)),
         how="left",
-        bedtools_xfail=BEDTOOLS_EMPTY_LEFT_REASON,
     ),
     ParityCase(
         # no query rows -> no result rows (a valid empty result, not a failure)
@@ -338,7 +337,6 @@ METADATA_CASES = [
         interval_table([CHR, CHR], [10, 100], [20, 200], score=[None, 0.5]),
         interval_table([CHR, CHR], [15, 105], [25, 115], feature=["f1", "f2"]),
         ((0, 0), (1, 1)),
-        bedtools_xfail=BEDTOOLS_METADATA_MISSING_REASON,
     ),
     ParityCase(
         # string metadata with numeric-looking values must keep its string type
@@ -346,7 +344,6 @@ METADATA_CASES = [
         interval_table([CHR, CHR], [10, 100], [20, 200], label=["3.5", "4.5"]),
         interval_table([CHR, CHR], [15, 105], [25, 115], feature=["f1", "f2"]),
         ((0, 0), (1, 1)),
-        bedtools_xfail=BEDTOOLS_METADATA_TYPE_REASON,
     ),
     ParityCase(
         # metadata columns must keep their input order in the result

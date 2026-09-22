@@ -98,15 +98,6 @@ def test_polars_nearest_backend_failure_propagates(monkeypatch):
         PolarsBioEngine(mode="closest").intersect(_query(), _annot())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DISCOVERED in Task 3: BedtoolsEngine._bedtools_to_df catches ALL "
-        "BedTool.to_dataframe exceptions and returns an empty DataFrame, "
-        "converting a backend failure into a scientifically plausible empty "
-        "result — explicitly forbidden by SPEC 9.2. Task 4/5."
-    ),
-)
 def test_bedtools_result_parsing_failure_propagates(monkeypatch):
     import pybedtools
 
