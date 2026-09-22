@@ -345,8 +345,15 @@ def canonicalize_annotation_result(
         out[column] = pd.to_numeric(out[column], errors="coerce").astype("Int64")
 
     # Canonical missing on unmatched rows: every annot_* field.
+    # Guard: with no unmatched rows the assignment is a value no-op, but
+    # pandas 3.x still validates the scalar against each column dtype and
+    # raises for bool annot_* columns (verified on pinned pandas 3.0.6;
+    # other dtype-mismatched columns may raise depending on version).
+    # Discovered by the Task 3 parity harness, which feeds all-matched
+    # frames through this path.
     annot_cols = [c for c in expected if c.startswith("annot_")]
-    out.loc[~matched, annot_cols] = CANONICAL_MISSING
+    if (~matched).any():
+        out.loc[~matched, annot_cols] = CANONICAL_MISSING
 
     # Deterministic object dtype for all remaining text/metadata columns.
     for column in expected:
