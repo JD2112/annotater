@@ -112,6 +112,8 @@ Acceptance criterion: all ordinary-overlap parity tests pass for both engines.
 
 **Goal:** implement the canonical left-overlap contract for both engines.
 
+**Status: complete (2026-09-22) — see `docs/implementation-notes.md` (Task 5 section).** All 5 remaining Bedtools deviations (B1–B5) resolved via the identity-only `BedtoolsEngine` adapter rewrite; the 5 strict xfails were retired and replaced by passing tests. `use_strand`, `min_overlap`, and `contains`/`within` semantics remain Task 6 scope (behavior unchanged).
+
 Key requirement: every query row survives; unmatched rows appear exactly once with missing annotation fields and `has_overlap=False`.
 
 Do not equate Polars-Bio `overlap_output="left"` with a genomic left outer join without testing: its documented mode returns only left rows that overlap.

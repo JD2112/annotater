@@ -15,24 +15,22 @@ xfail marking is EXPLICIT per case and per engine (an empty reason means
 the suite instead of silently xfailing, and a case whose deviation has
 been fixed XPASSes (strict) until its stale marker is removed.
 
-Current per-engine status as of Task 4:
+Current per-engine status as of Task 5:
 
 - Polars-Bio: conforms to the canonical result contract on the covered
   parity surface (canonical schema with explicit provenance, 0-based
   half-open coordinate semantics, deterministic ordering, left-mode
   reconstruction, backend error propagation).
-- Bedtools: passes every case except the documented xfail reasons below
-  (empty-annotation left mode; lossy metadata round-trip for missing and
-  numeric-looking string metadata).
+- Bedtools: conforms to the canonical result contract on the covered
+  parity surface (Task 5 rewrite: identity-only serialization,
+  structural sentinel handling, canonical missing, empty-input
+  handling, error propagation). No per-case xfail reasons remain.
 """
 
 from __future__ import annotations
 
 from .comparator import interval_table
 from .fixtures import (
-    BEDTOOLS_EMPTY_LEFT_REASON,
-    BEDTOOLS_METADATA_MISSING_REASON,
-    BEDTOOLS_METADATA_TYPE_REASON,
     CHR,
     ParityCase,
 )

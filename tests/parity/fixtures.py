@@ -55,39 +55,7 @@ class ParityCase:
 # docs/implementation-notes.md). Reasons name the exact root cause and the
 # normative requirement violated. The Task 3 Polars-Bio reasons
 # (non-canonical schema, coordinate-system default, swallowed backend
-# errors, empty-annotation left mode) were resolved in Task 4 and removed.
+# errors, empty-annotation left mode) were resolved in Task 4 and removed;
+# the Task 3 Bedtools reasons (B1-B5) were resolved in Task 5 and removed.
+# No known-deviation reasons remain as of Task 5.
 # ---------------------------------------------------------------------------
-
-BEDTOOLS_EMPTY_LEFT_REASON = (
-    "BedtoolsEngine.intersect returns an empty frame whenever EITHER input is "
-    "empty, so how='left' with an empty annotation table drops every unmatched "
-    "query row instead of preserving it (SPEC 7.2: left mode MUST preserve every "
-    "input query row; engine-contract section 6)."
-)
-
-BEDTOOLS_METADATA_MISSING_REASON = (
-    "BedtoolsEngine stringifies metadata on the way to BED: a missing metadata "
-    "value round-trips as the '.' sentinel and the column degrades to string, "
-    "but the canonical contract requires canonical missing (pd.NA) and "
-    "deterministic metadata preservation (SPEC 6; engine-contract section 8)."
-)
-
-BEDTOOLS_METADATA_TYPE_REASON = (
-    "bedtools to_dataframe re-infers column dtypes from text: string metadata "
-    "with numeric-looking values ('3.5') round-trips as float 3.5, changing the "
-    "metadata value type (SPEC 6: input metadata MUST be preserved "
-    "deterministically; SPEC 10.3 dtype-relevant comparison)."
-)
-
-BEDTOOLS_LEFT_SENTINELS_REASON = (
-    "BedtoolsEngine raw left-mode output keeps bedtools -loj sentinel values "
-    "('.'/'-1') in unmatched annotation fields instead of canonical missing "
-    "values (engine-contract section 6/8). Currently masked at the public level "
-    "by canonicalize_annotation_result; the engine must emit canonical missing "
-    "directly. Task 5."
-)
-
-BEDTOOLS_SCHEMA_REASON = (
-    "BedtoolsEngine output deviates from the canonical result schema "
-    "(SPEC 6; engine-contract section 3)."
-)
