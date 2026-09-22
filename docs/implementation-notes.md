@@ -415,3 +415,108 @@ xfails are exactly the P1-P4/B1-B5 deviations above (see the inventory
 for which fixture pins which deviation). Pinned environment: Python
 3.12.14, bedtools 2.31.1, pybedtools 0.12.1, polars 1.44.2,
 polars-bio 0.35.1, pandas 3.0.6.
+
+## Task 4 — Polars-Bio contract compliance (2026-09-22)
+
+**Result: P1–P4 resolved.** `PolarsBioEngine` now satisfies the engine
+contract for the covered parity surface: canonical result schema with
+explicit provenance, 0-based half-open coordinate semantics,
+deterministic ordering, left-mode reconstruction, and backend error
+propagation. All 55 strict Polars-Bio xfails from Task 3 were converted
+to passing tests (their markers were removed); the 5 Bedtools xfails
+(B1–B5) remain, out of scope for this task.
+
+### PolarsBioEngine rewrite (deviations P1–P4)
+
+The engine was rewritten around a single explicit mapping strategy.
+The old code passed pandas DataFrames into `pb.overlap` and repaired
+the output with a broken `_right`-suffix heuristic; it also set no
+coordinate-system metadata and swallowed all backend exceptions.
+
+- **Per-frame coordinate stamping (P2).** Both backend frames are
+  stamped `frame.config_meta.set(coordinate_system_zero_based=True)`
+  on the polars frame (polars 1.44 `config_meta`, read by polars-bio
+  0.35.1's `_metadata.get_coordinate_system`). This is the narrowest
+  mechanism: it declares the coordinate system exactly where the data
+  lives, without mutating the process-wide
+  `datafusion.bio.coordinate_system_zero_based` option (polars-bio's
+  own default is 1-based CLOSED, the wrong model for canonical data).
+  No global option is read or written, so BedtoolsEngine and
+  PolarsBioEngine can run in one process without interfering, and the
+  engine is correct regardless of any external global setting.
+- **Explicit provenance mapping (P1).** Backend frames carry a
+  collision-safe positional row-identity column
+  (`_pb_query_row_id` / `_pb_annot_row_id`, suffix-bumped if the name
+  already exists). `pb.overlap`/`pb.nearest` are called with explicit
+  `suffixes=("_1", "_2")`, `cols1`, `cols2`. The adapter builds the
+  rename map from the KNOWN input schema (never from suffix
+  heuristics on the output) and validates the raw output as an exact
+  column-set match; any mismatch raises `CanonicalSchemaError`
+  (SPEC 9.2). Row IDs are dropped before the public result.
+- **Deterministic ordering.** Rows are sorted by
+  `(query_row_id, annotation_row_id)` — input row identity, never
+  coordinate — giving the canonical order (query input order, then
+  annotation input order) including for duplicate-valued rows.
+- **Left mode.** Unmatched queries are reconstructed by set-difference
+  on query row IDs and appear exactly once with canonical missing
+  annot fields and `has_overlap=False` (SPEC 7.2), in canonical
+  position (sorted by row ID with the matched rows).
+- **Error propagation (P3, P4).** `pb.overlap` / `pb.nearest` are
+  called without any try/except: backend exceptions propagate. A 0-row
+  result with no exception is a genuine no-match (valid empty), not a
+  swallowed failure.
+- **Input validation.** Engine entry validates both inputs with
+  `validate_canonical_interval_table`; malformed input raises
+  `CanonicalSchemaError` instead of reaching the backend.
+- **Empty results.** A 0-row raw result short-circuits to a genuinely
+  empty result (`inner`: empty frame; `left`: unmatched query rows).
+
+### Newly discovered in Task 4
+
+- **P5 (fixed) — `pb.nearest` phantom rows for empty annotation.**
+  With an empty annotation frame, `pb.nearest` still emits one row per
+  query with ALL annotation fields null (k=1 with no neighbor); the
+  adapter previously turned these into `has_overlap=True` rows with
+  NA annotation coordinates. `_nearest` now drops rows whose
+  annotation row ID is null, so closest mode with an empty annotation
+  table returns a genuinely empty result (SPEC 9.2). *Pinned by:*
+  `test_polars_inner_empty_inputs_return_empty_result`.
+- **`pb.nearest` distance dtype** is integer when the gap is integral
+  (observed `Int64` for integral inputs); consumers must not assume
+  float.
+
+### Focused regression tests (`tests/test_polars_bio_engine.py`)
+
+New module pinning guarantees the parity suite only exercises
+indirectly: half-open semantics with the global option explicitly set
+to the wrong model (per-frame stamping wins); the engine leaves the
+process-wide option untouched; raw output has no backend artifacts
+(no `_1`/`_2` suffixes, no row-ID columns, exact canonical column
+set); raw output is accepted as-is by
+`canonicalize_annotation_result` for every how/mode combination
+(`closest` declares `distance` as an extra column); empty-input
+matrix (all mode/how/emptiness combinations); left with empty
+annotation preserves queries; closest distance column semantics;
+malformed input raises explicitly.
+
+### Test command and baseline (Task 4)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Task 4 completion baseline: **262 passed, 5 xfailed, 0 failed, 0
+skipped** (previous baseline: 199 passed, 60 xfailed). The 5 remaining
+strict xfails are exactly B1–B5 (Bedtools). Pinned environment: Python
+3.12.14, bedtools 2.31.1, pybedtools 0.12.1, polars 1.44.2,
+polars-bio 0.35.1, pandas 3.0.6.
+
+### Remaining known deviations (unchanged, Task 5/6)
+
+B1 (empty-input guard drops left rows), B2 (missing metadata lost),
+B3 (numeric-looking string metadata re-typed), B4 (raw left
+sentinels), B5 (result-parsing failures swallowed) — all Bedtools;
+see the Task 3 inventory above. Documented gaps (non-normative):
+`use_strand=True`, `min_overlap`, `contains`/`within` (Task 6).

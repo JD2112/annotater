@@ -93,6 +93,8 @@ Acceptance criterion: failures diagnose semantic/schema differences precisely en
 
 ## Task 4 — Polars-Bio overlap parity
 
+**Status:** implementation complete (2026-09-22) — P1–P4 resolved, 262 passed / 5 xfailed (B1–B5 only); see docs/implementation-notes.md
+
 **Goal:** make Polars-Bio pass the ordinary overlap contract.
 
 Expected work:
