@@ -31,7 +31,6 @@ name = "annotater"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "altair" },
     { name = "numpy" },
     { name = "openpyxl" },
     { name = "pandas" },
@@ -39,10 +38,7 @@ dependencies = [
     { name = "polars" },
     { name = "polars-bio" },
     { name = "pybedtools" },
-    { name = "pyranges" },
-    { name = "python-magic" },
     { name = "streamlit" },
-    { name = "validators" },
 ]
 
 [package.optional-dependencies]
@@ -55,7 +51,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "altair", specifier = "==6.3.0" },
     { name = "black", marker = "extra == 'dev'", specifier = "==26.5.1" },
     { name = "numpy", specifier = "==2.5.3" },
     { name = "openpyxl", specifier = "==3.1.5" },
@@ -64,13 +59,10 @@ requires-dist = [
     { name = "polars", specifier = "==1.44.2" },
     { name = "polars-bio", specifier = "==0.35.1" },
     { name = "pybedtools", specifier = "==0.12.1" },
-    { name = "pyranges", specifier = "==0.1.4" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.1.1" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "==7.1.0" },
-    { name = "python-magic", specifier = "==0.4.27" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.16.8" },
     { name = "streamlit", specifier = "==1.64.0" },
-    { name = "validators", specifier = "==0.35.0" },
 ]
 provides-extras = ["dev"]
 
@@ -604,31 +596,6 @@ wheels = [
 ]
 
 [[package]]
-name = "natsort"
-version = "8.4.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/e2/a9/a0c57aee75f77794adaf35322f8b6404cbd0f89ad45c87197a937764b7d0/natsort-8.4.0.tar.gz", hash = "sha256:45312c4a0e5507593da193dedd04abb1469253b601ecaf63445ad80f0a1ea581", size = 76575, upload-time = "2023-06-20T04:17:19.925Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/ef/82/7a9d0550484a62c6da82858ee9419f3dd1ccc9aa1c26a1e43da3ecd20b0d/natsort-8.4.0-py3-none-any.whl", hash = "sha256:4732914fb471f56b5cce04d7bae6f164a592c7712e1c85f9ef585e197299521c", size = 38268, upload-time = "2023-06-20T04:17:17.522Z" },
-]
-
-[[package]]
-name = "ncls"
-version = "0.0.70"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/dd/0c6a5a36ec132665f85e5e33f0480b58cf5aa8af8fbe1d5971410d789558/ncls-0.0.70.tar.gz", hash = "sha256:7d16634a8f57fa79659e9ae7e5cc6edd1e02d5acb0eb57128dbed03e9f4fdd9c", size = 592442, upload-time = "2025-07-04T15:01:37.39Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e9/76/9af85bb0d7b0b68c45367cba6cda7e21e0caa30a891d6b42624e84c3779d/ncls-0.0.70-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:3df775f4274a8b9d3e6be778e9df122d14b64bb4c3dd3511b714c9e7e9d0b347", size = 925479, upload-time = "2025-07-04T15:01:23.638Z" },
-    { url = "https://files.pythonhosted.org/packages/93/96/0dc27f298c688f1ce175e018906dd36b8fc0d27a000bc07a7feeb3a1010d/ncls-0.0.70-cp312-cp312-manylinux_2_12_i686.manylinux2010_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:68bc795a49a1caeb6efc7a7982b5549b2620266028cd015b70b8e9217f858d2a", size = 2597567, upload-time = "2025-07-04T15:01:25.071Z" },
-    { url = "https://files.pythonhosted.org/packages/40/03/f5d0b979c6a1f8a8a11ba115a7c5b145671f092372a4ede164dc2597c466/ncls-0.0.70-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:205779656889931338a7fa4c58a1466643a61dd5593c843f55cc7018b33a0331", size = 2699042, upload-time = "2025-07-04T15:01:26.299Z" },
-    { url = "https://files.pythonhosted.org/packages/01/5d/cde06f1b58c637afd81751f1d082782b593cf83ac5abefa56acae86dd01f/ncls-0.0.70-cp312-cp312-musllinux_1_1_i686.whl", hash = "sha256:6923443d8d3e25c7cbc7e2ac3b375230cffbecdfc413512c570734e547e3e35d", size = 2578977, upload-time = "2025-07-04T15:01:27.789Z" },
-    { url = "https://files.pythonhosted.org/packages/27/3c/531f23c817f3aaa8500bbafd84aed4e0314aec17f5fb38c39915a9189dde/ncls-0.0.70-cp312-cp312-musllinux_1_1_x86_64.whl", hash = "sha256:fd2050a150153b35a00a6be62bf4f10e5efcb5d7b4fe2a09ecb38f2f95ee1f09", size = 2697446, upload-time = "2025-07-04T15:01:29.32Z" },
-]
-
-[[package]]
 name = "numpy"
 version = "2.5.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1063,22 +1030,6 @@ wheels = [
 ]
 
 [[package]]
-name = "pyranges"
-version = "0.1.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "natsort" },
-    { name = "ncls" },
-    { name = "pandas" },
-    { name = "sorted-nearest" },
-    { name = "tabulate" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/bf/b4/c90491bd784dc51a54a04ff188d5694563cdce5c1258816ff5d7cf332c70/pyranges-0.1.4.tar.gz", hash = "sha256:ca99cb70ff41c5da86ebc337f057877d293643b69e8e9937ccc738f98c32dbeb", size = 1494730, upload-time = "2025-03-14T14:22:27.995Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/83/89/35ea267fb12e608529f0df315aff200171e555623cb38b2e4444592ce872/pyranges-0.1.4-py3-none-any.whl", hash = "sha256:2bcf7de43137ee42ab009cedf40eff12ced26f7889c35c34dd3c848a7bf7fed7", size = 1511919, upload-time = "2025-03-14T14:22:22.213Z" },
-]
-
-[[package]]
 name = "pysam"
 version = "0.24.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1150,15 +1101,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/66/c0/0c8b6ad9f17a802ee498c46e004a0eb49bc148f2fd230864601a86dcf6db/python-dateutil-2.9.0.post0.tar.gz", hash = "sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3", size = 342432, upload-time = "2024-03-01T18:36:20.211Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/57/56b9bcc3c9c6a792fcbaf139543cee77261f3651ca9da0c93f5c1221264b/python_dateutil-2.9.0.post0-py2.py3-none-any.whl", hash = "sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427", size = 229892, upload-time = "2024-03-01T18:36:18.57Z" },
-]
-
-[[package]]
-name = "python-magic"
-version = "0.4.27"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/da/db/0b3e28ac047452d079d375ec6798bf76a036a08182dbb39ed38116a49130/python-magic-0.4.27.tar.gz", hash = "sha256:c1ba14b08e4a5f5c31a302b7721239695b2f0f058d125bd5ce1ee36b9d9d3c3b", size = 14677, upload-time = "2022-06-07T20:16:59.508Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/73/9f872cb81fc5c3bb48f7227872c28975f998f3e7c2b1c16e95e6432bbb90/python_magic-0.4.27-py2.py3-none-any.whl", hash = "sha256:c212960ad306f700aa0d01e5d7a325d20548ff97eb9920dcd29513174f0294d3", size = 13840, upload-time = "2022-06-07T20:16:57.763Z" },
 ]
 
 [[package]]
@@ -1359,15 +1301,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sorted-nearest"
-version = "0.0.41"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/a4/bd8ad7d1cf66268219f282d4268b6ba73f8ff51c5fba2c9663adab103615/sorted_nearest-0.0.41.tar.gz", hash = "sha256:bd3ce6cbbc1df9a00e0a8afafe00556f4eaa2499a37fc5901227d0beb10b7298", size = 1568705, upload-time = "2025-10-06T13:16:47.155Z" }
-
-[[package]]
 name = "starlette"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1409,15 +1342,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ce/98/399d9b5bea64f0db9a37a800e420ba563dcde293e91d244c7d96acaeb313/streamlit-1.64.0.tar.gz", hash = "sha256:5c3f9a9dec13b5c5197a9c764ebf1a9d77f9e19c1b4af008779cb45c368961a3", size = 9535360, upload-time = "2026-09-15T19:13:53.576Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d7/8e/e635448a7fd6d92211d4ff2150356b8dffd3fcdc05c00511c61110078871/streamlit-1.64.0-py3-none-any.whl", hash = "sha256:4daf63aa9eaa5452d0edc64a5bdb0c4ad25580fe3c62c270455f3c43e9db5098", size = 10093987, upload-time = "2026-09-15T19:13:51.284Z" },
-]
-
-[[package]]
-name = "tabulate"
-version = "0.10.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
 ]
 
 [[package]]
@@ -1479,15 +1403,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5d/ad/04bbb797c84fc1f26cb171f7394716f4865ffb8d8c5e1eef42565c2dfa6b/uvicorn-0.53.0.tar.gz", hash = "sha256:a9356f0cb89b3b8621529c5d5eebd69bfe154f4c3f68b4cf2de47e45fa855c2e", size = 110881, upload-time = "2026-09-14T07:44:23.815Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/76/18/0eea75741ee812e9f598b687619ce2454f6c3a1c5cd21ea990ec6bd26f45/uvicorn-0.53.0-py3-none-any.whl", hash = "sha256:e8dca71ec86dce5f04e333f0d56cdedf942446e6643b9cea1af0d6d3a02cb03e", size = 87081, upload-time = "2026-09-14T07:44:22.179Z" },
-]
-
-[[package]]
-name = "validators"
-version = "0.35.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/66/a435d9ae49850b2f071f7ebd8119dd4e84872b01630d6736761e6e7fd847/validators-0.35.0.tar.gz", hash = "sha256:992d6c48a4e77c81f1b4daba10d16c3a9bb0dbb79b3a19ea847ff0928e70497a", size = 73399, upload-time = "2025-05-01T05:42:06.7Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/fa/6e/3e955517e22cbdd565f2f8b2e73d52528b14b8bcfdb04f62466b071de847/validators-0.35.0-py3-none-any.whl", hash = "sha256:e8c947097eae7892cb3d26868d637f79f47b4a0554bc6b80065dfe5aac3705dd", size = 44712, upload-time = "2025-05-01T05:42:04.203Z" },
 ]
 
 [[package]]

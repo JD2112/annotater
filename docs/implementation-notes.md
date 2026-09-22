@@ -23,9 +23,12 @@ audit**.
 
 The venv has no `pip` module; it is managed by `uv`. `uv.lock` is committed
 alongside the exact-pinned `pyproject.toml` / `requirements.txt` and
-`requirements-dev.txt`. The SPEC's "Python 3.10 or newer" is satisfied, but
-the exact pins (e.g. `numpy==2.5.3`) do not install on 3.10/3.11, so the
-audited supported matrix is **Python 3.12** (see CI note below).
+`requirements-dev.txt`. `SPEC.md` contains **no normative minimum-Python
+requirement**; **Python 3.12 is the currently tested/supported runtime
+established by Task 2.5**, because the exact dependency pins (e.g.
+`numpy==2.5.3`) install only on Python ≥ 3.12. `pyproject.toml` declares
+`requires-python = ">=3.12"`, CI builds 3.12, and the production Dockerfile
+uses `python:3.12-slim`.
 
 ### pybedtools mode: system binary, not embedded
 
@@ -84,9 +87,12 @@ Fixtures: query `chrA:100-200 (g1)`, `chrA:10-20 (g2)`, `chrA:2000-2100
 
 These deviations are encoded as explicit assertions in
 `tests/test_engine_contract.py`; the currently-failing ones are marked
-`xfail` with the precise root cause so the suite stays green while the
-deviations remain documented. **Removing an xfail marker requires the
-engine to actually pass the assertion** (Task 3/4 work).
+`xfail(strict=True)` with the precise root cause so the suite stays green
+while the deviations remain documented. Because the markers are **strict**,
+any future run in which a guarded assertion unexpectedly passes fails the
+suite with XPASS, forcing the obsolete marker to be reviewed and removed.
+**Removing an xfail marker requires the engine to actually pass the
+assertion** (Task 3/4 work).
 
 ### Current implementation limitations
 
@@ -113,25 +119,50 @@ engine to actually pass the assertion** (Task 3/4 work).
    explicit propagation. Same pattern in `_find_nearest`. Not changed here
    (no behavior changes in Task 2.5); must be fixed in Task 4.
 5. **Python interpreter range.** Exact pins require Python ≥ 3.12
-   (`numpy==2.5.3`). The SPEC's "Python 3.10 or newer" lower bound is
-   therefore only satisfiable for 3.12 while these pins hold; `pyproject`
-   and CI declare 3.12.
-6. **Legacy requirements.** `python-magic` and `validators` are pinned in
-   `requirements.txt` but are not imported anywhere in `streamlit_app/`
-   today; they are kept (removal is out of Task 2.5 scope) and flagged
-   here.
+   (`numpy==2.5.3`). `SPEC.md` states no minimum-Python requirement, so
+   there is no SPEC conflict: 3.12 is the Task 2.5 supported runtime and
+   `pyproject.toml` / CI / Docker all declare it. Python 3.10/3.11 are not
+   supported while these exact pins hold.
+6. **Dependency disposition (audit complete).** Repository-wide audit
+   (runtime code, tests, dynamic imports, export paths, documentation
+   workflows, deployment files):
+   - **removed:** `python-magic`, `validators`, `pyranges`, `altair` — no
+     imports, dynamic imports, tests, or documentation-supported workflow
+     uses any of them. `altair` remains available transitively via
+     `streamlit`, so Streamlit charting is unaffected.
+   - **retained:** `openpyxl` — concrete role: Excel export
+     (`pd.ExcelWriter(engine='openpyxl')` in
+     `streamlit_app/streamlit_app.py`, Excel download path).
+   `requirements.txt`, `pyproject.toml`, and `uv.lock` were updated and the
+   lockfile regenerated after removal. Every *remaining* runtime dependency
+   has a verified current role: `streamlit` (app framework), `pandas`
+   (canonical tables), `numpy` (`core/annotator.py`), `pybedtools`
+   (Bedtools backend), `polars` (Polars-Bio backend dependency),
+   `polars-bio` (Polars-Bio backend), `openpyxl` (Excel export), `plotly`
+   (app charts, `streamlit_app.py`).
 7. **`pb.overlap` warning noise.** Every polars-bio call in tests emits the
    missing-coordinate-metadata `UserWarning` (see limitation 1). It
    disappears once the engine declares the coordinate system.
 
 ### Contract tests added (Task 2.5)
 
+**Scope note (honest Task 3 boundary):** Task 2.5 was a dependency/runtime
+audit; it did **not** implement Task 3. While recording the observed
+backend output contracts, the audit *opportunistically established an
+initial engine-contract baseline*: `tests/test_engine_contract.py` carries
+parameterized differential tests over both `BedtoolsEngine` and
+`PolarsBioEngine`, and captures **five known deviations as strict xfails**.
+This is intentionally a minimal harness, not the full Task 3 suite. Task 3
+should later expand it systematically (more modes, strand handling, larger
+synthetic fixtures, nearest-operator semantics, result-adapter edge cases)
+and keep the strict-xfail guardrail convention.
+
 - `tests/test_engine_contract.py` — both engines through identical
   fixtures: inner match/non-match, left mode preserving the non-matching
   query exactly once with `has_overlap=False`, no-match → 0 rows (inner) /
   preserved query row (left), plus SPEC section 4 boundary semantics
   (touching = no overlap, one-base = overlap, different chromosomes) and
-  canonical-schema assertions (xfail where currently deviated).
+  canonical-schema assertions (strict-xfail where currently deviated).
 - `tests/test_parser_contract.py` — BED passthrough, GFF3 1-based
   inclusive → 0-based half-open, VCF POS/END span → canonical, custom CSV
   with declared coordinate system, and known formats immune to
@@ -158,6 +189,46 @@ exact three consecutive full-suite runs.
 
 `.github/workflows/python-tests.yml` runs the suite on `ubuntu-latest` and
 `macos-latest` with Python 3.12, installs the bedtools binary via
-`apt-get`/`brew`, installs `requirements-dev.txt`, and runs `pytest`.
+`apt-get`/`brew`, installs `requirements-dev.txt`, and runs `pytest`
 (3.10/3.11 are omitted from the matrix because the exact pins cannot
-install there; see limitation 5.)
+install there; see limitation 5).
+
+### Docker runtime verification (Task 2.5 review resolution)
+
+- The production `Dockerfile` was updated from `python:3.10-slim` to
+  `python:3.12-slim` to match the supported runtime. The image's
+  `HEALTHCHECK` invokes `curl`; `python:3.12-slim` does not ship `curl`, so
+  `curl` was added to the apt install list (previously the healthcheck
+  would have failed with command-not-found in the final image).
+- Verification was performed by building the image from scratch
+  (`docker build --platform linux/amd64 -t annotater:task25 .` —
+  successful; the earlier default-platform arm64 build is the one
+  described in the platform limitation below) and running checks inside
+  the resulting container. Observed output:
+  - Python 3.12.14; `bedtools --version` → `bedtools v2.31.1`
+    (`/usr/bin/bedtools`)
+  - imports OK: `pybedtools` 0.12.1, `polars` 1.44.2, `polars_bio`
+    0.35.1 (top-level `pb.overlap` callable), `streamlit` 1.64.0,
+    `pandas` 3.0.6, `numpy` 2.5.3, `openpyxl` 3.1.5
+  - AnnotateR core public API imports OK (`streamlit_app.core`:
+    `BedtoolsEngine`, `PolarsBioEngine`, `FormatDetector`,
+    `BEDParser`/`GFFParser`/`VCFParser`, `CoordinateConverter`,
+    `CoordinateNormalizer`, canonicalization/validation helpers)
+  - `curl` 8.14.1 present (`/usr/bin/curl`) — the only external command
+    used by the `HEALTHCHECK` (`curl --fail
+    http://localhost:8501/_stcore/health`) and the compose healthcheck
+  - full test suite in an equivalent clean container (production image +
+    mounted `tests/` + `pytest.ini`, ephemeral `pip install pytest
+    pytest-cov`; the production image intentionally excludes test
+    dependencies): **142 passed, 5 xfailed, 0 failed, 0 skipped**, exit
+    code 0
+- **Known platform limitation (found during Docker verification):**
+  `polars-bio==0.35.1` publishes a manylinux **x86_64-only** wheel (no
+  `aarch64` wheel); on Linux/aarch64, pip falls back to the sdist and the
+  maturin/Rust source build fails in the slim image. The supported
+  production image therefore targets `linux/amd64`
+  (`docker build --platform linux/amd64 ...`), which matches the GitHub
+  CI runners. Native arm64 Linux deployment would require either an
+  upstream `aarch64` wheel or a Rust toolchain build stage — out of
+  Task 2.5 scope. (macOS arm64 developer machines are unaffected: a
+  `macosx_11_0_arm64` wheel exists.)

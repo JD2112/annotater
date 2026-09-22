@@ -1,7 +1,7 @@
 # AnnotateR - Genomic Coordinate Annotation Tool
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red.svg)](https://streamlit.io/)
 
 A web-based tool for annotating genomic coordinates with support for multiple file formats, automatic chromosome ID standardization, and coordinate system conversion.

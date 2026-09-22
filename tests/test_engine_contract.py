@@ -35,7 +35,7 @@ deviate from that schema in documented ways (see docs/implementation-notes.md,
   True)`` restores correct half-open behavior — the engine must do this
   explicitly, which is Task 3/4 work.)
 
-Those assertions are marked ``xfail(strict=False)`` per engine so the
+Those assertions are marked ``xfail(strict=True)`` per engine so the
 deviations are captured precisely without blocking the suite. When a
 later task (Task 3/4) fixes an engine, the marker flips to XPASS and
 should be removed.
@@ -179,7 +179,7 @@ def test_no_match_left_preserves_query_with_no_overlap(engine_cls):
             PolarsBioEngine,
             id="polars-bio",
             marks=pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     "Task 2.5 audit: PolarsBioEngine does not declare the 0-based "
                     "coordinate system, so polars-bio 0.35.1's 1-based closed-interval "
@@ -236,7 +236,7 @@ def test_unknown_mode_raises_explicitly(engine_cls):
             PolarsBioEngine,
             id="polars-bio",
             marks=pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     "Task 2.5 audit: PolarsBioEngine emits coord_-prefixed columns for "
                     "both frames plus polars-bio _1/_2 suffixes and an internal "
@@ -261,7 +261,7 @@ def test_inner_canonical_result_columns(engine_cls):
             BedtoolsEngine,
             id="bedtools",
             marks=pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     "Task 2.5 audit: bedtools left-join sentinel values ('.'/'-1') leak "
                     "into unmatched annotation fields instead of canonical missing "
@@ -273,7 +273,7 @@ def test_inner_canonical_result_columns(engine_cls):
             PolarsBioEngine,
             id="polars-bio",
             marks=pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     "Task 2.5 audit: PolarsBioEngine left mode mixes clean coord_* "
                     "columns with suffixed backend columns for both frames; annotation "
@@ -305,7 +305,7 @@ def test_left_canonical_missing_values(engine_cls):
             PolarsBioEngine,
             id="polars-bio",
             marks=pytest.mark.xfail(
-                strict=False,
+                strict=True,
                 reason=(
                     "Task 2.5 audit: backend artifacts (polars-bio _1/_2 suffixes and "
                     "internal pb_row_id row identity) are present in emitted column "
