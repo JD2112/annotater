@@ -54,13 +54,13 @@ class AnnotationEngine(ABC):
 _BT_QUERY_ROW_ID = "_bt_query_row_id"
 _BT_ANNOT_ROW_ID = "_bt_annot_row_id"
 
-#: Raw bedtools overlap/contains/within output layout (identity-only
-#: serialization): A(chr, start, end, <query row id>), B(chr, start, end,
-#: <annotation row id>).
-_BT_OVERLAP_RAW_COLUMNS = 8
-#: Raw bedtools ``closest -d`` output layout: the overlap layout plus one
-#: trailing distance column.
-_BT_CLOSEST_RAW_COLUMNS = 9
+#: Columns per side in the identity-only serialization: chr, start, end,
+#: <row id>.
+_BT_COLUMNS_PER_SIDE = 4
+#: When ``use_strand`` is set, bedtools ``-s`` requires a strand in column
+#: 6, so each side additionally carries a placeholder score column and an
+#: explicit strand column (chr, start, end, <row id>, ".", strand).
+_BT_COLUMNS_PER_SIDE_STRANDED = 6
 
 
 class BedtoolsEngine(AnnotationEngine):
@@ -94,6 +94,11 @@ class BedtoolsEngine(AnnotationEngine):
       identity, never genomic coordinate — giving the canonical order
       (query input order, then annotation input order) including for
       duplicate-valued rows.
+    - ``use_strand=True`` (Task 6 scope) is forwarded to bedtools ``-s``
+      unchanged; to keep the flag functional the stranded serialization
+      additionally carries a placeholder score column and an explicit
+      strand column (user ``strand`` metadata when present, else ".",
+      i.e. unstranded) in column 6 per side.
     - Backend and conversion exceptions propagate to the caller. A 0-row
       result with no exception is a genuine no-match (a valid empty
       result), never a swallowed failure (SPEC 9.2).
@@ -161,6 +166,9 @@ class BedtoolsEngine(AnnotationEngine):
                 )
             return pd.DataFrame()
 
+        per_side = (
+            _BT_COLUMNS_PER_SIDE_STRANDED if self.use_strand else _BT_COLUMNS_PER_SIDE
+        )
         logger.debug(
             "Running bedtools intersect on %d x %d rows",
             len(coord_df), len(annot_df),
@@ -201,7 +209,7 @@ class BedtoolsEngine(AnnotationEngine):
 
         out = self._adapt_raw_rows(
             raw, coord_df, annot_df, q_meta, a_meta, q_id, a_id,
-            expected_columns=_BT_OVERLAP_RAW_COLUMNS,
+            expected_columns=2 * per_side,
         )
 
         if how == "left":
@@ -238,6 +246,9 @@ class BedtoolsEngine(AnnotationEngine):
         if len(coord_df) == 0 or len(annot_df) == 0:
             return pd.DataFrame()
 
+        per_side = (
+            _BT_COLUMNS_PER_SIDE_STRANDED if self.use_strand else _BT_COLUMNS_PER_SIDE
+        )
         logger.debug(
             "Running bedtools closest on %d x %d rows",
             len(coord_df), len(annot_df),
@@ -254,16 +265,17 @@ class BedtoolsEngine(AnnotationEngine):
 
         if raw.empty:
             return pd.DataFrame()
-        if raw.shape[1] != _BT_CLOSEST_RAW_COLUMNS:
+        expected_columns = 2 * per_side + 1  # + trailing distance column
+        if raw.shape[1] != expected_columns:
             raise CanonicalSchemaError(
                 "bedtools raw closest output has an unexpected column layout; "
-                f"expected {_BT_CLOSEST_RAW_COLUMNS} columns (A coordinates + "
+                f"expected {expected_columns} columns (A coordinates + "
                 "query row id, B coordinates + annotation row id, distance), "
                 f"got {raw.shape[1]}."
             )
 
         qid = self._parse_row_ids(raw.iloc[:, 3].to_numpy(), "query")
-        aid_raw = raw.iloc[:, 7].to_numpy()
+        aid_raw = raw.iloc[:, expected_columns - 2].to_numpy()
         # Structural match determination, same rule as overlap: '.' in the
         # internal annotation row-id column is only ever a bedtools
         # sentinel (no nearest feature found).
@@ -276,7 +288,7 @@ class BedtoolsEngine(AnnotationEngine):
         distance = pd.array([pd.NA] * len(aid), dtype="Int64")
         for i in np.where(aid >= 0)[0]:
             try:
-                distance[i] = int(raw.iloc[i, 8])
+                distance[i] = int(raw.iloc[i, expected_columns - 1])
             except ValueError as exc:
                 raise CanonicalSchemaError(
                     f"bedtools closest distance column is not an integer "
@@ -310,8 +322,9 @@ class BedtoolsEngine(AnnotationEngine):
         Map raw bedtools text output to canonical columns + row ids.
 
         The raw frame is the identity-only serialization (coordinates +
-        internal row ids). Every published value is re-attached from the
-        ORIGINAL input frames by row identity, so no user data is
+        internal row ids; plus placeholder score + strand per side when
+        ``use_strand`` is set). Every published value is re-attached from
+        the ORIGINAL input frames by row identity, so no user data is
         re-inferred from text and no backend sentinel can reach the output.
         """
         if raw.shape[1] != expected_columns:
@@ -323,7 +336,7 @@ class BedtoolsEngine(AnnotationEngine):
             )
 
         qid = self._parse_row_ids(raw.iloc[:, 3].to_numpy(), "query")
-        aid_raw = raw.iloc[:, 7].to_numpy()
+        aid_raw = raw.iloc[:, expected_columns - 1].to_numpy()
         # Structural match determination: the annotation row id is generated
         # by this engine, so '.' in this column can ONLY be a bedtools -loj
         # sentinel (unmatched); an integer means the matched annotation row.
@@ -418,7 +431,10 @@ class BedtoolsEngine(AnnotationEngine):
 
         Only coordinates and the internal row-identity column cross the
         bedtools text boundary; user metadata is re-attached from the
-        original frame after matching (see ``_build_result``).
+        original frame after matching (see ``_build_result``). With
+        ``use_strand``, bedtools ``-s`` additionally requires column 6:
+        a placeholder score plus an explicit strand column (user
+        ``strand`` metadata when present, else "." = unstranded).
         """
         bed_df = pd.DataFrame(
             {
@@ -428,6 +444,13 @@ class BedtoolsEngine(AnnotationEngine):
                 row_id: np.arange(len(df), dtype="int64"),
             }
         )
+        if self.use_strand:
+            bed_df["score"] = "."
+            if "strand" in df.columns:
+                strand = df["strand"]
+                bed_df["strand"] = strand.where(strand.notna(), ".").astype(str)
+            else:
+                bed_df["strand"] = "."
         return pybedtools.BedTool.from_dataframe(bed_df)
 
     @staticmethod
