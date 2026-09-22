@@ -1,14 +1,15 @@
 # AnnotateR runtime dependencies
 #
-# Pinned exact versions (SPEC: the supported environment MUST pin bedtools,
-# pybedtools, Polars, and Polars-Bio exactly). These pins match the audited
-# supported environment recorded in docs/implementation-notes.md
-# (Task 2.5, Python 3.12.14).
+# Exact pins per the dependency/runtime policy established by Task 2.5 for
+# the audited reproducible environment (SPEC.md imposes no pinning
+# requirement). These pins match the audited supported environment
+# recorded in docs/implementation-notes.md (Task 2.5, Python 3.12.14).
+# Python 3.12 is the currently tested and supported runtime.
 streamlit==1.64.0
 pandas==3.0.6
 numpy==2.5.3
 
-# Genomics tools (exact pins required by SPEC)
+# Genomics tools (exact pins per Task 2.5 policy)
 pybedtools==0.12.1
 polars==1.44.2
 polars-bio==0.35.1

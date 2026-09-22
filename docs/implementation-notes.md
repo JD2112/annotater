@@ -24,11 +24,13 @@ audit**.
 The venv has no `pip` module; it is managed by `uv`. `uv.lock` is committed
 alongside the exact-pinned `pyproject.toml` / `requirements.txt` and
 `requirements-dev.txt`. `SPEC.md` contains **no normative minimum-Python
-requirement**; **Python 3.12 is the currently tested/supported runtime
-established by Task 2.5**, because the exact dependency pins (e.g.
-`numpy==2.5.3`) install only on Python ≥ 3.12. `pyproject.toml` declares
-`requires-python = ">=3.12"`, CI builds 3.12, and the production Dockerfile
-uses `python:3.12-slim`.
+requirement**; **Python 3.12 is the currently tested and supported
+runtime** established by Task 2.5. The exact dependency pins install on
+Python ≥ 3.12 (verified installable under 3.14), so `pyproject.toml`
+declares `requires-python = ">=3.12,<3.15"`; CI builds 3.12 and the
+production Dockerfile uses `python:3.12-slim`. Python 3.13/3.14 satisfy
+the range but are **not** part of the tested CI matrix; 3.10/3.11 cannot
+install the pins at all (e.g. `numpy==2.5.3` requires ≥ 3.12).
 
 ### pybedtools mode: system binary, not embedded
 

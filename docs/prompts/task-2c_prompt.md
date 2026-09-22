@@ -139,3 +139,50 @@ Do not change engine, parser, coordinate, or canonical scientific behavior.
 Return a final review-resolution report and the new commit SHA.
 
 Do not begin further Task 3 implementation.
+
+---
+
+Stay on `task-2.5-dependency-runtime-audit`.
+
+Make one final documentation/metadata consistency pass only.
+
+Do not change dependencies, tests, Docker behavior, engines, parsers, or scientific logic.
+
+1. Remove incorrect claims in `requirements.txt` and `pyproject.toml` that exact dependency pinning is required by `SPEC.md`.
+
+`SPEC.md` contains no such requirement.
+
+Describe exact pinning accurately as the dependency/runtime policy established by Task 2.5 for the audited reproducible environment.
+
+2. Make Python support wording consistent.
+
+The project currently tests and supports Python 3.12 in CI and Docker.
+
+Do not advertise untested Python versions as officially supported.
+
+Use wording equivalent to:
+
+`Python 3.12 is the currently tested and supported runtime.`
+
+Change the README badge from `Python 3.12+` to `Python 3.12`.
+
+For `requires-python`, use a compatibility range consistent with the pinned dependencies. Prefer:
+
+`>=3.12,<3.15`
+
+if the current pinned dependency set is installable under that range; otherwise use the narrowest justified range.
+
+Make clear that Python 3.13/3.14 are not part of the tested CI matrix unless actually tested.
+
+3. Re-run the full test suite to ensure metadata-only changes caused no regression.
+
+Return:
+
+* files changed;
+* final `requires-python` value;
+* exact pytest counts;
+* confirmation that no runtime/scientific behavior changed.
+
+Commit this as one tiny follow-up commit.
+
+Do not begin Task 3.

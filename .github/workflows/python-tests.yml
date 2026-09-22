@@ -8,9 +8,9 @@ on:
 jobs:
   tests:
     name: pytest (Python 3.12, ${{ matrix.os }})
-    # The exact dependency pins (see requirements.txt) require Python >= 3.12,
-    # so 3.12 is the only supported matrix entry for now. Add 3.10/3.11 back
-    # only if the pins are relaxed.
+    # Python 3.12 is the currently tested and supported runtime. 3.13/3.14
+    # satisfy requires-python but are NOT part of the tested CI matrix;
+    # 3.10/3.11 cannot install the exact pins at all (e.g. numpy==2.5.3).
     strategy:
       fail-fast: false
       matrix:

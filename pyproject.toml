@@ -3,12 +3,16 @@ name = "annotater"
 version = "0.1.0"
 description = "AnnotateR: genomic coordinate annotation tool with interchangeable Bedtools and Polars-Bio backends"
 readme = "README.md"
-requires-python = ">=3.12"  # exact pins below (e.g. numpy 2.5.3) require 3.12+
-# Older 3.10/3.11 interpreters are therefore not part of the supported matrix
-# while these exact pins are in place (see docs/implementation-notes.md).
-# SPEC: the supported environment pins bedtools, pybedtools, Polars, and
-# Polars-Bio exactly. All runtime dependencies are exact-pinned to the
-# audited supported environment (docs/implementation-notes.md, Task 2.5).
+# Python 3.12 is the currently tested and supported runtime (CI and
+# Docker). 3.13/3.14 satisfy this range (the exact pins install there,
+# verified for 3.14) but are NOT part of the tested CI matrix. 3.10/3.11
+# cannot install the exact pins at all (e.g. numpy==2.5.3 requires
+# >=3.12). See docs/implementation-notes.md.
+requires-python = ">=3.12,<3.15"
+# All runtime dependencies are exact-pinned per the dependency/runtime
+# policy established by Task 2.5 for the audited reproducible environment
+# (SPEC.md imposes no pinning requirement): the pins match the audited
+# supported environment (docs/implementation-notes.md).
 dependencies = [
     "streamlit==1.64.0",
     "pandas==3.0.6",
