@@ -7,11 +7,13 @@ lives. They complement the canonical-level contract tests:
 
 - a deviation flagged at the raw layer explains WHY a canonical-level
   test xfails (root-cause attribution);
-- positive raw controls document which layers are already conformant,
-  so Task 4/5 work can be scoped precisely.
+- positive raw controls document which layers are already conformant.
 
-No fix is attempted here; each deviation is captured with a precise
-root-cause xfail reason (inventory in docs/implementation-notes.md).
+As of Task 4 the Polars-Bio raw layer is fully conformant (canonical
+schema, 0-based half-open semantics, row identity) and its tests are
+positive controls. The remaining Bedtools raw-layer deviation (left-mode
+sentinels) stays xfailed with a precise root-cause reason (inventory in
+docs/implementation-notes.md).
 """
 
 from __future__ import annotations
@@ -30,19 +32,6 @@ CHR = "chrA"
 # Polars-Bio raw layer
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PolarsBioEngine does not declare the coordinate system, so "
-        "polars-bio 0.35.1's 1-based CLOSED-interval default interprets "
-        "canonical 0-based half-open intervals [10,20) and [20,25) as "
-        "overlapping (they only touch). The RAW overlap call already "
-        "produces the wrong row set; no amount of post-processing can "
-        "repair it. Fix belongs to the engine: set the coordinate-system "
-        "global option or normalize inputs. SPEC 5; engine-contract "
-        "section 4. Task 4."
-    ),
-)
 def test_polars_raw_touching_intervals_do_not_overlap():
     raw = run_engine(
         PolarsBioEngine,
@@ -53,18 +42,6 @@ def test_polars_raw_touching_intervals_do_not_overlap():
     assert len(raw) == 0, f"touching intervals must not overlap, got {len(raw)} raw rows"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PolarsBioEngine._post_process emits a non-canonical raw schema: "
-        "both frames are coord_-prefixed, polars-bio _1/_2 column suffixes "
-        "are retained, the internal pb_row_id column is leaked, and no "
-        "annot_* columns exist, so canonicalize_annotation_result raises "
-        "CanonicalSchemaError. SPEC 6 exact canonical column set; SPEC 9.2 "
-        "(provenance must not be guessed by suffix heuristics); "
-        "engine-contract section 3. Task 4."
-    ),
-)
 def test_polars_raw_inner_output_is_canonical():
     coord_df = interval_table([CHR], [10], [20], gene=["g1"])
     annot_df = interval_table([CHR, CHR], [5, 25], [15, 35], feature=["f1", "f2"])
