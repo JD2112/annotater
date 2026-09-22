@@ -51,113 +51,459 @@ class AnnotationEngine(ABC):
         pass
 
 
+_BT_QUERY_ROW_ID = "_bt_query_row_id"
+_BT_ANNOT_ROW_ID = "_bt_annot_row_id"
+
+#: Raw bedtools overlap/contains/within output layout (identity-only
+#: serialization): A(chr, start, end, <query row id>), B(chr, start, end,
+#: <annotation row id>).
+_BT_OVERLAP_RAW_COLUMNS = 8
+#: Raw bedtools ``closest -d`` output layout: the overlap layout plus one
+#: trailing distance column.
+_BT_CLOSEST_RAW_COLUMNS = 9
+
+
 class BedtoolsEngine(AnnotationEngine):
     """
-    Standard coordinate intersection using pybedtools
+    Coordinate intersection using pybedtools (external bedtools binary).
+
+    Canonical result contract (SPEC 4.2; docs/engine-contract.md 4-8):
+
+    - Canonical inputs (0-based half-open ``chr``/``start``/``end`` plus
+      metadata) are validated before the backend call; malformed input
+      raises explicitly instead of returning a silent empty result.
+    - The bedtools text file is an interop boundary that carries ONLY
+      coordinates plus a collision-safe internal row-identity column per
+      side. User metadata never crosses the text boundary: after matching,
+      every published coord/annotation/metadata value is re-attached from
+      the original input frames by row identity. Lossy round-tripping
+      (missing values becoming '.', numeric-looking strings re-typed as
+      floats) is therefore structurally impossible.
+    - Match determination is structural, not value-based: bedtools ``-loj``
+      fills unmatched annotation fields with sentinels ('.', -1); the
+      adapter reads the INTERNAL annotation row-identity column, where '.'
+      can only be a bedtools-generated sentinel. Real user metadata values
+      such as '.' or '-1' can never be mistaken for missing values.
+    - Left mode preserves every query row: an empty annotation table is
+      handled deterministically BEFORE the external call (no bedtools
+      invocation); otherwise ``-loj`` output is adapted and any query row
+      still missing from the raw output is reconstructed by set difference
+      on query row IDs. Unmatched rows carry canonical missing (``pd.NA``)
+      in every ``annot_*`` field and ``has_overlap=False``.
+    - Rows are sorted by (query row id, annotation row id) — input row
+      identity, never genomic coordinate — giving the canonical order
+      (query input order, then annotation input order) including for
+      duplicate-valued rows.
+    - Backend and conversion exceptions propagate to the caller. A 0-row
+      result with no exception is a genuine no-match (a valid empty
+      result), never a swallowed failure (SPEC 9.2).
     """
-    
+
     def intersect(
         self,
         coord_df: pd.DataFrame,
         annot_df: pd.DataFrame,
         how: Literal["inner", "left"] = "inner"
     ) -> pd.DataFrame:
-        """Performed intersection using bedtools"""
-        
-        # Validate (simple check)
-        if coord_df.empty or annot_df.empty:
+        """Intersect canonical interval tables and return canonical results."""
+        # Engine inputs MUST be canonical (SPEC 4.2): fail explicitly on
+        # malformed input instead of returning a silent empty result.
+        validate_canonical_interval_table(coord_df)
+        validate_canonical_interval_table(annot_df)
+
+        if self.mode == "overlap":
+            return self._overlap(coord_df, annot_df, how)
+        if self.mode in ("contains", "within"):
+            # Non-normative placeholder mapping (engine-contract section
+            # 11): -f 1.0 / -F 1.0 as before; the exact contains/within
+            # contract is fixed in Task 6 and is deliberately not touched
+            # here.
+            fraction_kwarg = "f" if self.mode == "contains" else "F"
+            return self._overlap(
+                coord_df, annot_df, how="inner", **{fraction_kwarg: 1.0}
+            )
+        if self.mode == "closest":
+            return self._closest(coord_df, annot_df)
+        raise ValueError(f"Unknown mode: {self.mode}")
+
+    # ------------------------------------------------------------------
+    # Overlap (inner + left) and contains/within placeholders
+    # ------------------------------------------------------------------
+
+    def _overlap(
+        self,
+        coord_df: pd.DataFrame,
+        annot_df: pd.DataFrame,
+        how: str,
+        *,
+        f: Optional[float] = None,
+        F: Optional[float] = None,
+    ) -> pd.DataFrame:
+        q_meta = self._metadata_columns(coord_df)
+        a_meta = self._metadata_columns(annot_df)
+        q_id = self._row_id_column(coord_df.columns, _BT_QUERY_ROW_ID)
+        a_id = self._row_id_column(annot_df.columns, _BT_ANNOT_ROW_ID)
+
+        # Deterministic empty-input handling BEFORE the external call: the
+        # canonical result is already known, so bedtools is not invoked.
+        # left mode must preserve every query row even when the annotation
+        # table is empty (SPEC 7.2).
+        if len(coord_df) == 0:
+            return pd.DataFrame()
+        if len(annot_df) == 0:
+            if how == "left":
+                return self._finalize(
+                    self._unmatched_query_rows(
+                        coord_df, annot_df, q_meta, a_meta,
+                        list(range(len(coord_df))), q_id, a_id,
+                    ),
+                    coord_df, annot_df, q_id, a_id,
+                )
             return pd.DataFrame()
 
-        # Create temporary BED files
-        coord_bed = self._df_to_bedtool(coord_df, prefix="coords")
-        annot_bed = self._df_to_bedtool(annot_df, prefix="annot")
-        
+        logger.debug(
+            "Running bedtools intersect on %d x %d rows",
+            len(coord_df), len(annot_df),
+        )
+        kwargs = {"wa": True, "wb": True, "s": self.use_strand}
+        if f is not None:
+            kwargs["f"] = f
+        elif self.min_overlap is not None:
+            kwargs["f"] = self.min_overlap
+        if F is not None:
+            kwargs["F"] = F
+        if how == "left":
+            kwargs["loj"] = True
+
+        # Backend failures MUST propagate (SPEC 9.2): a valid no-match is
+        # not an exception and remains a valid empty result, but a backend
+        # or conversion error must never be reported as "no matches".
         try:
-            if self.mode == "overlap":
-                result = self._intersect_overlap(coord_bed, annot_bed, how)
-            elif self.mode == "contains":
-                result = self._intersect_contains(coord_bed, annot_bed)
-            elif self.mode == "within":
-                result = self._intersect_within(coord_bed, annot_bed)
-            elif self.mode == "closest":
-                result = self._find_closest(coord_bed, annot_bed)
-            else:
-                raise ValueError(f"Unknown mode: {self.mode}")
-            
-            # Convert result to DataFrame
-            result_df = self._bedtool_to_df(result, coord_df, annot_df)
-            
+            result = self._to_bed(coord_df, q_id).intersect(
+                self._to_bed(annot_df, a_id), **kwargs
+            )
+            raw = result.to_dataframe(header=None, dtype=str)
         finally:
             pybedtools.cleanup()
-        
-        return result_df
 
-    def _df_to_bedtool(self, df: pd.DataFrame, prefix: str = "temp") -> pybedtools.BedTool:
-        """Convert DataFrame to BedTool object"""
-        bed_df = df[['chr', 'start', 'end']].copy()
-        bed_df['start'] = bed_df['start'].astype(int)
-        bed_df['end'] = bed_df['end'].astype(int)
-        
-        # Keep extra columns
-        extra_cols = [col for col in df.columns if col not in ['chr', 'start', 'end']]
-        for col in extra_cols[:9]:
-            bed_df[col] = df[col].astype(str).fillna('.')
-        
-        return pybedtools.BedTool.from_dataframe(bed_df)
-    
-    def _intersect_overlap(self, coord_bed, annot_bed, how):
-        kwargs = {"wa": True, "wb": True, "s": self.use_strand}
-        if self.min_overlap: kwargs["f"] = self.min_overlap
-        if how == "left": kwargs["loj"] = True
-        return coord_bed.intersect(annot_bed, **kwargs)
-    
-    def _intersect_contains(self, coord_bed, annot_bed):
-        return coord_bed.intersect(annot_bed, wa=True, wb=True, f=1.0, s=self.use_strand)
-
-    def _intersect_within(self, coord_bed, annot_bed):
-        return coord_bed.intersect(annot_bed, wa=True, wb=True, F=1.0, s=self.use_strand)
-
-    def _find_closest(self, coord_bed, annot_bed):
-        return coord_bed.closest(annot_bed, d=True, t="first", s=self.use_strand)
-
-    def _bedtool_to_df(self, bedtool, coord_df, annot_df):
-        try:
-            result_df = bedtool.to_dataframe(header=None)
-        except Exception:
+        if raw.empty:
+            # No exception was raised, so a 0-row raw result is a genuine
+            # no-match (valid empty), not a swallowed backend error.
+            if how == "left":
+                return self._finalize(
+                    self._unmatched_query_rows(
+                        coord_df, annot_df, q_meta, a_meta,
+                        list(range(len(coord_df))), q_id, a_id,
+                    ),
+                    coord_df, annot_df, q_id, a_id,
+                )
             return pd.DataFrame()
-            
-        if result_df.empty: return result_df
-        
-        # Build column names
-        num_cols = len(result_df.columns)
-        
-        def get_cols(df):
-            core = ['chr', 'start', 'end']
-            extra = [c for c in df.columns if c not in core]
-            return core + extra[:9]
-            
-        coord_cols = get_cols(coord_df)
-        annot_cols = get_cols(annot_df)
-        
-        new_cols = []
-        for c in coord_cols: new_cols.append(f"coord_{c}")
-        for c in annot_cols: new_cols.append(f"annot_{c}")
-        if self.mode == "closest": new_cols.append("distance")
-        
-        # Pad and assign
-        final_cols = new_cols[:num_cols]
-        while len(final_cols) < num_cols:
-            final_cols.append(f"col_{len(final_cols)}")
-            
-        result_df.columns = final_cols
-        
-        # Add overlap status
-        if 'annot_chr' in result_df.columns:
-            # Check for generic 'no overlap' markers from bedtools left outer join (usually '.', -1)
-            result_df['has_overlap'] = (result_df['annot_chr'] != '.') & \
-                                       (result_df['annot_chr'].astype(str) != '-1')
-        
-        return result_df
+
+        out = self._adapt_raw_rows(
+            raw, coord_df, annot_df, q_meta, a_meta, q_id, a_id,
+            expected_columns=_BT_OVERLAP_RAW_COLUMNS,
+        )
+
+        if how == "left":
+            matched_ids = set(out[q_id].tolist())
+            unmatched_positions = [
+                i for i in range(len(coord_df)) if i not in matched_ids
+            ]
+            if unmatched_positions:
+                out = pd.concat(
+                    [
+                        out,
+                        self._unmatched_query_rows(
+                            coord_df, annot_df, q_meta, a_meta,
+                            unmatched_positions, q_id, a_id,
+                        ),
+                    ],
+                    ignore_index=True,
+                )
+
+        return self._finalize(out, coord_df, annot_df, q_id, a_id)
+
+    # ------------------------------------------------------------------
+    # Closest (non-normative; layout adaptation only — Task 6)
+    # ------------------------------------------------------------------
+
+    def _closest(self, coord_df: pd.DataFrame, annot_df: pd.DataFrame) -> pd.DataFrame:
+        q_meta = self._metadata_columns(coord_df)
+        a_meta = self._metadata_columns(annot_df)
+        q_id = self._row_id_column(coord_df.columns, _BT_QUERY_ROW_ID)
+        a_id = self._row_id_column(annot_df.columns, _BT_ANNOT_ROW_ID)
+
+        # closest (t="first") emits one row per query; with either input
+        # empty there is no deterministic result to emit.
+        if len(coord_df) == 0 or len(annot_df) == 0:
+            return pd.DataFrame()
+
+        logger.debug(
+            "Running bedtools closest on %d x %d rows",
+            len(coord_df), len(annot_df),
+        )
+        # Backend failures MUST propagate (SPEC 9.2), same principle as
+        # overlap.
+        try:
+            result = self._to_bed(coord_df, q_id).closest(
+                self._to_bed(annot_df, a_id), d=True, t="first", s=self.use_strand
+            )
+            raw = result.to_dataframe(header=None, dtype=str)
+        finally:
+            pybedtools.cleanup()
+
+        if raw.empty:
+            return pd.DataFrame()
+        if raw.shape[1] != _BT_CLOSEST_RAW_COLUMNS:
+            raise CanonicalSchemaError(
+                "bedtools raw closest output has an unexpected column layout; "
+                f"expected {_BT_CLOSEST_RAW_COLUMNS} columns (A coordinates + "
+                "query row id, B coordinates + annotation row id, distance), "
+                f"got {raw.shape[1]}."
+            )
+
+        qid = self._parse_row_ids(raw.iloc[:, 3].to_numpy(), "query")
+        aid_raw = raw.iloc[:, 7].to_numpy()
+        # Structural match determination, same rule as overlap: '.' in the
+        # internal annotation row-id column is only ever a bedtools
+        # sentinel (no nearest feature found).
+        unmatched = aid_raw == "."
+        aid = np.full(len(aid_raw), -1, dtype="int64")
+        aid[~unmatched] = self._parse_row_ids(aid_raw[~unmatched], "annotation")
+
+        # One row per query; order by query input position.
+        order = np.argsort(qid, kind="stable")
+        distance = pd.array([pd.NA] * len(aid), dtype="Int64")
+        for i in np.where(aid >= 0)[0]:
+            try:
+                distance[i] = int(raw.iloc[i, 8])
+            except ValueError as exc:
+                raise CanonicalSchemaError(
+                    f"bedtools closest distance column is not an integer "
+                    f"(row {i}): {raw.iloc[i, 8]!r}"
+                ) from exc
+
+        out = self._build_result(
+            coord_df, annot_df, q_meta, a_meta, qid[order], aid[order], q_id, a_id
+        )
+        out["distance"] = distance[order]
+        columns = list(canonical_result_columns(coord_df, annot_df)) + ["distance"]
+        return out[columns]
+
+    # ------------------------------------------------------------------
+    # Raw-output adaptation (single explicit mapping path)
+    # ------------------------------------------------------------------
+
+    def _adapt_raw_rows(
+        self,
+        raw: pd.DataFrame,
+        coord_df: pd.DataFrame,
+        annot_df: pd.DataFrame,
+        q_meta: List[str],
+        a_meta: List[str],
+        q_id: str,
+        a_id: str,
+        *,
+        expected_columns: int,
+    ) -> pd.DataFrame:
+        """
+        Map raw bedtools text output to canonical columns + row ids.
+
+        The raw frame is the identity-only serialization (coordinates +
+        internal row ids). Every published value is re-attached from the
+        ORIGINAL input frames by row identity, so no user data is
+        re-inferred from text and no backend sentinel can reach the output.
+        """
+        if raw.shape[1] != expected_columns:
+            raise CanonicalSchemaError(
+                "bedtools raw output has an unexpected column layout; "
+                f"expected {expected_columns} columns (identity-only "
+                "serialization: A chr/start/end/query row id, B "
+                f"chr/start/end/annotation row id), got {raw.shape[1]}."
+            )
+
+        qid = self._parse_row_ids(raw.iloc[:, 3].to_numpy(), "query")
+        aid_raw = raw.iloc[:, 7].to_numpy()
+        # Structural match determination: the annotation row id is generated
+        # by this engine, so '.' in this column can ONLY be a bedtools -loj
+        # sentinel (unmatched); an integer means the matched annotation row.
+        unmatched = aid_raw == "."
+        aid = np.full(len(aid_raw), -1, dtype="int64")
+        aid[~unmatched] = self._parse_row_ids(aid_raw[~unmatched], "annotation")
+
+        # Deterministic canonical ordering by input row identity (never by
+        # genomic coordinate): query input order, then annotation input
+        # order; unmatched rows (a_id = -1) sit after their query's matches.
+        order = np.lexsort((aid, qid))
+        return self._build_result(
+            coord_df, annot_df, q_meta, a_meta, qid[order], aid[order], q_id, a_id
+        )
+
+    def _build_result(
+        self,
+        coord_df: pd.DataFrame,
+        annot_df: pd.DataFrame,
+        q_meta: List[str],
+        a_meta: List[str],
+        qid: np.ndarray,
+        aid: np.ndarray,
+        q_id: str,
+        a_id: str,
+    ) -> pd.DataFrame:
+        """
+        Assemble canonical columns for the given (already ordered) rows.
+
+        ``aid`` < 0 marks an unmatched row: every ``annot_*`` field is
+        canonical missing and ``has_overlap`` is False. Values keep their
+        original Python/numpy types (no re-inference of any kind).
+        """
+        out = pd.DataFrame(index=pd.RangeIndex(len(qid)))
+        out["coord_chr"] = self._values_from(coord_df, "chr", qid)
+        out["coord_start"] = self._values_from(coord_df, "start", qid).astype("int64")
+        out["coord_end"] = self._values_from(coord_df, "end", qid).astype("int64")
+        for name in q_meta:
+            out[f"coord_{name}"] = self._values_from(coord_df, name, qid)
+        out["annot_chr"] = self._values_from(annot_df, "chr", aid)
+        out["annot_start"] = self._nullable_int_values(annot_df, "start", aid)
+        out["annot_end"] = self._nullable_int_values(annot_df, "end", aid)
+        for name in a_meta:
+            out[f"annot_{name}"] = self._values_from(annot_df, name, aid)
+        out[HAS_OVERLAP_COLUMN] = aid >= 0
+        out[q_id] = qid
+        out[a_id] = aid
+        return out
+
+    def _unmatched_query_rows(
+        self,
+        coord_df: pd.DataFrame,
+        annot_df: pd.DataFrame,
+        q_meta: List[str],
+        a_meta: List[str],
+        positions: List[int],
+        q_id: str,
+        a_id: str,
+    ) -> pd.DataFrame:
+        """
+        One canonical unmatched row per query position (left mode).
+
+        Annot fields are canonical missing; the row-identity columns carry
+        the query position and a sentinel -1 annotation position.
+        """
+        qid = np.asarray(list(positions), dtype="int64")
+        aid = np.full(len(qid), -1, dtype="int64")
+        return self._build_result(
+            coord_df, annot_df, q_meta, a_meta, qid, aid, q_id, a_id
+        )
+
+    def _finalize(
+        self,
+        out: pd.DataFrame,
+        coord_df: pd.DataFrame,
+        annot_df: pd.DataFrame,
+        q_id: str,
+        a_id: str,
+    ) -> pd.DataFrame:
+        """Deterministic canonical ordering + internal-column cleanup."""
+        out = out.sort_values([q_id, a_id], kind="stable").reset_index(drop=True)
+        out = out.drop(columns=[q_id, a_id])
+        return out[list(canonical_result_columns(coord_df, annot_df))]
+
+    # ------------------------------------------------------------------
+    # Serialization / deserialization helpers (identity-only boundary)
+    # ------------------------------------------------------------------
+
+    def _to_bed(self, df: pd.DataFrame, row_id: str) -> pybedtools.BedTool:
+        """
+        Identity-only serialization of a canonical interval table.
+
+        Only coordinates and the internal row-identity column cross the
+        bedtools text boundary; user metadata is re-attached from the
+        original frame after matching (see ``_build_result``).
+        """
+        bed_df = pd.DataFrame(
+            {
+                "chr": df["chr"].astype(str),
+                "start": df["start"].astype("int64"),
+                "end": df["end"].astype("int64"),
+                row_id: np.arange(len(df), dtype="int64"),
+            }
+        )
+        return pybedtools.BedTool.from_dataframe(bed_df)
+
+    @staticmethod
+    def _parse_row_ids(values: np.ndarray, side: str) -> np.ndarray:
+        """Parse an internal row-id column; a broken round-trip is a schema error."""
+        try:
+            return np.asarray(values, dtype="int64")
+        except (TypeError, ValueError) as exc:
+            raise CanonicalSchemaError(
+                f"bedtools raw output has a non-integer {side} row-id column; "
+                "the identity-only serialization round-trip is broken"
+            ) from exc
+
+    @staticmethod
+    def _python_scalar(value):
+        """Reduce numpy scalar types to their Python equivalents.
+
+        The canonicalizer publishes object-dtype metadata columns built
+        via ``astype(object)`` (Python ``int``/``float``/``bool``), so the
+        adapter must emit the same scalar types for identical input values.
+        """
+        if isinstance(value, np.bool_):
+            return bool(value)
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            return float(value)
+        return value
+
+    @staticmethod
+    def _values_from(df: pd.DataFrame, column: str, row_ids: np.ndarray) -> np.ndarray:
+        """
+        Original values of ``df[column]`` at positional ``row_ids``.
+
+        Missing input values become canonical missing (``pd.NA``); a row id
+        of -1 (unmatched row) is always canonical missing. Values keep
+        their original semantic type (numpy scalars are reduced to the
+        equivalent Python scalars, mirroring the canonicalizer's
+        object-dtype publication) — no value or dtype re-inference.
+        """
+        series = df[column]
+        values = series.to_numpy()
+        missing = series.isna().to_numpy()
+        out = np.full(len(row_ids), pd.NA, dtype=object)
+        valid = row_ids >= 0
+        rv = row_ids[valid]
+        out[valid] = [
+            pd.NA if m else BedtoolsEngine._python_scalar(v)
+            for m, v in zip(missing[rv], values[rv])
+        ]
+        return out
+
+    @staticmethod
+    def _nullable_int_values(df: pd.DataFrame, column: str, row_ids: np.ndarray):
+        """Integer coordinate values at ``row_ids``; -1 (unmatched) -> pd.NA."""
+        values = df[column].to_numpy()
+        out = pd.array([pd.NA] * len(row_ids), dtype="Int64")
+        for i, rid in enumerate(row_ids):
+            if rid >= 0:
+                out[i] = int(values[rid])
+        return out
+
+    @staticmethod
+    def _metadata_columns(df: pd.DataFrame) -> List[str]:
+        """Metadata columns: every column except the canonical core."""
+        return [c for c in df.columns if c not in ("chr", "start", "end")]
+
+    @staticmethod
+    def _row_id_column(columns, preferred: str) -> str:
+        """Collision-safe internal row-identity column name."""
+        name = preferred
+        suffix = 2
+        while name in columns:
+            name = f"{preferred}_{suffix}"
+            suffix += 1
+        return name
 
 
 _PB_INTERVAL_COLUMNS = ("chrom", "start", "end")
