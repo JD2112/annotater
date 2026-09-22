@@ -197,3 +197,21 @@ def test_exact_overlap_contract(engine_cls):
 ```
 
 Differential tests MAY additionally compare both engines directly, but expected-fixture tests remain important because two engines can agree on the same bug.
+
+As of Task 3 this pattern is implemented by the parity harness in
+`tests/parity/`:
+
+- `comparator.py` provides `run_and_canonicalize` (engine → raw result →
+  `canonicalize_annotation_result`) and `assert_canonical_equal` (strict
+  comparison: exact canonical column set and order, row count, row order,
+  NA-aware cell values, real booleans, contractually normative dtypes);
+- `cases.py` / `fixtures.py` carry explicit per-case expected rows derived
+  from the semantics above (never from backend output), with per-engine
+  strict-xfail markers whose reasons name the exact root cause;
+- `test_differential_parity.py` adds the direct engine-vs-engine layer;
+- `test_backend_raw_diagnostics.py` attributes each known deviation to the
+  exact layer (raw backend output vs canonical adapter) and records
+  positive controls for layers that already conform.
+
+The full current deviation inventory is in
+`docs/implementation-notes.md` ("Task 3 — engine parity harness").

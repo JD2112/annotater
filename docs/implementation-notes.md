@@ -234,3 +234,184 @@ install there; see limitation 5).
   upstream `aarch64` wheel or a Rust toolchain build stage — out of
   Task 2.5 scope. (macOS arm64 developer machines are unaffected: a
   `macosx_11_0_arm64` wheel exists.)
+## Task 3 — engine parity harness (2026-09-22)
+
+Task 3 built the systematic Bedtools <-> Polars-Bio parity harness and
+used it to produce the first complete, executable deviation inventory.
+**No engine behavior was fixed in this task** (the one exception is the
+minimal canonical-adapter bug fix S1 below, which was required for the
+harness to run at all and is engine-neutral). Polars-Bio was not touched;
+all Polars-Bio deviations are assigned to Task 4.
+
+### Harness design (`tests/parity/`)
+
+Three layers of evidence, per `docs/engine-contract.md` section 14:
+
+1. **Explicit expected fixtures** (`cases.py`, `fixtures.py`): tiny
+   in-memory canonical tables (0-based half-open) with expected rows
+   encoded as `(query_row, annot_row_or_None)` tuples in canonical row
+   order, derived from `max(starts) < min(ends)` and the SPEC 7.2
+   left-mode rules — never from backend output.
+2. **Per-engine contract tests**: each engine runs through
+   `run_and_canonicalize` (engine → raw result →
+   `canonicalize_annotation_result`) and is compared with
+   `assert_canonical_equal` — a strict comparator enforcing exact
+   canonical column set + order, row count (multiplicity), row order,
+   NA-aware values, real booleans, and contractually normative dtypes
+   (`coord_start`/`coord_end` int64, `annot_start`/`annot_end` Int64,
+   `has_overlap` bool).
+3. **Differential comparison** (`test_differential_parity.py`):
+   Bedtools canonical result vs Polars-Bio canonical result on
+   representative fixtures, in addition to layer 1+2.
+
+Coverage areas: overlap (exact/partial/containment, one-to-many,
+many-to-many, duplicates), boundary off-by-one matrix (incl.
+zero-based coordinates and `chr0`/`chr10` lexical trap), left-join
+(UNM = canonical missing, not bedtools `-loj` sentinels), metadata
+provenance (colliding names, arbitrary/numeric/boolean/missing values,
+column order, reserved prefixes), deterministic ordering (inputs placed
+out of coordinate order), strand (`use_strand=False` neutrality only),
+and the error/failure contract (SPEC 9.2). Raw-layer diagnostics
+(`test_backend_raw_diagnostics.py`) attribute each deviation to its
+exact layer and record positive controls for conformant layers.
+
+xfail discipline: markers are EXPLICIT per (case, engine) with
+root-cause reasons (registry in `tests/parity/fixtures.py`);
+`xfail_strict = true` is now global in `pytest.ini`. A fixed deviation
+XPASSes and fails CI until its stale marker is removed; a new
+non-conforming case fails loudly instead of silently xfailing.
+`tests/test_engine_contract.py` was shrunken to smoke-level raw-output
+contract tests; all five Task 2.5 strict xfails were migrated into the
+parity harness with equal-or-better coverage (none lost).
+
+### Current deviation inventory (Task 3)
+
+**Polars-Bio (all assigned to Task 4):**
+
+- **P1 — non-canonical result schema.**
+  `PolarsBioEngine._post_process` prefixes BOTH frames with `coord_`,
+  retains polars-bio `_1`/`_2` suffixes, leaks the internal `pb_row_id`
+  column, and no `annot_*` columns exist.
+  `canonicalize_annotation_result` therefore rejects every non-empty
+  output (`CanonicalSchemaError`) before any semantic comparison.
+  Violates SPEC 6 (exact canonical column set with provenance prefixes)
+  and SPEC 9.2 (provenance must not be guessed by suffix heuristics);
+  engine-contract section 3.
+  *Pinned by:* every non-empty canonical-level parity case (36 strict
+  xfails), `test_polars_raw_inner_output_is_canonical` (raw layer), and
+  all differential cases.
+- **P2 — coordinate system never declared.**
+  `PolarsBioEngine` does not set polars-bio's coordinate-system option,
+  so polars-bio 0.35.1's global default (1-based CLOSED intervals)
+  re-interprets canonical 0-based half-open data: touching intervals
+  (`[10,20)` vs `[20,25)`) are reported as overlapping. Violates SPEC 5;
+  engine-contract section 4. The deviation is in the RAW overlap call
+  (wrong row set before any post-processing).
+  *Pinned by:* 5 touching/boundary strict xfails plus
+  `test_polars_raw_touching_intervals_do_not_overlap`.
+- **P3 — `pb.overlap` failures swallowed.**
+  `_join_overlap` catches ALL exceptions and returns an empty frame
+  (log only), converting backend failure into a plausible empty result.
+  Violates SPEC 9.2. *Pinned by:*
+  `test_polars_overlap_backend_failure_propagates` (strict xfail).
+- **P4 — `pb.nearest` failures swallowed.** Same pattern in
+  `_find_nearest`. Violates SPEC 9.2. *Pinned by:*
+  `test_polars_nearest_backend_failure_propagates` (strict xfail).
+
+**Bedtools:**
+
+- **B1 — empty-input guard drops left rows.**
+  `BedtoolsEngine.intersect` returns an empty frame whenever EITHER
+  input is empty, so `how="left"` with an empty annotation table drops
+  every query row instead of preserving them as unmatched. Violates
+  SPEC 7.2; engine-contract section 6. *Pinned by:*
+  `left_empty_annotation_table[bedtools]` (strict xfail).
+- **B2 — missing metadata lost.** A missing metadata value on a matched
+  row round-trips as the `'.'` sentinel and the column degrades to
+  string, instead of canonical missing. Violates SPEC 6 /
+  engine-contract section 8. *Pinned by:*
+  `metadata_missing_values_matched_rows[bedtools]` (strict xfail).
+- **B3 — numeric-looking string metadata re-typed.** String metadata
+  such as `'3.5'` round-trips as float `3.5` because
+  `BedTool.to_dataframe` re-infers dtypes from text. Violates SPEC 6
+  (deterministic metadata preservation) and SPEC 10.3. *Pinned by:*
+  `metadata_string_numeric_looks[bedtools]` (strict xfail).
+- **B4 — raw left sentinels.** Raw left-mode output keeps bedtools
+  `-loj` sentinel values (`'.'`/`'-1'`) in unmatched annotation fields
+  instead of canonical missing. Currently masked at the public level by
+  `canonicalize_annotation_result`; the engine should emit canonical
+  missing directly (engine-contract sections 6/8; Task 5). *Pinned by:*
+  `test_bedtools_raw_left_unmatched_uses_canonical_missing` (strict
+  xfail).
+- **B5 — result-parsing failures swallowed (DISCOVERED in Task 3).**
+  `BedtoolsEngine._bedtools_to_df` catches ALL
+  `BedTool.to_dataframe` exceptions and returns an empty DataFrame —
+  the same SPEC 9.2 violation class as P3/P4, on the Bedtools side.
+  *Pinned by:* `test_bedtools_result_parsing_failure_propagates`
+  (strict xfail).
+
+**Shared canonical adapter:**
+
+- **S1 — all-matched frames with bool/int64 `annot_*` columns crashed
+  canonicalization (DISCOVERED and MINIMALLY FIXED in Task 3).**
+  `canonicalize_annotation_result` unconditionally executed
+  `out.loc[~matched, annot_cols] = CANONICAL_MISSING`; under pandas 3.x
+  the scalar is dtype-validated even when the mask is empty, raising
+  `TypeError: Invalid value 'nan' for dtype 'bool'` for any all-matched
+  result carrying a bool annotation column (verified on pinned pandas
+  3.0.6: bool raises; a plain-int64 column was probed and does not). This is
+  engine-neutral (it would crash for both engines) and blocked the
+  harness from testing the metadata contract, so it was fixed with a
+  one-line guard (`if (~matched).any():`) in
+  `streamlit_app/core/schema.py`. No matched-row semantics changed.
+  *Pinned by:* `metadata_boolean_values` (the pre-fix crash case) and
+  `metadata_numeric_values` (both engines now pass).
+
+### Positive controls (layers that already conform)
+
+- Bedtools **raw inner** output is already canonical (exact
+  `coord_*`/`annot_*` schema + `has_overlap` bool):
+  `test_bedtools_raw_inner_output_is_canonical` passes.
+- Bedtools **ordering and multiplicity** are deterministic and match
+  the canonical ordering rule for every ordering fixture, including
+  duplicate-valued rows (rerun determinism verified).
+- Polars-bio **left row reconstruction** (row-id join back onto the
+  query frame) correctly preserves unmatched query rows at the RAW
+  layer — its left-mode deviation is only the schema (P1), not row
+  loss: `test_polars_raw_left_reconstructs_unmatched_queries`.
+- **Empty inputs** produce valid empty results for both engines (0
+  rows, full canonical schema after adaptation) — distinct from the
+  swallowed-failure deviations above.
+- **Unknown `mode`** raises an explicit `ValueError` for both engines;
+  **malformed input** (missing `chr`) raises explicitly for both;
+  **bedtools backend failure** (`BedTool.intersect` raising) propagates.
+- Strand values round-trip as metadata and do not affect matching when
+  `use_strand=False` (Bedtools; Polars-Bio blocked by P1 only).
+
+### Documented gaps (not tested — not yet normative)
+
+- `use_strand=True` semantics (SPEC 8.3; engine-contract section 10) —
+  neither engine implements it; no fixture invents the behavior. Note
+  for Task 6: `BedtoolsEngine._df_to_bedtool` places metadata columns
+  in source order, so a `strand` column lands in the BED name position,
+  not the BED6 strand position — `-s` semantics would misread it.
+- `min_overlap` (engine-contract section 9): ambiguous mapping to
+  bedtools `-f`/`-F`/`-r`/`-e` must be fixed in a dedicated task before
+  parity is claimed.
+- `contains`/`within`/`closest` (engine-contract sections 11-12):
+  predicates not yet normative.
+
+### Test command and baseline (Task 3)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Task 3 completion baseline: **199 passed, 60 xfailed, 0 failed, 0
+skipped** (previous baseline: 142 passed, 5 xfailed). The 60 strict
+xfails are exactly the P1-P4/B1-B5 deviations above (see the inventory
+for which fixture pins which deviation). Pinned environment: Python
+3.12.14, bedtools 2.31.1, pybedtools 0.12.1, polars 1.44.2,
+polars-bio 0.35.1, pandas 3.0.6.
