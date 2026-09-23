@@ -11,9 +11,11 @@ lives. They complement the canonical-level contract tests:
 
 As of Task 4 the Polars-Bio raw layer is fully conformant (canonical
 schema, 0-based half-open semantics, row identity) and its tests are
-positive controls. The remaining Bedtools raw-layer deviation (left-mode
-sentinels) stays xfailed with a precise root-cause reason (inventory in
-docs/implementation-notes.md).
+positive controls. As of Task 5 the Bedtools raw layer is fully
+conformant as well (identity-only serialization, canonical missing on
+unmatched left rows, exact canonical column set); all tests in this
+module are positive controls. The historical deviation inventory lives
+in docs/implementation-notes.md.
 """
 
 from __future__ import annotations
@@ -74,10 +76,11 @@ def test_polars_raw_left_reconstructs_unmatched_queries():
 def test_bedtools_raw_inner_output_is_canonical():
     """
     POSITIVE CONTROL: for inner mode on non-empty inputs, BedtoolsEngine
-    raw output already matches the canonical schema (coord_*/annot_*
+    raw output matches the canonical schema (coord_*/annot_*
     provenance, has_overlap bool); the canonical adapter passes it
-    through. Bedtools deviations live elsewhere (left sentinels,
-    metadata round-trip, empty-input guard — see other modules).
+    through. (The former Bedtools deviations — left sentinels, metadata
+    round-trip, empty-input guard — were fixed in Task 5; see
+    docs/implementation-notes.md.)
     """
     coord_df = interval_table([CHR], [10], [20], gene=["g1"])
     annot_df = interval_table([CHR, CHR], [5, 25], [15, 35], feature=["f1", "f2"])
@@ -86,16 +89,6 @@ def test_bedtools_raw_inner_output_is_canonical():
     assert list(raw.columns) == list(canonical_result_columns(coord_df, annot_df))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "BedtoolsEngine raw left-mode output keeps bedtools -loj sentinel "
-        "values ('.' and '-1') in unmatched annotation fields instead of "
-        "canonical missing values (SPEC 6; engine-contract sections 6/8). "
-        "Today the canonical adapter masks this at the public level; the "
-        "engine itself must emit canonical missing directly. Task 5."
-    ),
-)
 def test_bedtools_raw_left_unmatched_uses_canonical_missing():
     raw = run_engine(
         BedtoolsEngine,

@@ -8,15 +8,12 @@ may produce a genuinely empty result (see the empty-input cases in
 test_left_parity.py) — the distinction is between *valid empty input*
 and *failure of the backend call*.
 
-Deviations captured here:
-
-- ``test_bedtools_result_parsing_failure_propagates`` — DISCOVERED in
-  Task 3: BedtoolsEngine._bedtool_to_df catches all ``to_dataframe``
-  exceptions and returns an empty DataFrame (xfail).
-
-The Polars-Bio failure-propagation tests (``pb.overlap`` and
-``pb.nearest``) pass since Task 4: the engine no longer swallows backend
-exceptions.
+Failure propagation now passes for BOTH engines (Task 4 for Polars-Bio,
+Task 5 for Bedtools): neither engine swallows backend exceptions, and
+``test_bedtools_result_parsing_failure_propagates`` (originally
+DISCOVERED in Task 3: the old ``_bedtool_to_df`` caught all
+``to_dataframe`` exceptions and returned an empty DataFrame) is a
+positive test again.
 """
 
 from __future__ import annotations
@@ -98,15 +95,6 @@ def test_polars_nearest_backend_failure_propagates(monkeypatch):
         PolarsBioEngine(mode="closest").intersect(_query(), _annot())
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "DISCOVERED in Task 3: BedtoolsEngine._bedtools_to_df catches ALL "
-        "BedTool.to_dataframe exceptions and returns an empty DataFrame, "
-        "converting a backend failure into a scientifically plausible empty "
-        "result — explicitly forbidden by SPEC 9.2. Task 4/5."
-    ),
-)
 def test_bedtools_result_parsing_failure_propagates(monkeypatch):
     import pybedtools
 

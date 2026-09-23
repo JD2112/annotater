@@ -520,3 +520,125 @@ B3 (numeric-looking string metadata re-typed), B4 (raw left
 sentinels), B5 (result-parsing failures swallowed) — all Bedtools;
 see the Task 3 inventory above. Documented gaps (non-normative):
 `use_strand=True`, `min_overlap`, `contains`/`within` (Task 6).
+
+## Task 5 — Bedtools contract compliance (2026-09-22)
+
+**Result: B1–B5 resolved.** `BedtoolsEngine` now satisfies the engine
+contract on the covered parity surface: canonical result schema with
+explicit provenance, lossless metadata round-trip, canonical missing on
+unmatched left rows, deterministic empty-input handling, and backend
+error propagation. All 5 strict Bedtools xfails from Task 3 were
+converted to passing tests (their markers were removed). `use_strand`,
+`min_overlap`, and `contains`/`within` semantics remain documented
+gaps (Task 6).
+
+### BedtoolsEngine rewrite (deviations B1–B5)
+
+The engine was rewritten around an identity-only adapter. The old code
+serialized the WHOLE input frame (stringified metadata, `.fillna('.')`)
+into BED, read the raw output through pandas dtype inference
+(`to_dataframe` with no dtype argument), guessed provenance from column
+counts, and swallowed every `to_dataframe` exception.
+
+- **Identity-only serialization (B2, B3).** The bedtools text file now
+  carries ONLY `chr`/`start`/`end` plus a collision-safe internal
+  row-identity column (`_bt_query_row_id` / `_bt_annot_row_id`,
+  suffix-bumped if the name exists) per side. User metadata never
+  crosses the text boundary: after matching, every published
+  coord/annotation/metadata value is re-attached from the ORIGINAL
+  validated input frames by row identity. Missing values become
+  canonical missing (`pd.NA`), never the `'.'` sentinel (B2);
+  numeric-looking strings keep their type (B3); numpy scalars are
+  reduced to the Python scalars the canonicalizer's `astype(object)`
+  publication uses, so raw output matches the canonicalized expected
+  values cell-for-cell.
+- **Structural sentinel handling (B4).** Raw output is read with
+  `to_dataframe(header=None, dtype=str)` — pure text, no dtype
+  inference. Match determination is structural, not value-based:
+  bedtools `-loj` fills unmatched annotation fields with sentinels
+  (`.`/`-1`), and the adapter reads the INTERNAL annotation row-id
+  column, where `'.'` can only be a backend sentinel (row ids are
+  engine-generated integers `0..n-1`). Real user metadata values such
+  as `'.'` or `'-1'` are re-attached from the input frame and can never
+  be mistaken for missing values. Unmatched rows carry canonical
+  missing in every `annot_*` field and `has_overlap=False`.
+- **Deterministic empty-input handling (B1).** Both inputs are
+  validated with `validate_canonical_interval_table` first (malformed
+  input raises, never a silent empty result). With an empty annotation
+  table, `left` mode returns every query row unmatched WITHOUT
+  invoking bedtools (the canonical result is already known); `inner`
+  returns a genuinely empty result. A 0-row raw result with no
+  exception is a genuine no-match, never a swallowed failure.
+- **Error propagation (B5).** `intersect`/`closest`/`to_dataframe` are
+  called without any try/except; backend and conversion exceptions
+  propagate to the caller (SPEC 9.2). `pybedtools.cleanup()` runs in a
+  `finally` block.
+- **Deterministic ordering.** Rows are sorted by
+  `(query row id, annotation row id)` — input row identity, never
+  coordinate — giving the canonical order (query input order, then
+  annotation input order) including for duplicate-valued rows.
+- **Raw layout validation.** The raw frame must have exactly
+  `2 * columns_per_side` columns (8 unstranded) or `2 *
+  columns_per_side + 1` for `closest -d` (9 unstranded); any other
+  layout raises `CanonicalSchemaError` (no positional guessing).
+
+### Newly discovered / handled in Task 5
+
+- **`use_strand=True` needed an explicit strand column.** bedtools
+  `-s` requires a strand in column 6; the old code only worked by
+  accident (user `strand` metadata happened to cross the boundary in
+  column order). The stranded serialization now carries
+  `chr/start/end/<row id>/. (score)/strand` per side (12 raw columns,
+  13 with `closest -d`): the user's `strand` metadata when present,
+  else `'.'` (unstranded, matches nothing under `-s`). The unstranded
+  path is unchanged. The flag itself is still forwarded to bedtools
+  `-s` unchanged — `use_strand` SEMANTICS remain Task 6 scope.
+- **bedtools `closest -d` distance is its own non-normative value**:
+  for `[15,25)` vs `[100,200)` it reports 76 (the Polars-Bio `nearest`
+  gap for the same pair is 75). Closest's full semantics stay Task 6;
+  the adapter only guarantees a lossless `Int64` round-trip of the
+  backend-reported value (`NA` when no feature was found).
+- **`bedtools closest` requires genomically sorted input** (pre-existing
+  bedtools requirement, unchanged): unsorted query/annotation frames
+  raise `BEDToolsError` from the binary itself, which now propagates
+  explicitly instead of being swallowed.
+
+### Focused regression tests (`tests/test_bedtools_engine.py`)
+
+New module pinning guarantees the parity suite only exercises
+indirectly: raw output is exactly the canonical column set (no BED
+field names, row-id columns, or `col_N` padding) and is accepted as-is
+by `canonicalize_annotation_result` for every how/mode combination
+(`closest` declares `distance`); the real-user-value regression — user
+metadata values `'.'`/`'-1'` survive a matched round-trip verbatim,
+genuinely missing values round-trip as `pd.NA` (never `'.'`), and
+numeric-looking strings (`'3.5'`, `'00123'`) keep their type; left
+mode with an empty annotation table is produced deterministically with
+ZERO bedtools invocations (monkeypatched proof); backend
+(`BEDToolsError`) and conversion (`to_dataframe`) failures propagate;
+duplicate-valued rows keep the (query identity, annotation identity)
+expansion order; `closest` keeps the lossless `Int64` distance extra
+column; `use_strand` is forwarded to bedtools `-s` unchanged.
+
+### Test command and baseline (Task 5)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Task 5 completion baseline: **282 passed, 0 xfailed, 0 failed, 0
+skipped** (previous baseline: 262 passed, 5 xfailed). No known-deviation
+xfails remain for either engine. Pinned environment: Python 3.12.14,
+bedtools 2.31.1, pybedtools 0.12.1, polars 1.44.2, polars-bio 0.35.1,
+pandas 3.0.6.
+
+### Remaining known deviations (Task 6)
+
+None for the canonical covered surface. Documented gaps (non-normative,
+unchanged in Task 5): `use_strand=True` semantics (flag forwarded,
+matching semantics undefined), `min_overlap` (forwarded to `-f` in
+overlap mode only), `contains`/`within` (`-f 1.0`/`-F 1.0`
+placeholders), `closest` full semantics (distance definition, tie
+breaking).
