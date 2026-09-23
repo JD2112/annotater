@@ -146,9 +146,20 @@ AND query_overlap_fraction >= min_overlap
 
 ### 8.3 Strand
 
-When `use_strand=False`, strand MUST NOT affect overlap matching.
+`use_strand` is a boolean with one normative, backend-independent meaning (fixed in Task 6B):
 
-When `use_strand=True`, same-strand matching MUST be implemented only when both inputs contain valid strand information. Missing-strand behavior MUST be explicit and tested.
+- `use_strand=False`: strand MUST NOT participate in match qualification. A query/annotation pair may match based solely on the selected interval predicate and other active options.
+- `use_strand=True`: a pair qualifies only if the interval predicate qualifies AND
+  1. both rows have an explicit canonical strand;
+  2. the query strand is `"+"` or `"-"`;
+  3. the annotation strand is `"+"` or `"-"`;
+  4. the query strand equals the annotation strand.
+
+Missing/unknown strand — canonical missing, a source `"."` after normalization, or an absent strand column on either input — is NOT a wildcard and NOT a strand: a row with unknown/missing strand can never form a stranded match, and unknown-vs-unknown is NOT a match. This behavior MUST be identical for both engines and MUST NOT be defined by any backend-native option (for example bedtools `-s`).
+
+`use_strand` composes with `min_overlap` by logical AND; neither option bypasses the other. In left mode, a query whose geometrical overlaps all fail the strand predicate is unmatched exactly once per SPEC 7.2; a query with at least one qualifying match emits only its qualifying matches.
+
+Canonical strand values other than `"+"`, `"-"`, or missing MUST be rejected with an explicit validation error before backend execution.
 
 ### 8.4 Contains and within
 
@@ -204,7 +215,7 @@ The parity suite MUST include minimal fixtures for at least:
 - chromosome naming normalization;
 - coordinate-system boundary conversion.
 
-Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); later milestones MUST add strand, contains, within, and closest fixtures.
+Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); strand fixtures were added in Task 6B (`tests/parity/test_strand_parity.py`); later milestones MUST add contains, within, and closest fixtures.
 
 ### 10.3 Comparison
 

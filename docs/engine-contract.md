@@ -178,9 +178,19 @@ no fraction mechanism, so the Polars-Bio engine enforces the same
 shared predicate explicitly. The parameter is validated once in the
 shared `AnnotationEngine` constructor via `validate_min_overlap`.
 
-## 10. Strand options
+## 10. Strand options (fixed in Task 6B)
 
-Bedtools `-s` requires same-strand overlap. AnnotateR's `use_strand=True` SHOULD map to one explicit same-strand contract. Missing strand data MUST not be silently interpreted as a valid strand.
+AnnotateR's `use_strand` has one normative, backend-independent meaning (SPEC 8.3):
+
+- `use_strand=False`: strand does not participate in match qualification.
+- `use_strand=True`: a matched pair qualifies only if BOTH rows carry an explicit canonical strand (`+` or `-`) and the strands are equal, in addition to the selected interval predicate qualifying.
+
+Missing/unknown strand (canonical missing, or an absent strand column on either input) is NOT a wildcard and NOT a strand — no stranded match is possible for such a row, including unknown-vs-unknown. This is identical for both engines by construction: the predicate lives at the contract level as `streamlit_app/core/annotator.py::strand_keep_mask` and is applied as a **shared canonical post-filter** over ordinary backend overlap pairs — after backend matching, before left-mode reconstruction — by BOTH engines (the same architecture as the Task 6A `min_overlap` predicate).
+
+- Bedtools does NOT use native `-s` for the overlap path: bedtools' stranded behavior (its undocumented treatment of `.` and its column-6 dependency) must not define the AnnotateR contract. The non-normative `closest` placeholder keeps its native `-s` forwarding unchanged (Task 6E scope).
+- Pinned polars-bio 0.35.1 `overlap` exposes no strand option, so the shared predicate is applied post-hoc there as well.
+
+In left mode, a query whose geometrical overlaps all fail the strand predicate appears exactly once, unmatched (SPEC 7.2); a query with at least one qualifying match emits only its qualifying matches. The predicate composes with `min_overlap` by logical AND (no precedence). Canonical strand values other than `+`/`-`/missing are rejected by `validate_canonical_interval_table`, which both engines invoke before any backend execution.
 
 ## 11. Contains / within
 
