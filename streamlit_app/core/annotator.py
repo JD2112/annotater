@@ -19,6 +19,7 @@ import pybedtools
 from .schema import (
     CANONICAL_MISSING,
     HAS_OVERLAP_COLUMN,
+    STRAND_VALUES,
     CanonicalSchemaError,
     canonical_result_columns,
     validate_canonical_interval_table,
@@ -91,6 +92,46 @@ def min_overlap_keep_mask(df: pd.DataFrame, min_overlap: float) -> np.ndarray:
     return (overlap > 0) & (fraction >= min_overlap)
 
 
+def strand_keep_mask(
+    df: pd.DataFrame, q_meta: List[str], a_meta: List[str]
+) -> np.ndarray:
+    """
+    Shared canonical ``use_strand=True`` predicate (SPEC 8.3, Task 6B).
+
+    A matched pair qualifies as stranded iff::
+
+        Q.strand in {"+", "-"}
+        AND A.strand in {"+", "-"}
+        AND Q.strand == A.strand
+
+    Missing/unknown strand is NOT a wildcard and NOT a strand: a row
+    whose strand is canonical missing — or an input that has no strand
+    column at all — can never form a stranded match, including
+    unknown-vs-unknown. Canonical validation guarantees the only
+    explicit states are ``"+"``/``"-"``, so equality of two present
+    values is the entire predicate.
+
+    This is the single contract-level definition of ``use_strand=True``;
+    both engines apply exactly this predicate over the ordinary backend
+    overlap pairs (after backend matching, before left reconstruction),
+    so the meaning is identical by construction. Strand composes with
+    ``min_overlap`` by logical AND — the predicates are independent and
+    neither bypasses the other.
+    """
+    if "strand" not in q_meta or "strand" not in a_meta:
+        # No explicit strand on one side: no stranded match is possible
+        # (this is NOT a fall-back to unstranded mode).
+        return np.zeros(len(df), dtype=bool)
+    q = df["coord_strand"]
+    a = df["annot_strand"]
+    # pandas Series comparison maps canonical missing (pd.NA/NaN) to
+    # False element-wise — exactly the "missing is not a strand" rule.
+    keep = np.zeros(len(df), dtype=bool)
+    for value in STRAND_VALUES:
+        keep |= ((q == value) & (a == value)).to_numpy()
+    return keep
+
+
 class AnnotationEngine(ABC):
     """
     Abstract base class for annotation engines
@@ -124,9 +165,12 @@ _BT_ANNOT_ROW_ID = "_bt_annot_row_id"
 #: Columns per side in the identity-only serialization: chr, start, end,
 #: <row id>.
 _BT_COLUMNS_PER_SIDE = 4
-#: When ``use_strand`` is set, bedtools ``-s`` requires a strand in column
-#: 6, so each side additionally carries a placeholder score column and an
-#: explicit strand column (chr, start, end, <row id>, ".", strand).
+#: When the non-normative closest placeholder runs with ``use_strand``,
+#: bedtools ``-s`` requires a strand in column 6, so that path
+#: additionally carries a placeholder score column and an explicit strand
+#: column (chr, start, end, <row id>, ".", strand). The overlap path
+#: NEVER uses the stranded layout: strand qualification is the shared
+#: canonical post-filter (SPEC 8.3, Task 6B).
 _BT_COLUMNS_PER_SIDE_STRANDED = 6
 
 
@@ -161,11 +205,15 @@ class BedtoolsEngine(AnnotationEngine):
       identity, never genomic coordinate — giving the canonical order
       (query input order, then annotation input order) including for
       duplicate-valued rows.
-    - ``use_strand=True`` (Task 6 scope) is forwarded to bedtools ``-s``
-      unchanged; to keep the flag functional the stranded serialization
-      additionally carries a placeholder score column and an explicit
-      strand column (user ``strand`` metadata when present, else ".",
-      i.e. unstranded) in column 6 per side.
+    - ``use_strand=True`` (Task 6B, SPEC 8.3) is NOT delegated to
+      bedtools ``-s``: the overlap path runs an ordinary unstranded
+      ``intersect`` and applies the shared canonical strand predicate
+      ``strand_keep_mask`` as a post-filter after matching and before
+      left reconstruction. A pair qualifies only if both rows carry an
+      explicit canonical strand (``+``/``-``) and the strands are equal;
+      missing/unknown strand is not a wildcard. (The stranded
+      serialization + native ``-s`` remain only in the non-normative
+      closest placeholder, unchanged by Task 6B.)
     - ``min_overlap`` (Task 6A) is NOT forwarded to bedtools ``-f``:
       the canonical query-fraction contract (SPEC 8.2) is applied as
       the shared post-filter ``min_overlap_keep_mask`` over ordinary
@@ -241,19 +289,19 @@ class BedtoolsEngine(AnnotationEngine):
                 )
             return pd.DataFrame()
 
-        per_side = (
-            _BT_COLUMNS_PER_SIDE_STRANDED if self.use_strand else _BT_COLUMNS_PER_SIDE
-        )
+        per_side = _BT_COLUMNS_PER_SIDE
         logger.debug(
             "Running bedtools intersect on %d x %d rows",
             len(coord_df), len(annot_df),
         )
-        # min_overlap is deliberately NOT forwarded to bedtools -f:
-        # the canonical query-fraction contract (SPEC 8.2, Task 6A) is
-        # applied by the shared post-filter below so both backends
-        # enforce the identical predicate. Explicit f/F kwargs remain
-        # only for the non-normative contains/within placeholders.
-        kwargs = {"wa": True, "wb": True, "s": self.use_strand}
+        # min_overlap is deliberately NOT forwarded to bedtools -f, and
+        # use_strand is deliberately NOT forwarded to bedtools -s: the
+        # canonical query-fraction contract (SPEC 8.2, Task 6A) and the
+        # same-strand contract (SPEC 8.3, Task 6B) are applied by the
+        # shared post-filters below so both backends enforce identical
+        # predicates. Explicit f/F kwargs remain only for the
+        # non-normative contains/within placeholders.
+        kwargs = {"wa": True, "wb": True}
         if f is not None:
             kwargs["f"] = f
         if F is not None:
@@ -265,8 +313,8 @@ class BedtoolsEngine(AnnotationEngine):
         # not an exception and remains a valid empty result, but a backend
         # or conversion error must never be reported as "no matches".
         try:
-            result = self._to_bed(coord_df, q_id).intersect(
-                self._to_bed(annot_df, a_id), **kwargs
+            result = self._to_bed(coord_df, q_id, stranded=False).intersect(
+                self._to_bed(annot_df, a_id, stranded=False), **kwargs
             )
             raw = result.to_dataframe(header=None, dtype=str)
         finally:
@@ -289,6 +337,18 @@ class BedtoolsEngine(AnnotationEngine):
             raw, coord_df, annot_df, q_meta, a_meta, q_id, a_id,
             expected_columns=2 * per_side,
         )
+
+        # Canonical strand post-filter (SPEC 8.3, Task 6B): the shared
+        # same-strand predicate, applied AFTER the backend match and
+        # BEFORE left reconstruction, so a query whose matches all fail
+        # the strand predicate is emitted exactly once as unmatched
+        # (left mode) or omitted (inner mode). Unmatched (-loj sentinel)
+        # rows pass through untouched. The predicate is identical for
+        # both engines; it composes with min_overlap by logical AND.
+        if self.use_strand:
+            mask = strand_keep_mask(out, q_meta, a_meta)
+            mask = mask | (out[a_id].to_numpy() < 0)
+            out = out[mask].reset_index(drop=True)
 
         # Canonical min_overlap post-filter (SPEC 8.2, Task 6A): the
         # shared query-fraction predicate, applied AFTER the backend
@@ -346,10 +406,12 @@ class BedtoolsEngine(AnnotationEngine):
             len(coord_df), len(annot_df),
         )
         # Backend failures MUST propagate (SPEC 9.2), same principle as
-        # overlap.
+        # overlap. Closest is the non-normative placeholder (Task 6E
+        # scope): its native ``-s`` forwarding is unchanged by Task 6B.
         try:
-            result = self._to_bed(coord_df, q_id).closest(
-                self._to_bed(annot_df, a_id), d=True, t="first", s=self.use_strand
+            result = self._to_bed(coord_df, q_id, stranded=self.use_strand).closest(
+                self._to_bed(annot_df, a_id, stranded=self.use_strand),
+                d=True, t="first", s=self.use_strand,
             )
             raw = result.to_dataframe(header=None, dtype=str)
         finally:
@@ -517,14 +579,17 @@ class BedtoolsEngine(AnnotationEngine):
     # Serialization / deserialization helpers (identity-only boundary)
     # ------------------------------------------------------------------
 
-    def _to_bed(self, df: pd.DataFrame, row_id: str) -> pybedtools.BedTool:
+    def _to_bed(
+        self, df: pd.DataFrame, row_id: str, *, stranded: bool
+    ) -> pybedtools.BedTool:
         """
         Identity-only serialization of a canonical interval table.
 
         Only coordinates and the internal row-identity column cross the
         bedtools text boundary; user metadata is re-attached from the
         original frame after matching (see ``_build_result``). With
-        ``use_strand``, bedtools ``-s`` additionally requires column 6:
+        ``stranded=True`` (only the non-normative closest placeholder
+        requests this), bedtools ``-s`` additionally requires column 6:
         a placeholder score plus an explicit strand column (user
         ``strand`` metadata when present, else "." = unstranded).
         """
@@ -536,7 +601,7 @@ class BedtoolsEngine(AnnotationEngine):
                 row_id: np.arange(len(df), dtype="int64"),
             }
         )
-        if self.use_strand:
+        if stranded:
             bed_df["score"] = "."
             if "strand" in df.columns:
                 strand = df["strand"]
@@ -659,6 +724,12 @@ class PolarsBioEngine(AnnotationEngine):
       exposes no fraction mechanism, so the AnnotateR contract (SPEC
       8.2) is applied as a post-filter over the ordinary overlap pairs,
       before left reconstruction.
+    - ``use_strand=True`` (Task 6B) is enforced with the SAME shared
+      same-strand predicate as BedtoolsEngine (``strand_keep_mask``):
+      pinned polars-bio 0.35.1 ``overlap`` exposes no strand option, so
+      the AnnotateR contract (SPEC 8.3) is applied as a post-filter over
+      the ordinary overlap pairs, after matching and before left
+      reconstruction.
     - Backend exceptions propagate to the caller. A valid no-match is
       not an exception: it remains a valid empty (0-row) result.
     """
@@ -748,6 +819,16 @@ class PolarsBioEngine(AnnotationEngine):
                 f"explicitly. missing={missing}, unexpected={unexpected}"
             )
         df = df.rename(columns=rename)
+
+        # Canonical strand post-filter (SPEC 8.3, Task 6B) — the same
+        # shared predicate as BedtoolsEngine: pinned polars-bio 0.35.1
+        # ``overlap`` has no strand option, so the same-strand contract
+        # is applied post-hoc. Every raw pb.overlap row is a matched
+        # pair, so the mask applies to all rows; queries losing every
+        # match are reconstructed as unmatched below (left mode). It
+        # composes with min_overlap by logical AND.
+        if self.use_strand:
+            df = df[strand_keep_mask(df, q_meta, a_meta)].reset_index(drop=True)
 
         # Canonical min_overlap post-filter (SPEC 8.2, Task 6A) — the
         # same shared predicate as BedtoolsEngine. Every raw pb.overlap
