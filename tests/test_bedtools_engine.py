@@ -254,18 +254,36 @@ def test_bedtools_closest_distance_column_is_canonical_extra():
     assert raw["distance"].iloc[0] == 76
 
 
-def test_bedtools_strand_flag_forwarded(monkeypatch):
-    """The (Task 6-scoped) use_strand flag must be forwarded to bedtools
-    unchanged: s=True for use_strand=True, s=False for the default."""
-    seen = {}
+def test_bedtools_overlap_does_not_delegate_strand_to_backend(monkeypatch):
+    """Task 6B: the overlap path never delegates strand semantics to
+    bedtools. ``use_strand=True`` runs an ordinary (unstranded)
+    ``intersect`` — the shared canonical strand predicate is applied
+    post-hoc in AnnotateR instead — so no ``s`` flag is forwarded. The
+    non-normative closest placeholder keeps its native ``-s``."""
+    seen_intersect = {}
+    seen_closest = {}
     real_intersect = pybedtools.BedTool.intersect
+    real_closest = pybedtools.BedTool.closest
 
-    def spy(self, other, **kwargs):
-        seen["s"] = kwargs.get("s")
+    def intersect_spy(self, other, **kwargs):
+        seen_intersect["s"] = kwargs.get("s")
         return real_intersect(self, other, **kwargs)
 
-    monkeypatch.setattr(pybedtools.BedTool, "intersect", spy)
-    BedtoolsEngine().intersect(_query(), _annot(), how="left")
-    assert seen["s"] is False
+    def closest_spy(self, other, **kwargs):
+        seen_closest["s"] = kwargs.get("s")
+        return real_closest(self, other, **kwargs)
+
+    monkeypatch.setattr(pybedtools.BedTool, "intersect", intersect_spy)
+    monkeypatch.setattr(pybedtools.BedTool, "closest", closest_spy)
+
     BedtoolsEngine(use_strand=True).intersect(_query(), _annot(), how="left")
-    assert seen["s"] is True
+    assert seen_intersect.get("s") in (None, False)
+    BedtoolsEngine().intersect(_query(), _annot(), how="left")
+    assert seen_intersect.get("s") in (None, False)
+
+    # closest remains the non-normative placeholder (Task 6E scope):
+    # its native -s forwarding is unchanged by Task 6B.
+    BedtoolsEngine(use_strand=True, mode="closest").intersect(_query(), _annot())
+    assert seen_closest["s"] is True
+    BedtoolsEngine(mode="closest").intersect(_query(), _annot())
+    assert seen_closest["s"] is False
