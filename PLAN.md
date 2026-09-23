@@ -122,9 +122,9 @@ Acceptance criterion: matched multiplicity, unmatched rows, duplicates, missing 
 
 ## Task 6 — Extended interval semantics
 
-Implement and lock down, one subtask/PR at a time if necessary:
+**Status: 6a complete (2026-09-23) — see `docs/implementation-notes.md` (Task 6A section).** `min_overlap` now has one normative backend-independent meaning (SPEC 8.2: minimum fraction of the *query* interval covered by a single annotation, inclusive `>=`, domain `None`/`[0,1]`), enforced by a shared canonical post-filter in both engines and protected by 22 per-engine contract cases, 8 differential cases, and validation tests. Remaining subtasks:
 
-- `min_overlap` semantics;
+- `min_overlap` semantics — **done (6a)**;
 - strand-aware overlap;
 - `contains`;
 - `within`;

@@ -137,16 +137,43 @@ rows every `annot_*` field (coordinates and metadata alike) is set to
 `pd.NA` by `canonicalize_annotation_result`, so backend sentinels
 (`.`, `-1`, ...) cannot reach public output.
 
-## 9. Minimum-overlap options
+## 9. Minimum overlap (fixed in Task 6A)
 
-Current bedtools documentation distinguishes:
+Bedtools distinguishes `-f` (fraction of A), `-F` (fraction of B), `-r`
+(reciprocal), and `-e` (either side may satisfy). AnnotateR's single
+`min_overlap` parameter is **normatively defined in SPEC 8.2** and is
+none of those options by delegation:
 
-- `-f`: minimum fraction of A;
-- `-F`: minimum fraction of B;
-- `-r`: reciprocal requirement;
-- `-e`: either fraction may satisfy the condition.
+> `min_overlap` is the minimum fraction of the canonical query
+> interval covered by a single annotation interval for that
+> query/annotation pair to qualify as a match.
 
-AnnotateR's current single `min_overlap` parameter is therefore semantically ambiguous. Its exact meaning MUST be fixed in a dedicated task and tests before parity is claimed.
+```text
+overlap_length = max(0, min(q_end, a_end) - max(q_start, a_start))
+query_length   = q_end - q_start
+qualifies iff  overlap_length > 0 AND overlap_length / query_length >= min_overlap
+```
+
+Query-relative (denominator is the query length), non-reciprocal, no
+aggregation across annotation rows, inclusive threshold. Valid values:
+`None` or a number in `[0, 1]` (int or float); anything else (out of
+range, NaN, infinities, booleans, non-numeric) is rejected with
+`ValueError` at engine construction, before any backend execution. In
+left mode the threshold participates in match determination: a query
+whose matches all fail the threshold appears exactly once, unmatched.
+
+Implementation (Task 6A): the predicate lives at the contract level as
+`streamlit_app/core/annotator.py::min_overlap_keep_mask` and is applied
+as a **shared canonical post-filter** over ordinary backend overlap
+pairs — after backend matching, before left-mode reconstruction — by
+BOTH engines, so the meaning is identical by construction. Bedtools
+`-f` is NOT used for `min_overlap` (bedtools rejects `-f 0.0` — its
+range is `(0.0, 1.0]` — and backend options must not define the
+parameter); `-f`/`-F` remain only for the non-normative
+contains/within placeholders. Pinned polars-bio 0.35.1 `overlap` exposes
+no fraction mechanism, so the Polars-Bio engine enforces the same
+shared predicate explicitly. The parameter is validated once in the
+shared `AnnotationEngine` constructor via `validate_min_overlap`.
 
 ## 10. Strand options
 
