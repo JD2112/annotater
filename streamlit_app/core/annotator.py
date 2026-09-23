@@ -295,8 +295,11 @@ class BedtoolsEngine(AnnotationEngine):
         # match and BEFORE left reconstruction, so a query whose matches
         # all fail the threshold is emitted exactly once as unmatched
         # (left mode) or omitted (inner mode). Unmatched (-loj sentinel)
-        # rows pass through untouched.
-        if self.min_overlap is not None:
+        # rows pass through untouched. SPEC 8.2 is defined for the
+        # overlap method, so the filter applies to overlap mode only;
+        # the non-normative contains/within placeholders keep their
+        # pre-Task-6A behavior (Task 6A review finding).
+        if self.min_overlap is not None and self.mode == "overlap":
             mask = min_overlap_keep_mask(out, self.min_overlap)
             mask = mask | (out[a_id].to_numpy() < 0)
             out = out[mask].reset_index(drop=True)
@@ -750,8 +753,11 @@ class PolarsBioEngine(AnnotationEngine):
         # same shared predicate as BedtoolsEngine. Every raw pb.overlap
         # row is a matched pair, so the mask applies to all rows;
         # queries losing every match are reconstructed as unmatched
-        # below (left mode).
-        if self.min_overlap is not None:
+        # below (left mode). SPEC 8.2 is defined for the overlap method,
+        # so the filter applies to overlap mode only; the non-normative
+        # contains/within placeholders keep their pre-Task-6A behavior
+        # (Task 6A review finding).
+        if self.min_overlap is not None and self.mode == "overlap":
             df = df[min_overlap_keep_mask(df, self.min_overlap)].reset_index(drop=True)
 
         # Deterministic canonical ordering by input row identity (never by

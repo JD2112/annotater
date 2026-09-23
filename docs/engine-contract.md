@@ -166,7 +166,10 @@ Implementation (Task 6A): the predicate lives at the contract level as
 `streamlit_app/core/annotator.py::min_overlap_keep_mask` and is applied
 as a **shared canonical post-filter** over ordinary backend overlap
 pairs — after backend matching, before left-mode reconstruction — by
-BOTH engines, so the meaning is identical by construction. Bedtools
+BOTH engines, so the meaning is identical by construction. The filter
+applies in `overlap` mode only (SPEC 8.2 is defined for the overlap
+method); the non-normative contains/within placeholders keep their
+pre-Task-6A behavior (Task 6A review decision). Bedtools
 `-f` is NOT used for `min_overlap` (bedtools rejects `-f 0.0` — its
 range is `(0.0, 1.0]` — and backend options must not define the
 parameter); `-f`/`-F` remain only for the non-normative

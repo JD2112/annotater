@@ -604,6 +604,28 @@ MIN_OVERLAP_CASES = [
         how="left",
         engine_kwargs={"min_overlap": 0.5},
     ),
+    # 14. Precision pinning (Task 6A review): 1-base overlap on a
+    # length-3 query, threshold 1/3. 1/3 == 1/3.0 in IEEE-754 doubles,
+    # so the inclusive >= comparison passes exactly.
+    ParityCase(
+        "min_overlap_ones_third_boundary",
+        interval_table([CHR], [0], [3], gene=["g1"]),
+        interval_table([CHR], [2], [10], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 1 / 3},
+    ),
+    # 15. Scope pinning (Task 6A review): SPEC 8.2 is defined for the
+    # overlap method; the min_overlap post-filter must NOT be applied in
+    # the non-normative within placeholder (pre-Task-6A behavior).
+    # The pair is annotation-in-query with query fraction 2/9 < 0.9, so a
+    # wrongly applied filter would drop it.
+    ParityCase(
+        "min_overlap_within_placeholder_not_applied",
+        interval_table([CHR], [0], [9], gene=["g1"]),
+        interval_table([CHR], [2], [4], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.9, "mode": "within"},
+    ),
 ]
 
 # ---------------------------------------------------------------------------

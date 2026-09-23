@@ -740,8 +740,8 @@ untouched; no global configuration introduced.
 
 ### Tests
 
-- `tests/parity/cases.py`: `MIN_OVERLAP_CASES` — 23 cases × 2 engines
-  (46 parameterized tests) covering: full overlap at thresholds 0/0.5/1.0; exactly-half boundary
+- `tests/parity/cases.py`: `MIN_OVERLAP_CASES` — 25 cases × 2 engines
+  (50 parameterized tests) covering: full overlap at thresholds 0/0.5/1.0; exactly-half boundary
   (0.49/0.50/0.51, pins `>=`); one-base boundary (0.10/0.11); touching
   at 0.0; annotation-larger-than-query at 1.0 (query-relative);
   query-larger-than-annotation (0.10/0.11); reciprocal distinction
@@ -750,7 +750,10 @@ untouched; no global configuration introduced.
   one-pass-one-fail; multiple qualifying in annotation input order;
   duplicate queries (inner + left, incl. all-failing left); duplicate
   annotations; metadata (incl. missing value) through filtering; left
-  mixed qualifying/failing/no-match. 8 of them are also in
+  mixed qualifying/failing/no-match; 1/3 precision boundary (Task 6A
+  review: pins IEEE-754 exactly-rounded division at an irrational
+  threshold); within-placeholder scope (Task 6A review: the filter is
+  NOT applied in the non-normative `within` mode). 8 of them are also in
   `DIFFERENTIAL_CASES` (direct engine-vs-engine layer, which now
   forwards `case.engine_kwargs`).
 - `tests/parity/test_min_overlap_parity.py`: every case against BOTH
@@ -779,6 +782,28 @@ untouched; no global configuration introduced.
   to bedtools (error) or silently ignored (polars-bio).
 - No changes to strand, contains, within, or closest behavior; no new
   user-facing knobs; no UI changes (the slider already maps 0 → `None`).
+  The min_overlap post-filter is explicitly gated to `overlap` mode in
+  both engines (Task 6A review decision — the non-normative
+  contains/within placeholders keep their exact pre-Task-6A behavior),
+  pinned by `min_overlap_within_placeholder_not_applied`.
+
+### Review (Task 6A)
+
+Two independent fresh-context Pi subagent reviews (semantics-vs-spec and
+implementation/tests) at HEAD: both verdicts **OK with notes**, all
+normative points CONFORMS, no P0/P1 semantics findings. Resolved
+findings: (1) PLAN.md case count 22 → 25; (2) the post-filter was
+initially applied in all modes that route through the shared overlap
+path — gated to `overlap` mode only so the contains/within placeholders
+are untouched, with a pinning parity case; (3) added a 1/3 precision
+pinning case. Accepted as-is (documented, no change): `np.int64` is
+rejected as non-numeric (SPEC 8.2 names Python int/float; the UI passes
+Python float); the mocked-backend validation test proves rejection at
+construction, which satisfies "before backend execution" by definition.
+Deferred: stale `use_strand` bullet in `tests/parity/test_extended_semantics.py`
+(pre-existing since Task 5; fixed when Task 6B lands), min_overlap ×
+`use_strand` cases (6B), min_overlap + left + empty-table cases
+(early-return paths, low risk).
 
 ### Test command and baseline (Task 6A)
 
@@ -788,11 +813,12 @@ Documented command (from repository root):
 .venv/bin/python -m pytest
 ```
 
-Task 6A completion baseline: **371 passed, 0 xfailed, 0 failed, 0
-skipped** (previous baseline: 282 passed). Focused counts: min-overlap
-contract parity 46 passed (23 cases × 2 engines), differential parity
-16 passed (8 pre-existing + 8 min-overlap), validation 35 passed,
-full parity suite 174 passed. Pinned
+Task 6A completion baseline: **375 passed, 0 xfailed, 0 failed, 0
+skipped** (previous baseline: 282 passed), run twice after the review
+fixes. Focused counts: min-overlap contract parity 50 passed (25 cases
+× 2 engines), differential parity 16 passed (8 pre-existing + 8
+min-overlap), validation 35 passed, full parity suite 178 passed.
+Pinned
 environment: Python 3.12.14, bedtools 2.31.1, pybedtools 0.12.1,
 polars 1.44.2, polars-bio 0.35.1, pandas 3.0.6.
 
