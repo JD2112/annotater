@@ -831,3 +831,144 @@ exists but the contract is undefined), `contains`/`within` (bedtools
 `-f 1.0`/`-F 1.0` placeholders / polars-bio no-op — engine-contract
 section 11), `closest` full semantics (distance definition, tie
 breaking; the 76-vs-75 discrepancy noted in Task 5 remains).
+
+## Task 6B — strand semantics (2026-09-23)
+
+`use_strand` now has one normative, backend-independent meaning (SPEC
+8.3; engine-contract section 10):
+
+- `use_strand=False`: strand does not participate in match
+  qualification (pre-Task-6B behavior, unchanged);
+- `use_strand=True`: a pair qualifies only if the interval predicate
+  qualifies AND both rows carry an explicit canonical strand
+  (`+`/`-`) and the strands are equal.
+
+### Decisions
+
+- **Missing/unknown strand is NOT a wildcard.** Canonical missing
+  (including a source `.` after normalization) and an entirely absent
+  strand column on either input make a stranded match impossible —
+  including unknown-vs-unknown. The behavior is identical for both
+  engines because the predicate is shared.
+- **No native backend strand option.** Bedtools no longer forwards `-s`
+  on the overlap path: its treatment of `.`/missing strand is
+  undocumented and must not define the AnnotateR contract (bedtools'
+  stranded serialization + `-s` were also structurally broken — the
+  12-column raw layout parsed the strand column as the annotation row
+  id, so any stranded inner match crashed). Pinned polars-bio 0.35.1
+  `overlap` exposes no strand option at all. Both engines therefore run
+  an ordinary unstranded overlap and apply the shared canonical
+  predicate post-hoc — the same architecture as Task 6A `min_overlap`.
+  The stranded serialization + native `-s` remain ONLY in the
+  non-normative `closest` placeholder, unchanged (Task 6E scope).
+- **No mode gating.** The shared strand predicate applies to every mode
+  that routes through the engines' overlap path (overlap and the
+  non-normative contains/within placeholders), because SPEC 8.3 defines
+  strand as orthogonal to the *selected* interval predicate. This
+  slightly changes both engines' contains/within placeholder behavior
+  (strand now participates identically on both) while those predicates
+  remain non-normative — their full contract is Task 6C/6D scope.
+  (Contrast Task 6A: `min_overlap` IS gated to overlap mode because
+  SPEC 8.2 is defined for the overlap method only.)
+- **Logical AND with `min_overlap`.** The predicates are independent:
+  strand is applied first, `min_overlap` second; neither bypasses the
+  other (no precedence).
+- **Left mode.** A query whose geometrical overlaps all fail the strand
+  predicate is unmatched exactly once (SPEC 7.2); a query with at least
+  one qualifying match emits only its qualifying matches.
+- **Validation.** Canonical strand values other than `+`/`-`/missing
+  (`?`, `*`, `plus`, `1`, `""`, ...) were already rejected by
+  `validate_canonical_interval_table` before Task 6B; Task 6B adds
+  engine-level tests proving rejection for both engines BEFORE any
+  backend execution. No parser/validation redesign was needed.
+
+### Implementation
+
+- `streamlit_app/core/annotator.py`:
+  - new contract-level `strand_keep_mask(df, q_meta, a_meta)`:
+    `coord_strand == annot_strand` with both values explicit
+    (`+`/`-`); canonical missing (pd.NA/NaN) compares False; an absent
+    strand column on either side yields an all-False mask (NOT a
+    fall-back to unstranded mode);
+  - `BedtoolsEngine._overlap`: ordinary unstranded `intersect` (no
+    `s` flag, always the 4-column identity serialization per side) +
+    the shared strand post-filter after matching and before left
+    reconstruction (`-loj` sentinel rows pass through untouched);
+    `_to_bed` gained an explicit `stranded` parameter (only
+    `_closest` requests the stranded layout now);
+  - `PolarsBioEngine._adapt_overlap_result`: the same shared post-filter
+    before the `min_overlap` filter;
+  - stale docstrings (Task 6-scope flag forwarding, stranded overlap
+    serialization, "engines do not yet implement" strand bullets)
+    corrected.
+- UI: the checkbox already passed a boolean correctly; only the help
+  text was updated to state the normative semantics (missing strand
+  never matches in stranded mode).
+
+### Tests
+
+- `tests/parity/cases.py`: `STRAND_CASES` expanded from 1 to 29
+  explicit-fixture cases covering the full Task 6B fixture matrix
+  (same/opposite/missing/both-missing strands, `.` normalization,
+  one-query-two-strands, duplicate queries/annotations, left mismatch /
+  left mixed, different chromosome, touching boundaries,
+  strand × min_overlap composition (both pass / strand fail /
+  threshold fail / left reconstruction), and missing strand column in
+  inner and left mode); 15 representative strand fixtures added to
+  `DIFFERENTIAL_CASES`.
+- `tests/parity/test_extended_semantics.py` →
+  `tests/parity/test_strand_parity.py`: per-engine contract layer
+  (29 cases × 2 engines) plus
+  `test_strand_dot_source_value_not_wildcard` (BED file end-to-end:
+  source `.` → canonical missing → not a wildcard under stranded
+  matching, both engines).
+- `tests/test_strand_validation.py`: malformed canonical strand values
+  (`?`, `*`, `plus`, `1`, `""`) raise `InvalidIntervalError` for BOTH
+  engines before any backend execution (monkeypatched no-backend
+  proof).
+- `tests/test_bedtools_engine.py`:
+  `test_bedtools_strand_flag_forwarded` replaced by
+  `test_bedtools_overlap_does_not_delegate_strand_to_backend` (no
+  `s` flag on the overlap path; `closest` still forwards its
+  non-normative `-s`).
+
+### Behavior changes
+
+- Bedtools `use_strand=True` (overlap mode): previously delegated to
+  native `-s` with a stranded serialization; the missing-strand
+  behavior of that path was backend-defined and the layout parsing was
+  broken (crash on stranded inner matches). Now: explicit AnnotateR
+  contract, both engines identical.
+- Polars-Bio `use_strand=True` (overlap mode): previously ignored the
+  flag entirely (silently returned unstranded results — a SPEC
+  violation). Now enforces the same shared contract.
+- `use_strand=False` results are unchanged on both engines.
+- Contains/within placeholders: strand now participates identically on
+  both engines (documented above); the placeholders remain
+  non-normative.
+- Closest: unchanged (native `-s` on bedtools, ignored on polars-bio),
+  non-normative, Task 6E scope.
+
+### Test command and baseline (Task 6B)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Task 6B completion baseline: **460 passed, 0 xfailed, 0 failed, 0
+skipped** (previous baseline: 375 passed), run twice. Focused counts:
+strand contract parity 59 passed (29 cases × 2 engines + 1 `.`
+end-to-end), strand validation 13 passed, differential parity 31
+passed (16 pre-existing + 15 strand), full parity suite 250 passed.
+
+### Remaining known deviations (Task 6 backlog)
+
+`use_strand` and `min_overlap` are now normative and parity-protected.
+Documented gaps (non-normative): `contains`/`within` (bedtools
+`-f 1.0`/`-F 1.0` placeholders / polars-bio no-op — engine-contract
+section 11), `closest` full semantics (distance definition, tie
+breaking; the 76-vs-75 discrepancy noted in Task 5 remains; the
+bedtools `-s` forwarding there is a placeholder, not the Task 6B
+contract).

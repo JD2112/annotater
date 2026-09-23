@@ -174,7 +174,9 @@ def main():
         with st.expander("🔧 Advanced Options"):
             use_strand = st.checkbox(
                 "Consider strand information",
-                help="Require same strand for overlaps"
+                help="Only match overlaps where both rows carry an explicit "
+                "strand (+ or -) and the strands are the same; rows with a "
+                "missing strand never match in this mode"
             )
             
             min_overlap = st.slider(

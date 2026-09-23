@@ -122,10 +122,10 @@ Acceptance criterion: matched multiplicity, unmatched rows, duplicates, missing 
 
 ## Task 6 — Extended interval semantics
 
-**Status: 6a complete (2026-09-23) — see `docs/implementation-notes.md` (Task 6A section).** `min_overlap` now has one normative backend-independent meaning (SPEC 8.2: minimum fraction of the *query* interval covered by a single annotation, inclusive `>=`, domain `None`/`[0,1]`), enforced by a shared canonical post-filter in both engines and protected by 25 per-engine contract cases, 8 differential cases, and validation tests. Remaining subtasks:
+**Status: 6a + 6b complete (2026-09-23) — see `docs/implementation-notes.md` (Task 6A and Task 6B sections).** `min_overlap` has one normative backend-independent meaning (SPEC 8.2, fixed in 6a). `use_strand` now has one normative backend-independent meaning (SPEC 8.3, fixed in 6b: `use_strand=False` ignores strand; `use_strand=True` requires both rows to carry explicit equal `+`/`-` strands — missing/unknown strand is not a wildcard; missing strand column ⇒ no stranded matches, identical for both engines; composes with `min_overlap` by logical AND; enforced by a shared canonical post-filter on both engines, protected by 29 per-engine contract cases, 15 differential cases, 1 `.` end-to-end case, and validation tests). Remaining subtasks:
 
 - `min_overlap` semantics — **done (6a)**;
-- strand-aware overlap;
+- strand-aware overlap — **done (6b)**;
 - `contains`;
 - `within`;
 - `closest` / nearest.

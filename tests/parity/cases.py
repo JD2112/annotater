@@ -629,17 +629,260 @@ MIN_OVERLAP_CASES = [
 ]
 
 # ---------------------------------------------------------------------------
-# Strand (only the part of the contract that is already normative)
+# Strand (PLAN Task 6B) — the same-strand contract (SPEC 8.3).
+#
+# use_strand=False: strand does not participate in match qualification;
+# matching is by the interval predicate alone (pre-Task-6B behavior).
+#
+# use_strand=True: a pair qualifies only if BOTH rows carry an explicit
+# canonical strand ("+" or "-") AND the strands are equal AND the
+# interval predicate also qualifies. Missing/unknown strand (pd.NA,
+# absent strand column) is NOT a wildcard and NOT a strand: unknown vs
+# unknown does not match. Strand composes with min_overlap by logical
+# AND (no precedence). In left mode a query whose geometrical overlaps
+# all fail the strand predicate is unmatched exactly once.
+#
+# Expected rows below are derived from that definition, never from
+# backend output.
 # ---------------------------------------------------------------------------
 
 STRAND_CASES = [
+    # Pre-Task-6B anchor (SPEC 8.3): when use_strand=False, strand MUST
+    # NOT affect matching. Cross-strand pairs still overlap.
     ParityCase(
-        # SPEC 8.3: when use_strand=False, strand MUST NOT affect matching.
-        # Cross-strand pairs therefore still overlap.
         "use_strand_false_ignores_strand",
         interval_table([CHR, CHR], [10, 2000], [20, 2100], gene=["g1", "g2"], strand=["+", "-"]),
         interval_table([CHR, CHR], [15, 1900], [25, 2050], feature=["f1", "f2"], strand=["-", "+"]),
         ((0, 0), (1, 1)),
+    ),
+    # 1. Same positive strand: matches with and without strand filtering.
+    ParityCase(
+        "strand_same_positive_matches_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+    ),
+    ParityCase(
+        "strand_same_positive_matches_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 2. Same negative strand: matches in stranded mode.
+    ParityCase(
+        "strand_same_negative_matches_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["-"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 3. Opposite strands: match unstranded, fail stranded (both directions).
+    ParityCase(
+        "strand_opposite_plus_minus_matches_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+    ),
+    ParityCase(
+        "strand_opposite_plus_minus_fails_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    ParityCase(
+        "strand_opposite_minus_plus_fails_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["-"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 4. Query strand missing: match unstranded, fail stranded (missing is
+    # NOT a wildcard).
+    ParityCase(
+        "strand_query_missing_matches_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+    ),
+    ParityCase(
+        "strand_query_missing_fails_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 5. Annotation strand missing: symmetric expectation.
+    ParityCase(
+        "strand_annot_missing_matches_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        ((0, 0),),
+    ),
+    ParityCase(
+        "strand_annot_missing_fails_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 6. Both strands missing: unknown vs unknown is NOT a stranded match.
+    ParityCase(
+        "strand_both_missing_matches_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        ((0, 0),),
+    ),
+    ParityCase(
+        "strand_both_missing_fails_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 7 ("." source values). At the canonical layer "." is normalized to
+    # missing BEFORE the engine sees it (pinned in
+    # test_strand_dot_source_value_not_wildcard); a canonical missing
+    # strand from that normalization path is exactly the missing-strand
+    # semantics of cases 4-6 above.
+    # 8. One query, two annotation strands: stranded mode keeps only the
+    # same-strand annotation; unstranded keeps both (annotation input
+    # order).
+    ParityCase(
+        "strand_one_query_two_annotation_strands_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"], strand=["+", "-"]),
+        ((0, 0), (0, 1)),
+    ),
+    ParityCase(
+        "strand_one_query_two_annotation_strands_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"], strand=["+", "-"]),
+        ((0, 0),),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 9. Duplicate same-strand annotations: no deduplication.
+    ParityCase(
+        "strand_duplicate_annotations_preserved",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"], strand=["+", "+"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 10. Duplicate same-strand queries: distinct identity preserved.
+    ParityCase(
+        "strand_duplicate_queries_preserved",
+        interval_table([CHR, CHR], [10, 10], [20, 20], gene=["g1", "g2"], strand=["+", "+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        ((0, 0), (1, 0)),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 11. Left mismatch only: geometrical overlap with the wrong strand is
+    # NOT a match; exactly one unmatched query row.
+    ParityCase(
+        "strand_left_mismatch_only_unmatched",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"use_strand": True},
+    ),
+    # 12. Left mixed: only the qualifying match is emitted; NO unmatched
+    # query row accompanies it.
+    ParityCase(
+        "strand_left_mixed_only_qualifying_emitted",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [15, 15], [25, 25], feature=["f1", "f2"], strand=["-", "+"]),
+        ((0, 1),),
+        how="left",
+        engine_kwargs={"use_strand": True},
+    ),
+    # 13. Different chromosomes: strand must not create a match where the
+    # chromosome predicate fails.
+    ParityCase(
+        "strand_different_chromosomes_no_match_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(["chrB"], [10], [20], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 14. Touching intervals: half-open semantics stay authoritative —
+    # no match even on the same strand.
+    ParityCase(
+        "strand_touching_same_strand_no_match_unstranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [20], [30], feature=["f1"], strand=["+"]),
+        (),
+    ),
+    ParityCase(
+        "strand_touching_same_strand_no_match_stranded",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [20], [30], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    # 15. Strand AND min_overlap both pass (0.5 >= 0.5): match.
+    ParityCase(
+        "strand_and_min_overlap_both_pass",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+        engine_kwargs={"use_strand": True, "min_overlap": 0.5},
+    ),
+    # 16. min_overlap passes (0.5) but strand fails: no match (no
+    # precedence: neither predicate bypasses the other).
+    ParityCase(
+        "strand_fail_min_overlap_pass_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        (),
+        engine_kwargs={"use_strand": True, "min_overlap": 0.5},
+    ),
+    # 17. Strand passes but min_overlap fails (0.5 < 0.51): no match.
+    ParityCase(
+        "strand_pass_min_overlap_fail_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True, "min_overlap": 0.51},
+    ),
+    # 18. Left reconstruction with both predicates: the query has two
+    # geometrical overlaps — one fails strand ("-"), one fails the
+    # threshold (2/10 = 0.2 < 0.5 on the "+" annotation [19,21)).
+    # Result: exactly one unmatched query row.
+    ParityCase(
+        "strand_min_overlap_left_reconstruction",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [15, 19], [25, 21], feature=["f1", "f2"], strand=["-", "+"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"use_strand": True, "min_overlap": 0.5},
+    ),
+    # Missing strand COLUMN: treated as canonical unknown strand (no
+    # stranded matches, no crash, no silent fall-back to unstranded
+    # mode); identical for both engines.
+    ParityCase(
+        "strand_missing_column_query_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    ParityCase(
+        "strand_missing_column_annot_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"use_strand": True},
+    ),
+    ParityCase(
+        "strand_missing_column_left_all_unmatched",
+        interval_table([CHR, CHR], [10, 100], [20, 200], gene=["g1", "g2"]),
+        interval_table([CHR, CHR], [15, 105], [25, 215], feature=["f1", "f2"], strand=["+", "+"]),
+        ((0, None), (1, None)),
+        how="left",
+        engine_kwargs={"use_strand": True},
     ),
 ]
 
@@ -674,4 +917,29 @@ _MIN_OVERLAP_DIFFERENTIAL_NAMES = {
 }
 DIFFERENTIAL_CASES += [
     c for c in MIN_OVERLAP_CASES if c.name in _MIN_OVERLAP_DIFFERENTIAL_NAMES
+]
+
+# Task 6B: representative strand fixtures for the direct
+# engine-vs-engine layer (same/opposite/missing strands, mixed left
+# reconstruction, multiplicity, missing strand column, and the
+# strand + min_overlap composition).
+_STRAND_DIFFERENTIAL_NAMES = {
+    "strand_same_positive_matches_stranded",
+    "strand_opposite_plus_minus_fails_stranded",
+    "strand_opposite_minus_plus_fails_stranded",
+    "strand_query_missing_fails_stranded",
+    "strand_both_missing_fails_stranded",
+    "strand_one_query_two_annotation_strands_stranded",
+    "strand_duplicate_annotations_preserved",
+    "strand_left_mismatch_only_unmatched",
+    "strand_left_mixed_only_qualifying_emitted",
+    "strand_touching_same_strand_no_match_stranded",
+    "strand_and_min_overlap_both_pass",
+    "strand_fail_min_overlap_pass_no_match",
+    "strand_pass_min_overlap_fail_no_match",
+    "strand_min_overlap_left_reconstruction",
+    "strand_missing_column_query_no_match",
+}
+DIFFERENTIAL_CASES += [
+    c for c in STRAND_CASES if c.name in _STRAND_DIFFERENTIAL_NAMES
 ]
