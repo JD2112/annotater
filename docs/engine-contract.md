@@ -192,6 +192,8 @@ Missing/unknown strand (canonical missing, or an absent strand column on either 
 
 In left mode, a query whose geometrical overlaps all fail the strand predicate appears exactly once, unmatched (SPEC 7.2); a query with at least one qualifying match emits only its qualifying matches. The predicate composes with `min_overlap` by logical AND (no precedence). Canonical strand values other than `+`/`-`/missing are rejected by `validate_canonical_interval_table`, which both engines invoke before any backend execution.
 
+The predicate is deliberately **not** mode-gated (unlike the Task 6A `min_overlap` gate, which SPEC 8.2 limits to the overlap method): it therefore also applies to the non-normative `contains`/`within` placeholder paths, identically on both engines. Those placeholder predicates remain Task 6C/6D scope; only the strand composition behavior changed.
+
 ## 11. Contains / within
 
 These operations require explicit predicates. A provisional mathematical definition for later confirmation is:

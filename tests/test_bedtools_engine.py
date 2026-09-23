@@ -277,9 +277,9 @@ def test_bedtools_overlap_does_not_delegate_strand_to_backend(monkeypatch):
     monkeypatch.setattr(pybedtools.BedTool, "closest", closest_spy)
 
     BedtoolsEngine(use_strand=True).intersect(_query(), _annot(), how="left")
-    assert seen_intersect.get("s") in (None, False)
+    assert seen_intersect["s"] is None  # never passed, not even s=False
     BedtoolsEngine().intersect(_query(), _annot(), how="left")
-    assert seen_intersect.get("s") in (None, False)
+    assert seen_intersect["s"] is None
 
     # closest remains the non-normative placeholder (Task 6E scope):
     # its native -s forwarding is unchanged by Task 6B.

@@ -345,6 +345,12 @@ class BedtoolsEngine(AnnotationEngine):
         # (left mode) or omitted (inner mode). Unmatched (-loj sentinel)
         # rows pass through untouched. The predicate is identical for
         # both engines; it composes with min_overlap by logical AND.
+        # Deliberately NOT mode-gated (unlike min_overlap, which SPEC
+        # 8.2 defines for the overlap method only): SPEC 8.3 defines
+        # strand relative to the *selected* interval predicate, so it
+        # also applies to the non-normative contains/within placeholder
+        # paths (engine-contract section 10; implementation-notes
+        # Task 6B "No mode gating").
         if self.use_strand:
             mask = strand_keep_mask(out, q_meta, a_meta)
             mask = mask | (out[a_id].to_numpy() < 0)
@@ -476,8 +482,9 @@ class BedtoolsEngine(AnnotationEngine):
         Map raw bedtools text output to canonical columns + row ids.
 
         The raw frame is the identity-only serialization (coordinates +
-        internal row ids; plus placeholder score + strand per side when
-        ``use_strand`` is set). Every published value is re-attached from
+        internal row ids), always 4 columns per side on the overlap path;
+        the stranded 6-column layout exists only in the non-normative
+        closest placeholder and is not parsed here. Every published value is re-attached from
         the ORIGINAL input frames by row identity, so no user data is
         re-inferred from text and no backend sentinel can reach the output.
         """
@@ -826,7 +833,12 @@ class PolarsBioEngine(AnnotationEngine):
         # is applied post-hoc. Every raw pb.overlap row is a matched
         # pair, so the mask applies to all rows; queries losing every
         # match are reconstructed as unmatched below (left mode). It
-        # composes with min_overlap by logical AND.
+        # composes with min_overlap by logical AND. Deliberately NOT
+        # mode-gated (unlike min_overlap below): SPEC 8.3 defines
+        # strand relative to the *selected* interval predicate, so it
+        # also applies to the non-normative contains/within placeholder
+        # paths (engine-contract section 10; implementation-notes
+        # Task 6B "No mode gating").
         if self.use_strand:
             df = df[strand_keep_mask(df, q_meta, a_meta)].reset_index(drop=True)
 
