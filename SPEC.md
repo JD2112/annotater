@@ -121,7 +121,28 @@ Overlap is the first parity target. A positive-width intersection of at least on
 
 ### 8.2 Minimum overlap
 
-`min_overlap`, if exposed as a fraction, MUST define explicitly whether it applies to the query, the annotation, or reciprocally. Until this is fixed by tests and documentation, agents MUST NOT infer semantics from a parameter name alone.
+`min_overlap` is the **minimum fraction of the canonical query interval covered by a single annotation interval** for that query/annotation pair to qualify as a match. The definition is backend-independent; backend-specific fraction options (for example bedtools `-f`/`-F`/`-r`/`-e`) MUST NOT redefine it.
+
+For a query interval `Q=[q_start, q_end)` and an annotation interval `A=[a_start, a_end)` (canonical 0-based half-open):
+
+```text
+overlap_length = max(0, min(q_end, a_end) - max(q_start, a_start))
+query_length   = q_end - q_start
+query_overlap_fraction = overlap_length / query_length
+```
+
+The pair qualifies iff:
+
+```text
+overlap_length > 0
+AND query_overlap_fraction >= min_overlap
+```
+
+- The denominator is the **query** interval length. The parameter is NOT the annotation fraction, NOT reciprocal overlap, and NOT "either side" overlap; annotation coverage is never measured. A small annotation fully covering a large query scores against the query length, not its own.
+- The threshold comparison is inclusive (`>=`).
+- Each query/annotation pair is evaluated independently; coverage accumulated across multiple annotation rows MUST NOT be summed to satisfy the threshold.
+- Valid values: `None` (no fractional threshold; ordinary positive overlap) or a numeric value in `[0, 1]` (int or float; integers `0`/`1` are valid numeric equivalents). `0` is equivalent to ordinary positive overlap: touching intervals (overlap 0) never match at any threshold. Negative values, values above 1, NaN, infinities, booleans, and non-numeric types MUST be rejected with an explicit validation error before backend execution and MUST NOT be clamped or forwarded to a backend.
+- The threshold participates in match determination: in left mode, a query whose annotation matches all fail the threshold is unmatched (exactly one unmatched row, `has_overlap=False`, no failing match row), and a query with at least one qualifying match emits only its qualifying matches.
 
 ### 8.3 Strand
 
@@ -183,7 +204,7 @@ The parity suite MUST include minimal fixtures for at least:
 - chromosome naming normalization;
 - coordinate-system boundary conversion.
 
-Later milestones MUST add strand, minimum-overlap, contains, within, and closest fixtures.
+Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); later milestones MUST add strand, contains, within, and closest fixtures.
 
 ### 10.3 Comparison
 

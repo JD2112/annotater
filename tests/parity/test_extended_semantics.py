@@ -15,11 +15,10 @@ engine-contract section 5, PLAN Task 6):
 - ``use_strand=True`` semantics: the engines do not yet implement it
   (BedtoolsEngine takes no strand argument at all; PolarsBioEngine
   ignores the flag). No fixture asserts True behavior.
-- ``min_overlap``: accepted by the shared ``AnnotationEngine`` constructor
-  and wired to bedtools ``-f`` by BedtoolsEngine, but the mapping between
-  the SPEC notion of minimum overlap and bedtools ``-f``/``-F``/``-r``/``-e``
-  is not yet fixed, and PolarsBioEngine ignores the parameter; parity is
-  therefore not asserted (engine-contract section 9).
+- ``min_overlap`` was FIXED in Task 6A (query-fraction contract, SPEC 8.2,
+  engine-contract section 9) and is covered by the dedicated parity module
+  ``tests/parity/test_min_overlap_parity.py`` plus the validation tests in
+  ``tests/test_min_overlap_validation.py``; it is not part of this file.
 - ``contains`` / ``within`` / ``closest`` modes are not normative for
   this task.
 """

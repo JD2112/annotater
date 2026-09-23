@@ -642,3 +642,192 @@ matching semantics undefined), `min_overlap` (forwarded to `-f` in
 overlap mode only), `contains`/`within` (`-f 1.0`/`-F 1.0`
 placeholders), `closest` full semantics (distance definition, tie
 breaking).
+
+## Task 6A — min_overlap semantics (2026-09-23)
+
+**Scope:** fix one backend-independent meaning for the existing single
+`min_overlap` parameter and lock it with contract + parity tests.
+Strand/contains/within/closest semantics remain out of scope (Task
+6B–6E backlog, untouched).
+
+### Normative definition (SPEC 8.2)
+
+`min_overlap` is the **minimum fraction of the canonical query
+interval covered by a single annotation interval** for that
+query/annotation pair to qualify as a match:
+
+```text
+overlap_length = max(0, min(q_end, a_end) - max(q_start, a_start))
+query_length   = q_end - q_start
+qualifies iff  overlap_length > 0 AND overlap_length / query_length >= min_overlap
+```
+
+- Query-relative: denominator is the query length. NOT the annotation
+  fraction, NOT reciprocal (bedtools `-r`), NOT either-side (`-e`),
+  NOT coverage summed across annotation rows.
+- Inclusive threshold (`>=`); ordinary positive overlap still required
+  (touching intervals never match, even at `min_overlap=0`).
+- Valid domain: `None` (no threshold) or a number in `[0, 1]` (int or
+  float — integers `0`/`1` are valid numeric equivalents, normalized to
+  `float`). Negative, >1, NaN, ±inf, booleans, and non-numeric types
+  raise `ValueError`; invalid values are never clamped or forwarded to
+  a backend.
+- Left mode: the threshold participates in match determination. A
+  query whose annotation matches all fail the threshold is emitted
+  exactly once, unmatched (`has_overlap=False`, no failing match row).
+
+### Validation policy
+
+Validated once in the shared `AnnotationEngine` constructor via the
+module-level `validate_min_overlap` (in `streamlit_app/core/annotator.py`),
+so both backends validate identically and the rejection happens
+**before any backend execution** (proven by a monkeypatched no-call
+test). One consistent exception type: `ValueError`, matching the
+existing public API's invalid-parameter handling (unknown `mode`).
+
+### Architecture: shared canonical post-filter
+
+```text
+canonical inputs
+      ↓
+ordinary backend overlap (NO backend fraction option for min_overlap)
+      ↓
+canonical matched pairs
+      ↓
+shared min_overlap_keep_mask filter   ← SPEC 8.2 predicate, one code path
+      ↓
+left reconstruction (if how="left")
+      ↓
+canonical output
+```
+
+`min_overlap_keep_mask(df, min_overlap)` in
+`streamlit_app/core/annotator.py` is the single contract-level
+predicate; both engines call it on their canonical-column frames
+(after backend matching, before left reconstruction). Unmatched
+(-loj sentinel) rows are excluded from the predicate and pass through
+unchanged; queries losing all matches are then reconstructed as
+unmatched by the existing left logic.
+
+### Bedtools strategy
+
+`min_overlap` is **no longer mapped to bedtools `-f`** (the historical
+behavior). Reasons, all demonstrated during this task:
+
+- bedtools v2.31.1 rejects `-f 0.0` outright (its range is
+  `(0.0, 1.0]`, verified against the installed binary): the old
+  wiring made the valid no-op threshold `0.0` a hard `BEDToolsError`;
+- the contract is backend-independent by definition — applying the
+  identical shared predicate removes any reliance on bedtools'
+  version-specific fraction arithmetic (double division + `<` cutoff);
+- `-f`/`-F` remain internally available and are still used only by the
+  non-normative contains/within placeholders (unchanged, Task 6C/6D
+  scope).
+- For the record: bedtools v2.31.1 `-f` was empirically verified to be
+  a fraction of A (the query) and to use an inclusive cutoff, so the
+  old behavior agreed with the new contract for `0 < f <= 1`; the
+  `f = 0` crash and the version-coupling are why the shared filter was
+  preferred anyway.
+
+### Polars-Bio strategy
+
+Pinned polars-bio 0.35.1 `overlap` exposes **no fraction mechanism**
+(signature + docstring verified against the installed package), so
+AnnotateR's query-fraction contract is enforced explicitly with the
+same shared predicate over the ordinary `pb.overlap` pairs. The
+`coordinate_system_zero_based=True` per-frame metadata handling is
+untouched; no global configuration introduced.
+
+### Tests
+
+- `tests/parity/cases.py`: `MIN_OVERLAP_CASES` — 25 cases × 2 engines
+  (50 parameterized tests) covering: full overlap at thresholds 0/0.5/1.0; exactly-half boundary
+  (0.49/0.50/0.51, pins `>=`); one-base boundary (0.10/0.11); touching
+  at 0.0; annotation-larger-than-query at 1.0 (query-relative);
+  query-larger-than-annotation (0.10/0.11); reciprocal distinction
+  (annotation 10% covered, query 100% → match at 1.0, would fail under
+  `-r`); no aggregation across two 0.30 annotations (inner + left);
+  one-pass-one-fail; multiple qualifying in annotation input order;
+  duplicate queries (inner + left, incl. all-failing left); duplicate
+  annotations; metadata (incl. missing value) through filtering; left
+  mixed qualifying/failing/no-match; 1/3 precision boundary (Task 6A
+  review: pins IEEE-754 exactly-rounded division at an irrational
+  threshold); within-placeholder scope (Task 6A review: the filter is
+  NOT applied in the non-normative `within` mode). 8 of them are also in
+  `DIFFERENTIAL_CASES` (direct engine-vs-engine layer, which now
+  forwards `case.engine_kwargs`).
+- `tests/parity/test_min_overlap_parity.py`: every case against BOTH
+  engines via the strict canonical comparator (explicit expected rows,
+  never backend output).
+- `tests/test_min_overlap_validation.py`: invalid values
+  (`-0.01`, `-1`, `1.01`, `2`, NaN, ±inf, `True`, `False`, `"0.5"`)
+  raise `ValueError` for both engines; valid values (`None`, `0`,
+  `0.0`, `0.5`, `1`, `1.0`) accepted with documented int normalization;
+  monkeypatched proof that an invalid value never invokes either
+  backend; both engines accept/reject exactly the same value set.
+
+### Behavior changes
+
+- **Bug fixed:** `min_overlap=0.0` previously crashed BedtoolsEngine
+  (bedtools `-f 0.0` is a hard error); it is now a valid no-op
+  threshold, matching the UI help text ("0 = any overlap").
+- **Bug fixed:** PolarsBioEngine previously ignored `min_overlap`
+  entirely; it now enforces the same contract.
+- For `0 < min_overlap <= 1` in plain overlap mode, BedtoolsEngine
+  results are unchanged (bedtools `-f` agreed with the contract there);
+  the code path changed (post-filter instead of `-f`) but results do
+  not.
+- Invalid thresholds (out of range/NaN/±inf/bool/non-numeric) now
+  raise `ValueError` at engine construction instead of being forwarded
+  to bedtools (error) or silently ignored (polars-bio).
+- No changes to strand, contains, within, or closest behavior; no new
+  user-facing knobs; no UI changes (the slider already maps 0 → `None`).
+  The min_overlap post-filter is explicitly gated to `overlap` mode in
+  both engines (Task 6A review decision — the non-normative
+  contains/within placeholders keep their exact pre-Task-6A behavior),
+  pinned by `min_overlap_within_placeholder_not_applied`.
+
+### Review (Task 6A)
+
+Two independent fresh-context Pi subagent reviews (semantics-vs-spec and
+implementation/tests) at HEAD: both verdicts **OK with notes**, all
+normative points CONFORMS, no P0/P1 semantics findings. Resolved
+findings: (1) PLAN.md case count 22 → 25; (2) the post-filter was
+initially applied in all modes that route through the shared overlap
+path — gated to `overlap` mode only so the contains/within placeholders
+are untouched, with a pinning parity case; (3) added a 1/3 precision
+pinning case. Accepted as-is (documented, no change): `np.int64` is
+rejected as non-numeric (SPEC 8.2 names Python int/float; the UI passes
+Python float); the mocked-backend validation test proves rejection at
+construction, which satisfies "before backend execution" by definition.
+Deferred: stale `use_strand` bullet in `tests/parity/test_extended_semantics.py`
+(pre-existing since Task 5; fixed when Task 6B lands), min_overlap ×
+`use_strand` cases (6B), min_overlap + left + empty-table cases
+(early-return paths, low risk).
+
+### Test command and baseline (Task 6A)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Task 6A completion baseline: **375 passed, 0 xfailed, 0 failed, 0
+skipped** (previous baseline: 282 passed), run twice after the review
+fixes. Focused counts: min-overlap contract parity 50 passed (25 cases
+× 2 engines), differential parity 16 passed (8 pre-existing + 8
+min-overlap), validation 35 passed, full parity suite 178 passed.
+Pinned
+environment: Python 3.12.14, bedtools 2.31.1, pybedtools 0.12.1,
+polars 1.44.2, polars-bio 0.35.1, pandas 3.0.6.
+
+### Remaining known deviations (Task 6 backlog)
+
+`min_overlap` is now normative and parity-protected. Documented gaps
+(non-normative, unchanged in Task 6A): `use_strand=True` matching
+semantics (flag forwarded to bedtools `-s`; the stranded serialization
+exists but the contract is undefined), `contains`/`within` (bedtools
+`-f 1.0`/`-F 1.0` placeholders / polars-bio no-op — engine-contract
+section 11), `closest` full semantics (distance definition, tie
+breaking; the 76-vs-75 discrepancy noted in Task 5 remains).

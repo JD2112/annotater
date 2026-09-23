@@ -400,6 +400,235 @@ ORDERING_CASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# min_overlap (PLAN Task 6A) — the query-fraction contract (SPEC 8.2).
+#
+# A matched pair qualifies iff overlap_length > 0 AND
+# overlap_length / query_length >= min_overlap, where query_length is
+# the length of the QUERY interval (query-relative, non-reciprocal, no
+# aggregation across annotation rows). Expected pairs below are derived
+# from that definition, never from backend output.
+# ---------------------------------------------------------------------------
+
+MIN_OVERLAP_CASES = [
+    # 1. Exact full overlap: fraction 1.0 passes 0.0 / 0.5 / 1.0.
+    ParityCase(
+        "min_overlap_full_threshold_0",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.0},
+    ),
+    ParityCase(
+        "min_overlap_full_threshold_0_5",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    ParityCase(
+        "min_overlap_full_threshold_1",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 1.0},
+    ),
+    # 2. Exactly half overlap: fraction 0.5. The 0.50 case pins `>=`,
+    # not `>`.
+    ParityCase(
+        "min_overlap_half_threshold_below",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.49},
+    ),
+    ParityCase(
+        "min_overlap_half_threshold_equal",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    ParityCase(
+        "min_overlap_half_threshold_above",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"min_overlap": 0.51},
+    ),
+    # 3. One-base overlap: fraction 0.1.
+    ParityCase(
+        "min_overlap_one_base_threshold_equal",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [19], [30], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.1},
+    ),
+    ParityCase(
+        "min_overlap_one_base_threshold_above",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [19], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"min_overlap": 0.11},
+    ),
+    # 4. Touching intervals: overlap 0, never a match even at min_overlap=0
+    # (ordinary positive overlap remains required).
+    ParityCase(
+        "min_overlap_zero_touching_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [20], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"min_overlap": 0.0},
+    ),
+    # 5. Annotation larger than query: fraction of the QUERY is 1.0 even
+    # though only 10% of the annotation is covered (query-relative).
+    ParityCase(
+        "min_overlap_annotation_larger_threshold_1",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [100], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 1.0},
+    ),
+    # 6. Query larger than annotation: fraction of the query is 0.1.
+    ParityCase(
+        "min_overlap_query_larger_threshold_equal",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.1},
+    ),
+    ParityCase(
+        "min_overlap_query_larger_threshold_above",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"min_overlap": 0.11},
+    ),
+    # 7. Reciprocal distinction: annotation coverage (10/100 = 0.1) is
+    # irrelevant; only the query fraction (1.0) counts. A reciprocal
+    # requirement (bedtools -r) would wrongly reject this pair at 1.0.
+    ParityCase(
+        "min_overlap_not_reciprocal",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [110], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 1.0},
+    ),
+    # 8. Coverage from multiple annotation rows is NOT aggregated: two
+    # 0.30 annotations do not satisfy a 0.5 threshold.
+    ParityCase(
+        "min_overlap_no_aggregation_inner",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 30], [30, 60], feature=["f1", "f2"]),
+        (),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    ParityCase(
+        "min_overlap_no_aggregation_left",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 30], [30, 60], feature=["f1", "f2"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 9. One qualifying (0.75) and one failing (0.25) annotation: only the
+    # qualifying pair is emitted; no unmatched row accompanies it.
+    ParityCase(
+        "min_overlap_one_pass_one_fail",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 25], [25, 100], feature=["f1", "f2"]),
+        ((0, 1),),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 10. Multiple qualifying annotations: both remain, in annotation
+    # input order (the 0.1 row is filtered, not reordered around).
+    ParityCase(
+        "min_overlap_multiple_qualifying_order",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR] * 3, [0, 40, 50], [60, 100, 60], feature=["f1", "f2", "f3"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 11. Duplicate query rows with distinct identity are filtered
+    # independently (the 0.25 row fails for both queries).
+    ParityCase(
+        "min_overlap_duplicate_queries",
+        interval_table([CHR, CHR], [0, 0], [100, 100], gene=["g1", "g2"]),
+        interval_table([CHR, CHR], [0, 0], [25, 60], feature=["f1", "f2"]),
+        ((0, 1), (1, 1)),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    ParityCase(
+        "min_overlap_duplicate_queries_left",
+        interval_table([CHR, CHR], [0, 0], [100, 100], gene=["g1", "g2"]),
+        interval_table([CHR, CHR], [0, 0], [25, 60], feature=["f1", "f2"]),
+        ((0, 1), (1, 1)),
+        how="left",
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 11b. Duplicate query rows whose only matches all fail the threshold:
+    # both queries appear exactly once, unmatched (left reconstruction).
+    ParityCase(
+        "min_overlap_duplicate_queries_left_failing",
+        interval_table([CHR, CHR], [0, 0], [100, 100], gene=["g1", "g2"]),
+        interval_table([CHR], [0], [25], feature=["f1"]),
+        ((0, None), (1, None)),
+        how="left",
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 12. Duplicate qualifying annotations: no deduplication; multiplicity
+    # follows input rows.
+    ParityCase(
+        "min_overlap_duplicate_annotations",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 0], [60, 60], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 13. Metadata survives threshold filtering unchanged, including
+    # missing values on the surviving matched row.
+    ParityCase(
+        "min_overlap_metadata_preserved",
+        interval_table([CHR], [0], [100], gene=["g1"], score=[0.5]),
+        interval_table([CHR, CHR], [0, 0], [25, 75], feature=["f1", "f2"], label=["3.5", None]),
+        ((0, 1),),
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # Left mode after filtering: query 0 has a qualifying match, query 1's
+    # only match fails the threshold (=> unmatched, not a failed match
+    # row), query 2 has no match at all.
+    ParityCase(
+        "min_overlap_left_mixed_qualifying",
+        interval_table([CHR] * 3, [0, 200, 500], [100, 300, 600], gene=["g1", "g2", "g3"]),
+        interval_table([CHR, CHR], [0, 200], [75, 225], feature=["f1", "f2"]),
+        ((0, 0), (1, None), (2, None)),
+        how="left",
+        engine_kwargs={"min_overlap": 0.5},
+    ),
+    # 14. Precision pinning (Task 6A review): 1-base overlap on a
+    # length-3 query, threshold 1/3. 1/3 == 1/3.0 in IEEE-754 doubles,
+    # so the inclusive >= comparison passes exactly.
+    ParityCase(
+        "min_overlap_ones_third_boundary",
+        interval_table([CHR], [0], [3], gene=["g1"]),
+        interval_table([CHR], [2], [10], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 1 / 3},
+    ),
+    # 15. Scope pinning (Task 6A review): SPEC 8.2 is defined for the
+    # overlap method; the min_overlap post-filter must NOT be applied in
+    # the non-normative within placeholder (pre-Task-6A behavior).
+    # The pair is annotation-in-query with query fraction 2/9 < 0.9, so a
+    # wrongly applied filter would drop it.
+    ParityCase(
+        "min_overlap_within_placeholder_not_applied",
+        interval_table([CHR], [0], [9], gene=["g1"]),
+        interval_table([CHR], [2], [4], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"min_overlap": 0.9, "mode": "within"},
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Strand (only the part of the contract that is already normative)
 # ---------------------------------------------------------------------------
 
@@ -428,4 +657,21 @@ DIFFERENTIAL_CASES = [
     OVERLAP_CASES[16],  # duplicate_query_and_annotation
     LEFT_CASES[2],  # left_mixed_matched_unmatched
     METADATA_CASES[0],  # metadata_colliding_names
+]
+
+# Task 6A: representative min_overlap fixtures for the direct
+# engine-vs-engine layer (equal thresholds, asymmetry, filtering order,
+# left reconstruction after filtering).
+_MIN_OVERLAP_DIFFERENTIAL_NAMES = {
+    "min_overlap_half_threshold_equal",
+    "min_overlap_zero_touching_no_match",
+    "min_overlap_annotation_larger_threshold_1",
+    "min_overlap_not_reciprocal",
+    "min_overlap_one_pass_one_fail",
+    "min_overlap_multiple_qualifying_order",
+    "min_overlap_no_aggregation_left",
+    "min_overlap_left_mixed_qualifying",
+}
+DIFFERENTIAL_CASES += [
+    c for c in MIN_OVERLAP_CASES if c.name in _MIN_OVERLAP_DIFFERENTIAL_NAMES
 ]

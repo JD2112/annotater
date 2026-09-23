@@ -5,6 +5,7 @@ Uses pybedtools for fast, memory-efficient genomic coordinate operations
 """
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
@@ -26,6 +27,70 @@ from .schema import (
 logger = logging.getLogger(__name__)
 
 
+def validate_min_overlap(min_overlap) -> Optional[float]:
+    """
+    Validate AnnotateR's ``min_overlap`` threshold (SPEC 8.2, Task 6A).
+
+    Accepts ``None`` (no fractional threshold; ordinary positive
+    overlap) or a numeric value in ``[0, 1]`` — int or float, so the
+    integers ``0``/``1`` are valid numeric equivalents (normalized to
+    ``float``). Raises ``ValueError`` for out-of-range values, NaN,
+    infinities, booleans, and non-numeric types; invalid values are
+    rejected, never clamped.
+
+    Shared by every engine (via ``AnnotationEngine.__init__``) so all
+    backends validate identically, BEFORE any backend execution.
+    """
+    if min_overlap is None:
+        return None
+    if isinstance(min_overlap, bool) or not isinstance(min_overlap, (int, float)):
+        raise ValueError(
+            f"min_overlap must be None or a number in [0, 1]; "
+            f"got {min_overlap!r}"
+        )
+    if math.isnan(min_overlap) or not (0.0 <= min_overlap <= 1.0):
+        raise ValueError(
+            f"min_overlap must be in [0, 1]; got {min_overlap!r}"
+        )
+    return float(min_overlap)
+
+
+def min_overlap_keep_mask(df: pd.DataFrame, min_overlap: float) -> np.ndarray:
+    """
+    Shared canonical ``min_overlap`` predicate (SPEC 8.2, Task 6A).
+
+    A matched pair qualifies iff::
+
+        overlap_length > 0
+        AND overlap_length / query_length >= min_overlap
+
+    where ``overlap_length = max(0, min(coord_end, annot_end) -
+    max(coord_start, annot_start))`` and ``query_length =
+    coord_end - coord_start``: the fraction is relative to the QUERY
+    interval (never the annotation), there is no reciprocal
+    requirement, and each row (query/annotation pair) is evaluated
+    independently — coverage from multiple annotation rows is never
+    summed. The threshold comparison is inclusive (``>=``).
+
+    This is the single contract-level definition of ``min_overlap``;
+    both engines apply exactly this predicate so the meaning is
+    backend-independent. Rows with missing annotation coordinates
+    (unmatched rows) evaluate to False; left-mode reconstruction
+    decides their fate.
+    """
+    q_start = df["coord_start"].to_numpy(dtype="float64")
+    q_end = df["coord_end"].to_numpy(dtype="float64")
+    a_start = df["annot_start"].to_numpy(dtype="float64", na_value=np.nan)
+    a_end = df["annot_end"].to_numpy(dtype="float64", na_value=np.nan)
+    overlap = np.maximum(
+        0.0, np.minimum(q_end, a_end) - np.maximum(q_start, a_start)
+    )
+    query_length = q_end - q_start
+    with np.errstate(invalid="ignore", divide="ignore"):
+        fraction = overlap / query_length
+    return (overlap > 0) & (fraction >= min_overlap)
+
+
 class AnnotationEngine(ABC):
     """
     Abstract base class for annotation engines
@@ -38,7 +103,9 @@ class AnnotationEngine(ABC):
         mode: Literal["overlap", "contains", "within", "closest"] = "overlap"
     ):
         self.use_strand = use_strand
-        self.min_overlap = min_overlap
+        # Shared parameter validation (SPEC 8.2, Task 6A): identical for
+        # every backend, and performed before any backend execution.
+        self.min_overlap = validate_min_overlap(min_overlap)
         self.mode = mode
     
     @abstractmethod
@@ -99,6 +166,14 @@ class BedtoolsEngine(AnnotationEngine):
       additionally carries a placeholder score column and an explicit
       strand column (user ``strand`` metadata when present, else ".",
       i.e. unstranded) in column 6 per side.
+    - ``min_overlap`` (Task 6A) is NOT forwarded to bedtools ``-f``:
+      the canonical query-fraction contract (SPEC 8.2) is applied as
+      the shared post-filter ``min_overlap_keep_mask`` over ordinary
+      overlap pairs, after matching and before left reconstruction.
+      ``-f``/``-F`` remain available internally only for the
+      non-normative contains/within placeholders; note bedtools itself
+      rejects ``-f 0.0`` (its range is ``(0.0, 1.0]``), so a native
+      mapping could not even express the valid no-op threshold ``0``.
     - Backend and conversion exceptions propagate to the caller. A 0-row
       result with no exception is a genuine no-match (a valid empty
       result), never a swallowed failure (SPEC 9.2).
@@ -173,11 +248,14 @@ class BedtoolsEngine(AnnotationEngine):
             "Running bedtools intersect on %d x %d rows",
             len(coord_df), len(annot_df),
         )
+        # min_overlap is deliberately NOT forwarded to bedtools -f:
+        # the canonical query-fraction contract (SPEC 8.2, Task 6A) is
+        # applied by the shared post-filter below so both backends
+        # enforce the identical predicate. Explicit f/F kwargs remain
+        # only for the non-normative contains/within placeholders.
         kwargs = {"wa": True, "wb": True, "s": self.use_strand}
         if f is not None:
             kwargs["f"] = f
-        elif self.min_overlap is not None:
-            kwargs["f"] = self.min_overlap
         if F is not None:
             kwargs["F"] = F
         if how == "left":
@@ -211,6 +289,20 @@ class BedtoolsEngine(AnnotationEngine):
             raw, coord_df, annot_df, q_meta, a_meta, q_id, a_id,
             expected_columns=2 * per_side,
         )
+
+        # Canonical min_overlap post-filter (SPEC 8.2, Task 6A): the
+        # shared query-fraction predicate, applied AFTER the backend
+        # match and BEFORE left reconstruction, so a query whose matches
+        # all fail the threshold is emitted exactly once as unmatched
+        # (left mode) or omitted (inner mode). Unmatched (-loj sentinel)
+        # rows pass through untouched. SPEC 8.2 is defined for the
+        # overlap method, so the filter applies to overlap mode only;
+        # the non-normative contains/within placeholders keep their
+        # pre-Task-6A behavior (Task 6A review finding).
+        if self.min_overlap is not None and self.mode == "overlap":
+            mask = min_overlap_keep_mask(out, self.min_overlap)
+            mask = mask | (out[a_id].to_numpy() < 0)
+            out = out[mask].reset_index(drop=True)
 
         if how == "left":
             matched_ids = set(out[q_id].tolist())
@@ -561,6 +653,12 @@ class PolarsBioEngine(AnnotationEngine):
       never from output suffix heuristics. A raw output whose columns do
       not match the expected mapping raises ``CanonicalSchemaError``
       instead of guessing.
+    - ``min_overlap`` (Task 6A) is enforced with the SAME shared
+      query-fraction predicate as BedtoolsEngine
+      (``min_overlap_keep_mask``): pinned polars-bio 0.35.1 ``overlap``
+      exposes no fraction mechanism, so the AnnotateR contract (SPEC
+      8.2) is applied as a post-filter over the ordinary overlap pairs,
+      before left reconstruction.
     - Backend exceptions propagate to the caller. A valid no-match is
       not an exception: it remains a valid empty (0-row) result.
     """
@@ -650,6 +748,17 @@ class PolarsBioEngine(AnnotationEngine):
                 f"explicitly. missing={missing}, unexpected={unexpected}"
             )
         df = df.rename(columns=rename)
+
+        # Canonical min_overlap post-filter (SPEC 8.2, Task 6A) — the
+        # same shared predicate as BedtoolsEngine. Every raw pb.overlap
+        # row is a matched pair, so the mask applies to all rows;
+        # queries losing every match are reconstructed as unmatched
+        # below (left mode). SPEC 8.2 is defined for the overlap method,
+        # so the filter applies to overlap mode only; the non-normative
+        # contains/within placeholders keep their pre-Task-6A behavior
+        # (Task 6A review finding).
+        if self.min_overlap is not None and self.mode == "overlap":
+            df = df[min_overlap_keep_mask(df, self.min_overlap)].reset_index(drop=True)
 
         # Deterministic canonical ordering by input row identity (never by
         # genomic coordinate): query input order, then annotation input order.
