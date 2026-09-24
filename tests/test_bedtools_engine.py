@@ -66,7 +66,7 @@ def test_bedtools_raw_output_has_no_backend_artifacts():
 def test_bedtools_raw_accepted_by_canonicalizer_for_all_how_modes():
     """The schema guarantee lives at the raw layer: canonicalize must
     accept the engine output as-is for every how/mode combination."""
-    for mode in ("overlap", "closest"):
+    for mode in ("overlap", "contains", "closest"):
         for how in ("inner", "left"):
             raw = BedtoolsEngine(mode=mode).intersect(QUERY, ANNOT, how=how)
             extra = ("distance",) if mode == "closest" else ()
@@ -161,7 +161,7 @@ def test_bedtools_empty_inputs_matrix():
     closest mode yields one row per query only when an annotation exists,
     so an empty annotation table yields 0 rows in every case."""
     empty = _empty_interval_table(feature=[])
-    for mode in ("overlap", "closest"):
+    for mode in ("overlap", "contains", "closest"):
         for left, right in (
             (empty, ANNOT),
             (QUERY, empty),

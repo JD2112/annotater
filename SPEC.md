@@ -161,11 +161,39 @@ Missing/unknown strand — canonical missing, a source `"."` after normalization
 
 Canonical strand values other than `"+"`, `"-"`, or missing MUST be rejected with an explicit validation error before backend execution.
 
-### 8.4 Contains and within
+### 8.4 Contains (fixed in Task 6C)
 
-`contains` and `within` MUST have distinct tested interval predicates. They MUST NOT be aliases for ordinary overlap.
+`mode="contains"` means **the query interval fully contains the annotation interval**.
 
-These modes are gated until overlap parity is stable.
+For canonical half-open intervals:
+
+```text
+Query Q      = [q_start, q_end)
+Annotation A = [a_start, a_end)
+
+contains(Q, A) =
+    q_start <= a_start
+    AND
+    q_end >= a_end
+```
+
+- Directionality is fixed: the query is the containing interval and the annotation is the contained interval. The reverse relation (annotation contains query) MUST NOT qualify; it belongs to `within`.
+- Boundary equality counts: identical intervals qualify, as do shared left/right boundaries (`q_start == a_start` with a strictly larger query end, or `q_end == a_end` with a strictly smaller query start).
+- Partial overlaps and boundary-touching (non-overlapping) intervals MUST NOT qualify. Canonical intervals are valid and non-empty, so full containment already implies a positive overlap; no additional overlap condition is required.
+- Chromosome identity is part of candidate generation: pairs on different chromosomes never qualify.
+- `contains` is explicitly NOT `min_overlap = 1.0` (8.2). `min_overlap` measures the fraction of the query interval covered by a single annotation and is defined only for the overlap method; containment constrains both annotation boundaries against the query. Neither predicate implies the other:
+
+```text
+Q [10,20), A [0,100):  overlap + min_overlap = 1.0 qualifies; contains does NOT
+Q [0,100), A [10,20):  contains qualifies; overlap + min_overlap = 1.0 does NOT
+```
+
+- `min_overlap` MUST NOT be applied in `contains` mode. A `mode="contains"` query uses the containment predicate plus orthogonal filters (strand, 8.3) only.
+- `use_strand` composes with `contains` by logical AND (8.3): a contained pair must also satisfy the strand predicate when `use_strand=True`, and missing/unknown strand is not a wildcard.
+- `how="inner"` emits one canonical row for every qualifying query/annotation pair (zero rows when none qualify). `how="left"` follows 7.2: every query row survives, a query with qualifying annotations emits exactly one row per qualifying annotation, and a query with zero qualifying annotations emits exactly one unmatched row (`has_overlap == False`, annotation fields canonical missing). Overlapping-but-not-contained annotations and annotations that contain the query do not count as matches.
+- The predicate is evaluated after canonicalization on both engines; `contains` MUST NOT be implemented as unfiltered ordinary overlap, and MUST NOT be delegated to a backend-native containment/fraction option whose direction is backend-defined.
+
+`within` (annotation fully contains the query) is a distinct predicate and remains future scope; `within` MUST NOT be treated as an alias of `contains` or as implemented in this milestone.
 
 ### 8.5 Closest
 

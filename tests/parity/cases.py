@@ -887,6 +887,313 @@ STRAND_CASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Contains (PLAN Task 6C) — SPEC 8.4.
+#
+# contains(Q, A) means the QUERY interval fully contains the ANNOTATION
+# interval:
+#
+#     q_start <= a_start AND q_end >= a_end
+#
+# Boundary equality counts: identical intervals and shared left/right
+# boundaries all qualify. Annotation-contains-query is the ``within``
+# direction and does NOT qualify; partial overlaps and touching
+# intervals do not qualify. contains is deliberately NOT
+# ``min_overlap == 1.0`` (SPEC 8.2 measures query coverage and is
+# defined for overlap mode only), and ``min_overlap`` is not applied in
+# contains mode. Strand composes by logical AND (SPEC 8.3). In left mode
+# a query with zero qualifying annotations is emitted exactly once as
+# unmatched.
+#
+# Expected rows below are derived from that definition, never from
+# backend output.
+# ---------------------------------------------------------------------------
+
+CONTAINS_CASES = [
+    # 1. Strict containment: query strictly larger on both sides.
+    ParityCase(
+        "contains_strict",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 2. Exact equality: equality satisfies containment.
+    ParityCase(
+        "contains_exact_equality",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 3. Shared left boundary, query extends farther right.
+    ParityCase(
+        "contains_shared_left_boundary",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 4. Shared right boundary, query starts earlier.
+    ParityCase(
+        "contains_shared_right_boundary",
+        interval_table([CHR], [5], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 5. Annotation contains query: the ``within`` direction, not contains.
+    ParityCase(
+        "contains_annotation_contains_query_no_match",
+        interval_table([CHR], [15], [20], gene=["g1"]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 6. Partial right overlap: overlaps, but the annotation is not contained.
+    ParityCase(
+        "contains_partial_right_overlap_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 7. Partial left overlap.
+    ParityCase(
+        "contains_partial_left_overlap_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 8. Touching right: no positive overlap, so no containment.
+    ParityCase(
+        "contains_touching_right_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [20], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 9. Touching left.
+    ParityCase(
+        "contains_touching_left_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [10], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 10. Different chromosome: never a match.
+    ParityCase(
+        "contains_different_chromosomes_no_match",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table(["chrB"], [15], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 11. Multiple contained annotations: all three qualify, in annotation
+    # input order (including the shared right boundary [90,100)).
+    ParityCase(
+        "contains_multiple_contained",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR] * 3, [10, 30, 90], [20, 40, 100], feature=["a1", "a2", "a3"]),
+        ((0, 0), (0, 1), (0, 2)),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 11b. Annotation LIST order, not coordinate order, defines hit order.
+    ParityCase(
+        "contains_multiple_contained_input_order_not_coordinate",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR] * 3, [30, 90, 10], [40, 100, 20], feature=["a1", "a2", "a3"]),
+        ((0, 0), (0, 1), (0, 2)),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 12. Mixed contained and non-contained: only the genuinely contained
+    # annotation qualifies (annotation-contains-query and partial overlap
+    # both fail).
+    ParityCase(
+        "contains_mixed_contained_partial_and_container",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR] * 3, [0, 15, 20], [100, 20, 40], feature=["a1", "a2", "a3"]),
+        ((0, 1),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 13. Duplicate queries: query identity and multiplicity preserved.
+    ParityCase(
+        "contains_duplicate_queries_preserved",
+        interval_table([CHR, CHR], [10, 10], [30, 30], gene=["q1", "q2"]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        ((0, 0), (1, 0)),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 14. Duplicate annotations: no deduplication.
+    ParityCase(
+        "contains_duplicate_annotations_preserved",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR, CHR], [15, 15], [20, 20], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 15. Left mode, no qualifying matches: overlapping annotations exist
+    # but none is fully contained => exactly one unmatched query row.
+    ParityCase(
+        "contains_left_no_qualifying_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 16. Left mode, mixed: emit only the contained match, NO unmatched row.
+    ParityCase(
+        "contains_left_mixed_only_contained",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR, CHR], [15, 20], [20, 40], feature=["f1", "f2"]),
+        ((0, 0),),
+        how="left",
+        engine_kwargs={"mode": "contains"},
+    ),
+    # Left mode across several queries: contained / no-qualifying /
+    # annotation-contains-query, in query input order.
+    ParityCase(
+        "contains_left_mixed_queries",
+        interval_table([CHR] * 3, [10, 200, 500], [30, 300, 520], gene=["q1", "q2", "q3"]),
+        interval_table([CHR] * 3, [15, 250, 0], [20, 400, 1000], feature=["a1", "a2", "a3"]),
+        ((0, 0), (1, None), (2, None)),
+        how="left",
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 17. contains-vs-min_overlap asymmetry A: Q[10,20), A[0,100).
+    # overlap + min_overlap=1.0 qualifies (the whole query is covered) but
+    # contains fails (the query does not contain the annotation). The
+    # overlap counterpart is MIN_OVERLAP_CASES["min_overlap_annotation_larger_threshold_1"]
+    # and both directions are asserted together in test_contains_parity.
+    ParityCase(
+        "contains_annotation_larger_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [100], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 18. contains-vs-min_overlap asymmetry B: Q[0,100), A[10,20).
+    # contains qualifies but overlap + min_overlap=1.0 fails (query
+    # fraction 0.1). The overlap counterpart is
+    # MIN_OVERLAP_CASES["min_overlap_query_larger_threshold_above"].
+    ParityCase(
+        "contains_query_larger_match",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # min_overlap is NOT applied in contains mode (SPEC 8.2 is scoped to
+    # the overlap method). The pair IS contained (fraction 0.1 < 0.9); a
+    # wrongly applied threshold would drop it. Inner and left.
+    ParityCase(
+        "contains_min_overlap_not_applied",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains", "min_overlap": 0.9},
+    ),
+    ParityCase(
+        "contains_min_overlap_not_applied_left",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        how="left",
+        engine_kwargs={"mode": "contains", "min_overlap": 0.9},
+    ),
+    # 19-22. Strand composes with contains by logical AND (SPEC 8.3).
+    ParityCase(
+        "contains_strand_same_matches",
+        interval_table([CHR], [10], [30], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [20], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains", "use_strand": True},
+    ),
+    ParityCase(
+        "contains_strand_same_negative_matches",
+        interval_table([CHR], [10], [30], gene=["g1"], strand=["-"]),
+        interval_table([CHR], [15], [20], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains", "use_strand": True},
+    ),
+    ParityCase(
+        "contains_strand_opposite_no_match",
+        interval_table([CHR], [10], [30], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [20], feature=["f1"], strand=["-"]),
+        (),
+        engine_kwargs={"mode": "contains", "use_strand": True},
+    ),
+    ParityCase(
+        "contains_strand_missing_no_match",
+        interval_table([CHR], [10], [30], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [20], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"mode": "contains", "use_strand": True},
+    ),
+    ParityCase(
+        "contains_strand_missing_column_no_match",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains", "use_strand": True},
+    ),
+    ParityCase(
+        "contains_strand_false_ignores_strand",
+        interval_table([CHR], [10], [30], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [20], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # 22. Metadata preserved exactly on contained matches.
+    ParityCase(
+        "contains_metadata_preserved",
+        interval_table([CHR], [10], [30], gene=["g1"], score=[0.5]),
+        interval_table([CHR], [15], [20], feature=["f1"], label=["3.5"], note=[None]),
+        ((0, 0),),
+        engine_kwargs={"mode": "contains"},
+    ),
+    # Empty inputs (SPEC 7.2 / engine-contract section 6).
+    ParityCase(
+        "contains_inner_empty_query",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    ParityCase(
+        "contains_inner_empty_annot",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([], [], [], feature=[]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+    ParityCase(
+        "contains_left_empty_query",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        (),
+        how="left",
+        engine_kwargs={"mode": "contains"},
+    ),
+    ParityCase(
+        "contains_left_empty_annot",
+        interval_table([CHR, CHR], [10, 100], [30, 200], gene=["g1", "g2"]),
+        interval_table([], [], [], feature=[]),
+        ((0, None), (1, None)),
+        how="left",
+        engine_kwargs={"mode": "contains"},
+    ),
+    ParityCase(
+        "contains_both_empty",
+        interval_table([], [], [], gene=[]),
+        interval_table([], [], [], feature=[]),
+        (),
+        engine_kwargs={"mode": "contains"},
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Differential (Bedtools vs Polars-Bio) cases — a deliberately small set of
 # representative fixtures spanning the semantic surface.
 # ---------------------------------------------------------------------------
@@ -942,4 +1249,36 @@ _STRAND_DIFFERENTIAL_NAMES = {
 }
 DIFFERENTIAL_CASES += [
     c for c in STRAND_CASES if c.name in _STRAND_DIFFERENTIAL_NAMES
+]
+
+# Task 6C: representative contains fixtures for the direct
+# engine-vs-engine layer (directionality both ways, shared/equal
+# boundaries, partial and touching non-matches, multiplicity/order,
+# left reconstruction, the min_overlap exemption, strand composition,
+# and empty inputs).
+_CONTAINS_DIFFERENTIAL_NAMES = {
+    "contains_strict",
+    "contains_exact_equality",
+    "contains_shared_left_boundary",
+    "contains_shared_right_boundary",
+    "contains_annotation_contains_query_no_match",
+    "contains_partial_right_overlap_no_match",
+    "contains_touching_right_no_match",
+    "contains_multiple_contained_input_order_not_coordinate",
+    "contains_mixed_contained_partial_and_container",
+    "contains_duplicate_queries_preserved",
+    "contains_duplicate_annotations_preserved",
+    "contains_left_no_qualifying_match",
+    "contains_left_mixed_only_contained",
+    "contains_min_overlap_not_applied",
+    "contains_annotation_larger_no_match",
+    "contains_query_larger_match",
+    "contains_strand_same_matches",
+    "contains_strand_opposite_no_match",
+    "contains_strand_missing_no_match",
+    "contains_inner_empty_annot",
+    "contains_left_empty_annot",
+}
+DIFFERENTIAL_CASES += [
+    c for c in CONTAINS_CASES if c.name in _CONTAINS_DIFFERENTIAL_NAMES
 ]

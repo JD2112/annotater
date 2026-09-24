@@ -72,8 +72,12 @@ class Settings:
             "bedtools_args": {"wa": True, "wb": True}
         },
         "contains": {
-            "description": "Find annotations completely containing coordinates",
-            "bedtools_args": {"wa": True, "wb": True, "f": 1.0}
+            # SPEC 8.4 (Task 6C): query contains annotation. Candidates come
+            # from an ordinary overlap; the containment predicate is the
+            # shared canonical contains_keep_mask post-filter, not a
+            # backend fraction flag.
+            "description": "Return annotations fully contained within each query interval",
+            "bedtools_args": {"wa": True, "wb": True}
         },
         "within": {
             "description": "Find annotations completely within coordinates",

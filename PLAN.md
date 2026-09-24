@@ -122,11 +122,11 @@ Acceptance criterion: matched multiplicity, unmatched rows, duplicates, missing 
 
 ## Task 6 — Extended interval semantics
 
-**Status: 6a + 6b complete (2026-09-23) — see `docs/implementation-notes.md` (Task 6A and Task 6B sections).** `min_overlap` has one normative backend-independent meaning (SPEC 8.2, fixed in 6a). `use_strand` now has one normative backend-independent meaning (SPEC 8.3, fixed in 6b: `use_strand=False` ignores strand; `use_strand=True` requires both rows to carry explicit equal `+`/`-` strands — missing/unknown strand is not a wildcard; missing strand column ⇒ no stranded matches, identical for both engines; composes with `min_overlap` by logical AND; enforced by a shared canonical post-filter on both engines, protected by 29 per-engine contract cases, 15 differential cases, 1 `.` end-to-end case, and validation tests). Remaining subtasks:
+**Status: 6a + 6b + 6c complete (2026-09-23) — see `docs/implementation-notes.md` (Task 6A, Task 6B, and Task 6C sections).** `min_overlap` has one normative backend-independent meaning (SPEC 8.2, fixed in 6a). `use_strand` now has one normative backend-independent meaning (SPEC 8.3, fixed in 6b: `use_strand=False` ignores strand; `use_strand=True` requires both rows to carry explicit equal `+`/`-` strands — missing/unknown strand is not a wildcard; missing strand column ⇒ no stranded matches, identical for both engines; composes with `min_overlap` by logical AND; enforced by a shared canonical post-filter on both engines, protected by 29 per-engine contract cases, 15 differential cases, 1 `.` end-to-end case, and validation tests). `contains` now has one normative backend-independent meaning (SPEC 8.4, fixed in 6c: query interval fully contains the annotation interval, `q_start <= a_start AND q_end >= a_end`; equality and shared boundaries qualify; annotation-contains-query/partial/touching do not; `contains` is explicitly not `min_overlap = 1.0` and `min_overlap` is not applied in contains mode; strand composes by logical AND; left mode reconstructs zero-qualifying queries exactly once; enforced by a shared canonical post-filter over ordinary overlap candidates on both engines, protected by 34 per-engine contract cases, 21 differential cases, and focused regression tests). Remaining subtasks:
 
 - `min_overlap` semantics — **done (6a)**;
 - strand-aware overlap — **done (6b)**;
-- `contains`;
+- `contains` — **done (6c)**;
 - `within`;
 - `closest` / nearest.
 

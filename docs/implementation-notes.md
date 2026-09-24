@@ -972,3 +972,158 @@ section 11), `closest` full semantics (distance definition, tie
 breaking; the 76-vs-75 discrepancy noted in Task 5 remains; the
 bedtools `-s` forwarding there is a placeholder, not the Task 6B
 contract).
+
+## Task 6C — contains semantics (2026-09-23)
+
+`mode="contains"` now has one normative, backend-independent meaning
+(SPEC 8.4; engine-contract section 11):
+
+> **contains means the query interval fully contains the annotation
+> interval.**
+
+```text
+Query Q      = [q_start, q_end)
+Annotation A = [a_start, a_end)
+
+contains(Q, A) =
+    q_start <= a_start
+    AND
+    q_end >= a_end
+```
+
+Directionality is fixed. Boundary equality counts (identical intervals,
+shared left boundary, shared right boundary all qualify). Partial
+overlaps, boundary-touching intervals, and annotation-contains-query
+(the `within` direction) do not qualify. This resolves the former
+non-normative `contains` placeholder from the Task 6A/6B notes above.
+
+### Decisions
+
+- **contains is NOT `min_overlap = 1.0`.** `min_overlap` (SPEC 8.2)
+  measures the fraction of the QUERY interval covered by one annotation
+  and is defined for overlap mode only; containment constrains both
+  annotation boundaries against the query. Neither implication holds:
+  `Q[10,20)/A[0,100)` matches at `min_overlap = 1.0` but is not
+  containment; `Q[0,100)/A[10,20)` is containment but covers only 10% of
+  the query. Both directions are pinned by regression tests.
+- **`min_overlap` is not applied in contains mode** (SPEC 8.2 is scoped
+  to the overlap method). The Task 6A gate is preserved exactly; the
+  contains exemption is now pinning-tested rather than incidental.
+- **Strand composes by logical AND** (SPEC 8.3). Task 6B's decision that
+  the strand predicate is NOT mode-gated means it applies to contains
+  unchanged: a contained pair still needs an explicit equal strand under
+  `use_strand=True`, and missing strand is not a wildcard.
+- **Left mode respects `how`.** `mode="contains"` now honors
+  `how="left"` (the old Bedtools placeholder forced an inner run): every
+  query row survives, contained matches are emitted in annotation input
+  order, and a query with zero contained annotations appears exactly once
+  as unmatched (`has_overlap=False`, canonical-missing `annot_*`).
+- **`within` is untouched** and remains non-normative future scope
+  (Task 6D). Its placeholder mapping (bedtools `-F 1.0`; polars-bio
+  plain overlap with a documented no-op filter) is unchanged, as is
+  `closest`.
+- **`has_overlap` keeps its name.** In a non-overlap mode it means
+  "the selected relation produced a qualifying match"; the canonical
+  column is deliberately not renamed in this task.
+
+### Implementation
+
+- `streamlit_app/core/annotator.py`:
+  - new contract-level shared predicate
+    `contains_keep_mask(df)` implementing
+    `coord_start <= annot_start AND coord_end >= annot_end`. Unmatched
+    rows (missing annotation coordinates) evaluate to False.
+  - `BedtoolsEngine.intersect`: `overlap` and `contains` share the
+    ordinary backend overlap path; the former
+    `-f 1.0` placeholder for contains is removed. `how` is passed
+    through, so left-mode reconstruction applies. `within` keeps its
+    `-F 1.0` placeholder (`how="inner"`, unchanged).
+  - `BedtoolsEngine._overlap`: the shared contains post-filter runs
+    after the strand predicate and before left reconstruction;
+    `-loj` sentinel rows pass through untouched.
+  - `PolarsBioEngine.intersect`: `overlap` and `contains` share the
+    `pb.overlap` path; only `within` keeps `_filter_fraction`.
+  - `PolarsBioEngine._adapt_overlap_result`: the same shared contains
+    post-filter runs after the strand predicate and before left
+    reconstruction; queries losing every candidate are reconstructed as
+    unmatched.
+- Candidate generation is **ordinary backend overlap**, never a
+  backend-native containment flag and never a Cartesian query x
+  annotation product: containment implies overlap, so overlap candidates
+  are lossless. Both engines use the same shared predicate, so the
+  meaning is identical by construction (same architecture as the Task 6A
+  `min_overlap` and Task 6B `strand` predicates).
+- Bedtools strategy: the old `-f 1.0` mapping was removed, not
+  preserved. Bedtools `-f` is a fraction of A (the query) — a different,
+  version-coupled predicate whose direction is backend-defined — so it
+  must not define the AnnotateR contract. `-f`/`-F` now remain only for
+  the non-normative `within` placeholder.
+- Polars-Bio strategy: pinned polars-bio 0.35.1 exposes no
+  query-contains-annotation primitive, so ordinary `pb.overlap`
+  candidates are filtered by the same shared predicate. The per-frame
+  `coordinate_system_zero_based=True` metadata, exception propagation,
+  deterministic ordering, and row-identity handling from Tasks 4-6B are
+  untouched.
+
+### Tests
+
+- `tests/parity/cases.py`: `CONTAINS_CASES` — 34 explicit-fixture cases
+  covering strict containment, exact equality, shared left/right
+  boundaries, annotation-contains-query, partial left/right overlap,
+  touching left/right, different chromosome, multiple contained
+  annotations (including annotation input order vs coordinate order),
+  mixed contained/partial/container, duplicate queries and annotations,
+  left no-qualifying / mixed / multi-query reconstruction, both
+  `min_overlap` asymmetry directions, the `min_overlap`-not-applied
+  exemption (inner + left), strand same/opposite/missing/both-missing/
+  missing-column/ignored, metadata preservation, and the empty-input
+  matrix. 21 representative cases are also in `DIFFERENTIAL_CASES`.
+- `tests/parity/test_contains_parity.py`: per-engine contract layer
+  (34 cases x 2 engines) plus backend-independent units of the shared
+  predicate (truth table incl. equality/boundaries/reverse direction,
+  missing annotation), the explicit contains-vs-`min_overlap=1.0`
+  asymmetry for both engines, the `min_overlap`-not-applied regression,
+  left reconstruction, empty-input row counts, and monkeypatched proofs
+  that neither backend receives a fraction/containment option
+  (candidate generation is ordinary overlap).
+- `tests/test_bedtools_engine.py`, `tests/test_polars_bio_engine.py`:
+  the raw-schema and empty-input matrices now include `contains` mode.
+- UI copy: `streamlit_app/config/settings.py` description corrected from
+  the wrong direction ("Find annotations completely containing
+  coordinates") to the normative one; the stale `bedtools_args: {"f":
+  1.0}` entry was replaced by the ordinary-overlap args actually used.
+  README/QUICKSTART contains wording corrected to the same direction.
+  No UI redesign; the mode selector surface is unchanged.
+
+### Behavior changes
+
+- `mode="contains"` on BOTH engines previously returned the wrong or
+  approximate relation (bedtools `-f 1.0` = annotation-covers-query with
+  an inner-only forced join; polars-bio returned plain overlap). It now
+  returns query-contains-annotation, for inner and left.
+- The old `-f 1.0` placeholder path was removed from BedtoolsEngine.
+- `within` and `closest` behavior is unchanged.
+
+### Test command and baseline (Task 6C)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Focused counts: contains contract parity 80 passed (34 cases x 2 engines
++ 12 focused tests), differential parity 52 passed (31 pre-existing +
+21 contains), full parity suite 351 passed. Repository-wide:
+**561 passed, 0 xfailed, 0 failed, 0 skipped** (previous baseline: 460
+passed). Pinned environment: Python 3.12.14, bedtools 2.31.1, pybedtools
+0.12.1, polars 1.44.2, polars-bio 0.35.1, pandas 3.0.6.
+
+### Remaining known deviations (Task 6 backlog)
+
+`min_overlap`, `use_strand`, and `contains` are now normative and
+parity-protected. Documented gaps (non-normative): `within` (bedtools
+`-F 1.0` placeholder / polars-bio plain-overlap no-op), and `closest`
+full semantics (distance definition, tie breaking; the 76-vs-75
+discrepancy noted in Task 5 remains; the bedtools `-s` forwarding there
+is a placeholder).

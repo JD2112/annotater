@@ -118,7 +118,7 @@ AnnotateR automatically converts coordinates based on file format detection.
 ## Annotation Modes
 
 1. **Overlap** (default): Find annotations with any overlap
-2. **Contains**: Find annotations that completely contain coordinates
+2. **Contains**: Return annotations fully contained within each query interval (query contains annotation)
 3. **Within**: Find annotations completely within coordinates
 4. **Closest**: Find nearest annotation (even without overlap)
 
