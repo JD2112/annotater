@@ -168,14 +168,14 @@ as a **shared canonical post-filter** over ordinary backend overlap
 pairs — after backend matching, before left-mode reconstruction — by
 BOTH engines, so the meaning is identical by construction. The filter
 applies in `overlap` mode only (SPEC 8.2 is defined for the overlap
-method); `contains` (section 11) has its own predicate and the
-non-normative `within` placeholder keeps its pre-Task-6A behavior
-(Task 6A review decision; the `contains` exemption is pinned by a Task
-6C regression test). Bedtools
+method); `contains` (section 11) and `within` (section 11) have their
+own interval-relation predicates (Task 6A review decision; the
+`contains` exemption is pinned by a Task 6C regression test and the
+`within` exemption by a Task 6D regression test). Bedtools
 `-f` is NOT used for `min_overlap` (bedtools rejects `-f 0.0` — its
 range is `(0.0, 1.0]` — and backend options must not define the
-parameter); `-f`/`-F` remain only for the non-normative `within`
-placeholder. Pinned polars-bio 0.35.1 `overlap` exposes
+parameter), and no fraction flag is forwarded anywhere on the overlap
+path. Pinned polars-bio 0.35.1 `overlap` exposes
 no fraction mechanism, so the Polars-Bio engine enforces the same
 shared predicate explicitly. The parameter is validated once in the
 shared `AnnotationEngine` constructor via `validate_min_overlap`.
@@ -194,9 +194,9 @@ Missing/unknown strand (canonical missing, or an absent strand column on either 
 
 In left mode, a query whose geometrical overlaps all fail the strand predicate appears exactly once, unmatched (SPEC 7.2); a query with at least one qualifying match emits only its qualifying matches. The predicate composes with `min_overlap` by logical AND (no precedence). Canonical strand values other than `+`/`-`/missing are rejected by `validate_canonical_interval_table`, which both engines invoke before any backend execution.
 
-The predicate is deliberately **not** mode-gated (unlike the Task 6A `min_overlap` gate, which SPEC 8.2 limits to the overlap method): it therefore also applies to `contains` mode (section 11) and to the non-normative `within` placeholder path, identically on both engines. (`contains` became normative in Task 6C; the `within` predicate remains Task 6D scope.)
+The predicate is deliberately **not** mode-gated (unlike the Task 6A `min_overlap` gate, which SPEC 8.2 limits to the overlap method): it therefore also applies to `contains` mode (SPEC 8.4) and `within` mode (SPEC 8.5), identically on both engines. (`contains` became normative in Task 6C; `within` became normative in Task 6D.)
 
-## 11. Contains (fixed in Task 6C) and within (future scope)
+## 11. Contains (fixed in Task 6C) and within (fixed in Task 6D)
 
 `mode="contains"` means **the QUERY interval fully contains the
 ANNOTATION interval** (SPEC 8.4):
@@ -231,7 +231,6 @@ removes every non-qualifying row.
   Bedtools `-f` is a fraction of A (the query) and is a different,
   version-coupled, backend-defined predicate, so it must not define the
   AnnotateR contract; the old `-f 1.0` placeholder mapping is removed.
-  `-f`/`-F` remain only for the non-normative `within` placeholder.
 - Pinned polars-bio 0.35.1 exposes no query-contains-annotation
   primitive (verified against the installed package), so the shared
   predicate is applied post-hoc there as well.
@@ -242,13 +241,57 @@ contained pair must also satisfy the strand predicate under
 mode a query whose overlapping annotations all fail the containment or
 strand predicate appears exactly once, unmatched (SPEC 7.2).
 
-`within` (the reverse relation — annotation fully contains query,
-provisionally `annot_start <= coord_start` and `coord_end <= annot_end`)
-is a distinct predicate and remains **non-normative future scope**
-(PLAN Task 6D). It MUST NOT be treated as an alias of `contains` or as
-implemented. The historical `within` placeholder mapping (bedtools
-`-F 1.0`; polars-bio plain overlap with a documented no-op filter) is
-unchanged by Task 6C.
+`mode="within"` means **the QUERY interval is fully contained within the
+ANNOTATION interval** (SPEC 8.5):
+
+```text
+within(Q, A) = a_start <= q_start AND a_end >= q_end
+```
+
+Directionality is fixed and is the opposite of `contains`: the
+annotation is the containing interval and the query is the contained
+interval. Equal intervals and shared left/right boundaries qualify;
+partial overlaps, boundary-touching intervals, and
+query-contains-annotation (the `contains` direction) do not. The two
+relations are directional inverses — `within(Q, A) == contains(A, Q)` —
+and equality satisfies BOTH.
+
+`within` is explicitly NOT `min_overlap` (section 9 / SPEC 8.2), and it
+MUST NOT be inferred from an overlap percentage: `Q[10,20)` vs
+`A[5,15)` has query fraction 0.5 (so `min_overlap=0.5` qualifies) while
+`within` is false. `min_overlap` is not applied in within mode.
+
+Implementation (Task 6D): the predicate lives at the contract level as
+`streamlit_app/core/annotator.py::within_keep_mask` and is applied as a
+**shared canonical post-filter** over ordinary backend overlap candidate
+pairs — after backend matching, before left-mode reconstruction — by
+BOTH engines, so the meaning is identical by construction (the same
+architecture as the Task 6A `min_overlap`, Task 6B `strand`, and Task 6C
+`contains` predicates). Candidate generation is ordinary overlap, never
+a Cartesian query x annotation product and never a backend-native
+containment flag: a true containment pair necessarily overlaps, so
+overlap candidates are lossless and the shared filter then removes every
+non-qualifying row.
+
+- Bedtools does NOT use `-F 1.0` (or any fraction flag) for `within`.
+  Bedtools `-F` is a minimum overlap as a fraction of B — in AnnotateR's
+  orientation B is the annotation — so a native `-F 1.0` computes
+  annotation-inside-query, i.e. the *`contains`* direction, with an
+  inner-only join. That old placeholder mapping was removed, not
+  preserved: a backend-defined fraction flag must not define an
+  AnnotateR relation. The overlap path now forwards no `-f`/`-F`/`-r`/`-e`
+  at all.
+- Pinned polars-bio 0.35.1 exposes no containment primitive in either
+  direction (verified against the installed package: only
+  `overlap`/`nearest`/coverage/count operations exist), so the shared
+  predicate is applied post-hoc there as well; the historical
+  plain-overlap-plus-no-op behaviour is gone.
+
+`use_strand` composes with `within` by logical AND (section 10): a
+contained pair must also satisfy the strand predicate under
+`use_strand=True`, and missing/unknown strand is not a wildcard. In left
+mode a query whose overlapping annotations all fail the containment or
+strand predicate appears exactly once, unmatched (SPEC 7.2).
 
 ## 12. Closest
 
