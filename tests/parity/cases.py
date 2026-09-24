@@ -614,17 +614,22 @@ MIN_OVERLAP_CASES = [
         ((0, 0),),
         engine_kwargs={"min_overlap": 1 / 3},
     ),
-    # 15. Scope pinning (Task 6A review): SPEC 8.2 is defined for the
-    # overlap method; the min_overlap post-filter must NOT be applied in
-    # the non-normative within placeholder (pre-Task-6A behavior).
-    # The pair is annotation-in-query with query fraction 2/9 < 0.9, so a
-    # wrongly applied filter would drop it.
+    # 15. Scope pinning (Task 6A review; updated by Task 6D): SPEC 8.2 is
+    # defined for the overlap method, so the min_overlap post-filter is
+    # NOT applied in within mode (SPEC 8.5). The pair is a PARTIAL
+    # overlap with query fraction 0.5, which would satisfy
+    # ``min_overlap=0.5`` (the pre-Task-6D within placeholder was plain
+    # overlap for polars-bio, so this pair qualified); the normative
+    # ``within`` predicate rejects it because the annotation does not
+    # contain the query. Note the exemption itself is not observable for
+    # a genuine within pair: full query coverage means the query fraction
+    # is exactly 1.0, so any valid threshold is satisfied anyway.
     ParityCase(
-        "min_overlap_within_placeholder_not_applied",
-        interval_table([CHR], [0], [9], gene=["g1"]),
-        interval_table([CHR], [2], [4], feature=["f1"]),
-        ((0, 0),),
-        engine_kwargs={"min_overlap": 0.9, "mode": "within"},
+        "min_overlap_within_mode_not_applied",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        (),
+        engine_kwargs={"min_overlap": 0.5, "mode": "within"},
     ),
 ]
 
@@ -1194,6 +1199,383 @@ CONTAINS_CASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Within (PLAN Task 6D) — SPEC 8.5.
+#
+# within(Q, A) means the QUERY interval is fully contained within the
+# ANNOTATION interval:
+#
+#     a_start <= q_start AND a_end >= q_end
+#
+# Boundary equality counts: identical intervals and shared left/right
+# boundaries all qualify. Query-contains-annotation is the ``contains``
+# direction (SPEC 8.4) and does NOT qualify; partial overlaps and
+# touching intervals do not qualify. within is the directional inverse
+# of contains with respect to the query/annotation roles, and equality
+# satisfies BOTH relations. within is deliberately NOT ``min_overlap``
+# (SPEC 8.2 measures query coverage and is defined for overlap mode
+# only): a query-fraction threshold can pass while within fails, and
+# ``min_overlap`` is not applied in within mode. Strand composes by
+# logical AND (SPEC 8.3): missing/unknown strand is not a wildcard. In
+# left mode a query with zero containing annotations is emitted exactly
+# once as unmatched.
+#
+# Expected rows below are derived from that definition, never from
+# backend output.
+# ---------------------------------------------------------------------------
+
+WITHIN_CASES = [
+    # 1. Strict within: annotation strictly larger on both sides.
+    ParityCase(
+        "within_strict",
+        interval_table([CHR], [15], [20], gene=["g1"]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 2. Exact equality: equality satisfies within.
+    ParityCase(
+        "within_exact_equality",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 3. Shared left boundary, annotation extends farther right.
+    ParityCase(
+        "within_shared_left_boundary",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 4. Shared right boundary, annotation starts earlier.
+    ParityCase(
+        "within_shared_right_boundary",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 5. Query contains annotation: the ``contains`` direction, not within.
+    ParityCase(
+        "within_query_contains_annotation_no_match",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 6. Partial right overlap: overlaps, but the annotation does not
+    # contain the query.
+    ParityCase(
+        "within_partial_right_overlap_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 7. Partial left overlap.
+    ParityCase(
+        "within_partial_left_overlap_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 8. Touching right: no positive overlap, so no containment.
+    ParityCase(
+        "within_touching_right_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [20], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 9. Touching left.
+    ParityCase(
+        "within_touching_left_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [10], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 10. Different chromosome: never a match.
+    ParityCase(
+        "within_different_chromosomes_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(["chrB"], [0], [100], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 11. Multiple containing annotations: all three qualify
+    # (including the exact-equality one), in annotation input order.
+    ParityCase(
+        "within_multiple_containing",
+        interval_table([CHR], [20], [30], gene=["g1"]),
+        interval_table([CHR] * 3, [0, 10, 20], [100, 40, 30], feature=["a1", "a2", "a3"]),
+        ((0, 0), (0, 1), (0, 2)),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 11b. Annotation LIST order, not coordinate order, defines hit order.
+    ParityCase(
+        "within_multiple_containing_input_order_not_coordinate",
+        interval_table([CHR], [20], [30], gene=["g1"]),
+        interval_table([CHR] * 3, [10, 0, 20], [40, 100, 30], feature=["a1", "a2", "a3"]),
+        ((0, 0), (0, 1), (0, 2)),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 12. Mixed containing and partial/contained annotations: only the
+    # genuinely containing annotation qualifies (annotation-inside-query
+    # and partial overlap both fail).
+    ParityCase(
+        "within_mixed_containing_partial_and_contained",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR] * 3, [0, 15, 20], [100, 20, 40], feature=["a1", "a2", "a3"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 13. Duplicate queries: query identity and multiplicity preserved.
+    ParityCase(
+        "within_duplicate_queries_preserved",
+        interval_table([CHR, CHR], [15, 15], [20, 20], gene=["q1", "q2"]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        ((0, 0), (1, 0)),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 14. Duplicate annotations: no deduplication.
+    ParityCase(
+        "within_duplicate_annotations_preserved",
+        interval_table([CHR], [15], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [10, 10], [30, 30], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 14b. Duplicate queries x duplicate annotations: multiplicity 4.
+    ParityCase(
+        "within_duplicate_query_and_annotation",
+        interval_table([CHR, CHR], [15, 15], [20, 20], gene=["q1", "q2"]),
+        interval_table([CHR, CHR], [10, 10], [30, 30], feature=["a1", "a2"]),
+        ((0, 0), (0, 1), (1, 0), (1, 1)),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 15. Left mode, no qualifying match: an ordinary overlap exists but
+    # the annotation does not contain the query => exactly one unmatched
+    # query row.
+    ParityCase(
+        "within_left_no_qualifying_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "within"},
+    ),
+    # 16. Left mode, mixed: emit only the containing match, NO unmatched
+    # row (the annotation inside the query is a candidate but not a
+    # within match).
+    ParityCase(
+        "within_left_mixed_only_containing",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR, CHR], [15, 0], [20, 100], feature=["f1", "f2"]),
+        ((0, 1),),
+        how="left",
+        engine_kwargs={"mode": "within"},
+    ),
+    # Left mode across several queries: within / query-contains (the
+    # annotation is inside the query) / within, in query input order.
+    ParityCase(
+        "within_left_mixed_queries",
+        interval_table([CHR] * 3, [0, 20, 500], [5, 40, 520], gene=["q1", "q2", "q3"]),
+        interval_table([CHR] * 3, [0, 25, 400], [10, 30, 600], feature=["a1", "a2", "a3"]),
+        ((0, 0), (1, None), (2, 2)),
+        how="left",
+        engine_kwargs={"mode": "within"},
+    ),
+    # 17. within vs contains direction A: Q[10,20), A[0,100).
+    # within qualifies; contains (the pair is the reverse direction) does
+    # not. Both directions are asserted together in test_within_parity.
+    ParityCase(
+        "within_annotation_larger_match",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [100], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 18. within vs contains direction B: Q[0,100), A[10,20).
+    # contains qualifies (SPEC 8.4) but within does not.
+    ParityCase(
+        "within_query_larger_no_match",
+        interval_table([CHR], [0], [100], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 19. Equality satisfies BOTH relations (SPEC 8.4 + 8.5).
+    ParityCase(
+        "within_equality_satisfies_both",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 20. within is NOT min_overlap: Q[10,20), A[5,15) has query fraction
+    # 0.5 (so min_overlap=0.5 qualifies) but the annotation does not
+    # contain the query => no match. within is a positional containment
+    # predicate, not a coverage threshold.
+    ParityCase(
+        "within_not_min_overlap_partial",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within", "min_overlap": 0.5},
+    ),
+    # 20b. Left counterpart of the same distinction: the query's only
+    # candidate passes a 0.5 query-fraction threshold but is not a within
+    # match => exactly one unmatched row. If within were implemented as
+    # plain overlap + min_overlap (the pre-Task-6D polars-bio
+    # placeholder), this query would wrongly appear matched.
+    ParityCase(
+        "within_not_min_overlap_partial_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [5], [15], feature=["f1"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "within", "min_overlap": 0.5},
+    ),
+    # 20c. min_overlap is NOT applied in within mode: the containing
+    # annotation qualifies and the partial candidate (query fraction 0.5,
+    # which would satisfy a wrongly applied 0.5 threshold) does not.
+    ParityCase(
+        "within_min_overlap_not_applied",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 5], [100, 15], feature=["a1", "a2"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within", "min_overlap": 0.5},
+    ),
+    # 21-23. Strand composes with within by logical AND (SPEC 8.3).
+    ParityCase(
+        "within_strand_same_matches",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["+"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_same_negative_matches",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["-"]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_opposite_no_match",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["-"]),
+        (),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_missing_no_match",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_both_missing_no_match",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_missing_column_no_match",
+        interval_table([CHR], [15], [20], gene=["g1"]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    ParityCase(
+        "within_strand_false_ignores_strand",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 21b. One query, two annotation strands: stranded within keeps only
+    # the same-strand (containing) annotation.
+    ParityCase(
+        "within_strand_one_query_two_annotation_strands",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR, CHR], [10, 0], [30, 100], feature=["f1", "f2"], strand=["+", "-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    # 21c. Stranded left reconstruction: the geometric within candidate
+    # fails the strand predicate => exactly one unmatched query row.
+    ParityCase(
+        "within_strand_left_unmatched",
+        interval_table([CHR], [15], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [10], [30], feature=["f1"], strand=["-"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    # 21d. Touching + same strand: half-open semantics stay authoritative.
+    ParityCase(
+        "within_strand_touching_no_match",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [20], [30], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"mode": "within", "use_strand": True},
+    ),
+    # 24. Empty inputs (SPEC 7.2 / engine-contract section 6).
+    ParityCase(
+        "within_inner_empty_query",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    ParityCase(
+        "within_inner_empty_annot",
+        interval_table([CHR], [15], [20], gene=["g1"]),
+        interval_table([], [], [], feature=[]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    ParityCase(
+        "within_left_empty_query",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        how="left",
+        engine_kwargs={"mode": "within"},
+    ),
+    ParityCase(
+        "within_left_empty_annot",
+        interval_table([CHR, CHR], [15, 100], [20, 200], gene=["g1", "g2"]),
+        interval_table([], [], [], feature=[]),
+        ((0, None), (1, None)),
+        how="left",
+        engine_kwargs={"mode": "within"},
+    ),
+    ParityCase(
+        "within_both_empty",
+        interval_table([], [], [], gene=[]),
+        interval_table([], [], [], feature=[]),
+        (),
+        engine_kwargs={"mode": "within"},
+    ),
+    # 26. Metadata preserved exactly on within matches, including missing
+    # metadata values.
+    ParityCase(
+        "within_metadata_preserved",
+        interval_table([CHR], [15], [20], gene=["g1"], score=[0.5], note=[None]),
+        interval_table([CHR], [10], [30], feature=["f1"], label=["3.5"], flag=[True]),
+        ((0, 0),),
+        engine_kwargs={"mode": "within"},
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Differential (Bedtools vs Polars-Bio) cases — a deliberately small set of
 # representative fixtures spanning the semantic surface.
 # ---------------------------------------------------------------------------
@@ -1281,4 +1663,37 @@ _CONTAINS_DIFFERENTIAL_NAMES = {
 }
 DIFFERENTIAL_CASES += [
     c for c in CONTAINS_CASES if c.name in _CONTAINS_DIFFERENTIAL_NAMES
+]
+
+# Task 6D: representative within fixtures for the direct engine-vs-engine
+# layer (directionality both ways, shared/equal boundaries, partial and
+# touching non-matches, multiplicity/order, left reconstruction, the
+# min_overlap distinction, strand composition, and empty inputs).
+_WITHIN_DIFFERENTIAL_NAMES = {
+    "within_strict",
+    "within_exact_equality",
+    "within_shared_left_boundary",
+    "within_shared_right_boundary",
+    "within_query_contains_annotation_no_match",
+    "within_partial_right_overlap_no_match",
+    "within_touching_right_no_match",
+    "within_multiple_containing_input_order_not_coordinate",
+    "within_mixed_containing_partial_and_contained",
+    "within_duplicate_queries_preserved",
+    "within_duplicate_query_and_annotation",
+    "within_left_no_qualifying_match",
+    "within_left_mixed_only_containing",
+    "within_left_mixed_queries",
+    "within_annotation_larger_match",
+    "within_query_larger_no_match",
+    "within_not_min_overlap_partial",
+    "within_min_overlap_not_applied",
+    "within_strand_same_matches",
+    "within_strand_opposite_no_match",
+    "within_strand_missing_no_match",
+    "within_inner_empty_annot",
+    "within_left_empty_annot",
+}
+DIFFERENTIAL_CASES += [
+    c for c in WITHIN_CASES if c.name in _WITHIN_DIFFERENTIAL_NAMES
 ]

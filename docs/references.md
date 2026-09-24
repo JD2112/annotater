@@ -16,6 +16,7 @@ Implementation notes relevant to AnnotateR:
 
 - `intersect -loj` is the reference behavior for retaining A records with and without B overlaps.
 - `-f`, `-F`, `-r`, and `-e` have distinct fractional-overlap semantics; do not compress them into one application parameter without explicitly defining the mapping.
+- `-f` is a minimum overlap as a fraction of **A**; `-F` is a minimum overlap as a fraction of **B**. AnnotateR passes the query table as `-a` and the annotation table as `-b`, so a native `-F 1.0` expresses "the annotation is covered by the query" — the `contains` direction (SPEC 8.4) — not `within` (SPEC 8.5). Backend fraction flags must not define an AnnotateR interval relation in either direction.
 - `-s` enforces same-strand intersections.
 
 ### pybedtools
@@ -41,6 +42,7 @@ Important current-API observations:
 - Current documented default suffixes are `("_1", "_2")`, not `_right`.
 - `overlap_output="join"` returns joined overlapping pairs.
 - `overlap_output="left"` returns df1 rows that overlap at least one df2 row; it is not, by itself, equivalent to bedtools `-loj` because non-overlapping df1 rows are absent.
+- The pinned 0.35.1 package exposes no containment primitive in either direction (its interval operations are `overlap`, `nearest`, `count_overlaps`, `coverage`, `depth`, `merge`, `cluster`, `complement`, `subtract`); AnnotateR therefore derives `contains` and `within` from ordinary `overlap` candidates plus a shared canonical predicate (SPEC 8.4 / 8.5).
 - coordinate metadata can be used by Polars-Bio I/O paths, but AnnotateR must still own and test its canonical application coordinate semantics.
 
 The repository currently also contains `docs/polars-bio_manual.pdf`. Treat that PDF as a historical/local convenience copy. For version-sensitive implementation, the current official online documentation above takes precedence unless the project deliberately pins a version whose bundled manual is authoritative.

@@ -3,7 +3,7 @@
 **Status:** Draft normative specification for the Polars-Bio parity refactor  
 **Project:** AnnotateR  
 **Canonical repository slug:** `annotater`  
-**Last updated:** 2026-09-21
+**Last updated:** 2026-09-24
 
 ## 1. Purpose
 
@@ -193,9 +193,42 @@ Q [0,100), A [10,20):  contains qualifies; overlap + min_overlap = 1.0 does NOT
 - `how="inner"` emits one canonical row for every qualifying query/annotation pair (zero rows when none qualify). `how="left"` follows 7.2: every query row survives, a query with qualifying annotations emits exactly one row per qualifying annotation, and a query with zero qualifying annotations emits exactly one unmatched row (`has_overlap == False`, annotation fields canonical missing). Overlapping-but-not-contained annotations and annotations that contain the query do not count as matches.
 - The predicate is evaluated after canonicalization on both engines; `contains` MUST NOT be implemented as unfiltered ordinary overlap, and MUST NOT be delegated to a backend-native containment/fraction option whose direction is backend-defined.
 
-`within` (annotation fully contains the query) is a distinct predicate and remains future scope; `within` MUST NOT be treated as an alias of `contains` or as implemented in this milestone.
+### 8.5 Within (fixed in Task 6D)
 
-### 8.5 Closest
+`mode="within"` means **the query interval is fully contained within the annotation interval**.
+
+For canonical half-open intervals:
+
+```text
+Query Q      = [q_start, q_end)
+Annotation A = [a_start, a_end)
+
+within(Q, A) =
+    a_start <= q_start
+    AND
+    a_end >= q_end
+```
+
+- Directionality is fixed: the **annotation** is the containing interval and the **query** is the contained interval. The reverse relation (query contains annotation) MUST NOT qualify; it belongs to `contains` (8.4). `within` MUST NOT be treated as an alias of `contains`.
+- `contains` and `within` are directional inverses with respect to the query/annotation roles: `within(Q, A) == contains(A, Q)`. Equivalently, `contains(Q, A)` constrains `q_start <= a_start AND q_end >= a_end`, while `within(Q, A)` constrains the opposite way. Identical intervals satisfy BOTH relations, because equal intervals contain each other.
+- Boundary equality counts: identical intervals qualify, as do shared left/right boundaries (`a_start == q_start` with a strictly larger annotation end, or `a_end == q_end` with a strictly smaller annotation start).
+- Partial overlaps and boundary-touching (non-overlapping) intervals MUST NOT qualify. Canonical intervals are valid and non-empty, so full containment already implies a positive overlap; no additional overlap condition is required.
+- Chromosome identity is part of candidate generation: pairs on different chromosomes never qualify.
+- `within` is explicitly NOT `min_overlap` (8.2). `min_overlap` is a query-relative coverage threshold defined for the overlap method; `within` is a positional containment predicate constraining both annotation boundaries against the query. The predicates are distinct, and a query-fraction threshold can pass while `within` fails:
+
+```text
+Q [10,20), A [5,15):  overlap + min_overlap=0.5 qualifies; within does NOT
+Q [10,20), A [0,100): within qualifies; and (for the same pair) min_overlap=1.0 also qualifies
+Q [0,100), A [10,20): contains qualifies; within does NOT
+```
+
+  `within` MUST NOT be inferred from any overlap percentage (nor from a backend fraction option), and MUST NOT be implemented as `min_overlap` with a particular threshold.
+- `min_overlap` MUST NOT be applied in `within` mode. A `mode="within"` query uses the containment predicate plus orthogonal filters (strand, 8.3) only. (For a genuine `within` pair the query coverage is exactly 100%, so the exemption is not observable in the result set; the rule is nevertheless normative and preserved from 8.2.)
+- `use_strand` composes with `within` by logical AND (8.3): a contained pair must also satisfy the strand predicate when `use_strand=True`, and missing/unknown strand is not a wildcard.
+- `how="inner"` emits one canonical row for every qualifying query/annotation pair (zero rows when none qualify), preserving query order then annotation input order. `how="left"` follows 7.2: every query row survives, a query with qualifying annotations emits exactly one row per qualifying annotation, and a query with zero qualifying annotations emits exactly one unmatched row (`has_overlap == False`, annotation fields canonical missing). Overlapping-but-not-contained annotations and annotations contained by the query do not count as matches.
+- The predicate is evaluated after canonicalization on both engines; `within` MUST NOT be implemented as unfiltered ordinary overlap, and MUST NOT be delegated to a backend-native containment/fraction option whose direction is backend-defined. In particular bedtools `-F` is a minimum overlap as a fraction of B (here the annotation), so a native `-F 1.0` mapping expresses the opposite (`contains`) relation and MUST NOT define `within`.
+
+### 8.6 Closest
 
 Closest/nearest behavior MUST be specified separately, including tie handling, distance sign/definition, overlapping intervals, and deterministic ordering. It is not part of the first parity task.
 
@@ -243,7 +276,7 @@ The parity suite MUST include minimal fixtures for at least:
 - chromosome naming normalization;
 - coordinate-system boundary conversion.
 
-Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); strand fixtures were added in Task 6B (`tests/parity/test_strand_parity.py`); later milestones MUST add contains, within, and closest fixtures.
+Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); strand fixtures were added in Task 6B (`tests/parity/test_strand_parity.py`); contains fixtures were added in Task 6C (`tests/parity/test_contains_parity.py`); within fixtures were added in Task 6D (`tests/parity/test_within_parity.py`); a later milestone MUST add closest fixtures.
 
 ### 10.3 Comparison
 

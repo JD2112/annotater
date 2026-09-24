@@ -172,6 +172,55 @@ def contains_keep_mask(df: pd.DataFrame) -> np.ndarray:
     return (q_start <= a_start) & (q_end >= a_end)
 
 
+def within_keep_mask(df: pd.DataFrame) -> np.ndarray:
+    """
+    Shared canonical ``mode="within"`` predicate (SPEC 8.5, Task 6D).
+
+    AnnotateR ``within`` means **the query interval is fully contained
+    within the annotation interval**::
+
+        within(Q, A) =
+            a_start <= q_start
+            AND
+            a_end >= q_end
+
+    Directionality is fixed: the annotation is the containing interval and
+    the query is the contained interval. Boundary equality counts, so
+    identical intervals and shared left/right boundaries all qualify.
+    Query-contains-annotation is the ``contains`` direction (SPEC 8.4) and
+    does NOT qualify; partial overlaps and touching intervals do not
+    qualify either (a true containment pair necessarily overlaps, but
+    overlap alone is not containment).
+
+    ``within`` is the directional inverse of ``contains`` with respect to
+    the query/annotation roles: ``contains(Q, A)`` constrains
+    ``q_start <= a_start AND q_end >= a_end`` (query contains annotation),
+    while ``within(Q, A)`` constrains the opposite way (annotation contains
+    query). Equality satisfies BOTH relations, since equal intervals
+    contain each other.
+
+    ``within`` is explicitly NOT ``min_overlap`` (SPEC 8.2). ``min_overlap``
+    is a query-relative coverage threshold defined for overlap mode only;
+    ``within`` is a positional containment predicate over both interval
+    boundaries. ``min_overlap`` is deliberately not applied in within mode
+    (the Task 6A mode gate is preserved), and ``within`` is never inferred
+    from an overlap percentage (a query-fraction threshold can pass while
+    ``within`` fails, e.g. ``Q=[10,20)`` vs ``A=[5,15)`` at
+    ``min_overlap=0.5``).
+
+    This is the single contract-level definition of ``within``; both
+    engines apply exactly this predicate over ordinary backend overlap
+    candidate pairs, so the meaning is backend-independent by
+    construction. Unmatched rows (missing annotation coordinates)
+    evaluate to False; left-mode reconstruction decides their fate.
+    """
+    q_start = df["coord_start"].to_numpy(dtype="float64")
+    q_end = df["coord_end"].to_numpy(dtype="float64")
+    a_start = df["annot_start"].to_numpy(dtype="float64", na_value=np.nan)
+    a_end = df["annot_end"].to_numpy(dtype="float64", na_value=np.nan)
+    return (a_start <= q_start) & (a_end >= q_end)
+
+
 class AnnotationEngine(ABC):
     """
     Abstract base class for annotation engines
@@ -258,10 +307,10 @@ class BedtoolsEngine(AnnotationEngine):
       the canonical query-fraction contract (SPEC 8.2) is applied as
       the shared post-filter ``min_overlap_keep_mask`` over ordinary
       overlap pairs, after matching and before left reconstruction.
-      ``-f``/``-F`` remain available internally only for the
-      non-normative ``within`` placeholder; note bedtools itself
-      rejects ``-f 0.0`` (its range is ``(0.0, 1.0]``), so a native
-      mapping could not even express the valid no-op threshold ``0``.
+      No bedtools fraction flag is used anywhere on the overlap path:
+      bedtools itself rejects ``-f 0.0`` (its range is ``(0.0, 1.0]``),
+      so a native mapping could not even express the valid no-op
+      threshold ``0``.
     - ``mode="contains"`` (Task 6C, SPEC 8.4) means the QUERY interval
       fully contains the ANNOTATION interval
       (``q_start <= a_start AND q_end >= a_end``). It is NOT delegated
@@ -275,6 +324,19 @@ class BedtoolsEngine(AnnotationEngine):
       is a different, backend-defined predicate; it is no longer used
       for ``contains``. ``min_overlap`` is NOT applied in contains mode
       (SPEC 8.2 is defined for the overlap method only).
+    - ``mode="within"`` (Task 6D, SPEC 8.5) is the directional inverse
+      of ``contains``: the ANNOTATION interval fully contains the QUERY
+      interval (``a_start <= q_start AND a_end >= q_end``). It uses the
+      same architecture — ordinary overlap candidates plus the shared
+      canonical predicate ``within_keep_mask`` after matching and
+      before left reconstruction — so both engines enforce the
+      identical meaning. Bedtools ``-F 1.0`` (a minimum overlap as a
+      fraction of B, i.e. the annotation) was the old within
+      placeholder mapping and actually computed the *contains*
+      direction with an inner-only join; it was removed, not preserved
+      (a backend fraction flag must not define an AnnotateR relation).
+      ``min_overlap`` is NOT applied in within mode (SPEC 8.2 is
+      defined for the overlap method only).
     - Backend and conversion exceptions propagate to the caller. A 0-row
       result with no exception is a genuine no-match (a valid empty
       result), never a swallowed failure (SPEC 9.2).
@@ -292,26 +354,23 @@ class BedtoolsEngine(AnnotationEngine):
         validate_canonical_interval_table(coord_df)
         validate_canonical_interval_table(annot_df)
 
-        if self.mode in ("overlap", "contains"):
-            # ``contains`` (SPEC 8.4, Task 6C) shares the ordinary overlap
-            # candidate generation: a true containment pair necessarily
+        if self.mode in ("overlap", "contains", "within"):
+            # ``contains`` (SPEC 8.4, Task 6C) and ``within`` (SPEC 8.5,
+            # Task 6D) share the ordinary overlap candidate generation: a
+            # true containment pair (in either direction) necessarily
             # overlaps, so backend overlap is a lossless candidate filter
             # (never a Cartesian query x annotation product). The shared
-            # canonical contains predicate is applied inside ``_overlap``
-            # after matching and before left reconstruction; ``how`` is
-            # respected so left mode preserves every query row.
+            # canonical interval-relation predicate selected by ``mode``
+            # is applied inside ``_overlap`` after matching and before
+            # left reconstruction; ``how`` is respected so left mode
+            # preserves every query row.
             return self._overlap(coord_df, annot_df, how)
-        if self.mode == "within":
-            # Non-normative placeholder mapping (engine-contract section
-            # 11): -F 1.0 as before; the ``within`` contract is Task 6D
-            # scope and is deliberately not touched here.
-            return self._overlap(coord_df, annot_df, how="inner", F=1.0)
         if self.mode == "closest":
             return self._closest(coord_df, annot_df)
         raise ValueError(f"Unknown mode: {self.mode}")
 
     # ------------------------------------------------------------------
-    # Overlap / contains (inner + left) and the within placeholder
+    # Overlap / contains / within (inner + left)
     # ------------------------------------------------------------------
 
     def _overlap(
@@ -319,9 +378,6 @@ class BedtoolsEngine(AnnotationEngine):
         coord_df: pd.DataFrame,
         annot_df: pd.DataFrame,
         how: str,
-        *,
-        f: Optional[float] = None,
-        F: Optional[float] = None,
     ) -> pd.DataFrame:
         q_meta = self._metadata_columns(coord_df)
         a_meta = self._metadata_columns(annot_df)
@@ -350,20 +406,16 @@ class BedtoolsEngine(AnnotationEngine):
             "Running bedtools intersect on %d x %d rows",
             len(coord_df), len(annot_df),
         )
-        # min_overlap is deliberately NOT forwarded to bedtools -f, and
-        # use_strand is deliberately NOT forwarded to bedtools -s: the
-        # canonical query-fraction contract (SPEC 8.2, Task 6A) and the
-        # same-strand contract (SPEC 8.3, Task 6B) are applied by the
-        # shared post-filters below so both backends enforce identical
-        # predicates. Explicit f/F kwargs remain only for the
-        # non-normative ``within`` placeholder (``contains`` no longer
-        # uses a bedtools fraction flag: SPEC 8.4 is enforced by the
-        # shared canonical predicate).
+        # min_overlap is deliberately NOT forwarded to bedtools -f,
+        # use_strand is deliberately NOT forwarded to bedtools -s, and no
+        # fraction flag is used for contains/within: the canonical
+        # query-fraction contract (SPEC 8.2, Task 6A), the same-strand
+        # contract (SPEC 8.3, Task 6B) and the interval-relation
+        # predicates contains/within (SPEC 8.4/8.5, Tasks 6C/6D) are all
+        # applied by the shared post-filters below so both backends
+        # enforce identical predicates. Candidate generation is always an
+        # ordinary, unfiltered overlap ``intersect``.
         kwargs = {"wa": True, "wb": True}
-        if f is not None:
-            kwargs["f"] = f
-        if F is not None:
-            kwargs["F"] = F
         if how == "left":
             kwargs["loj"] = True
 
@@ -406,28 +458,35 @@ class BedtoolsEngine(AnnotationEngine):
         # Deliberately NOT mode-gated (unlike min_overlap, which SPEC
         # 8.2 defines for the overlap method only): SPEC 8.3 defines
         # strand relative to the *selected* interval predicate, so it
-        # also applies to the contains mode and the non-normative within
-        # placeholder path (engine-contract section 10;
+        # also applies to the contains mode (SPEC 8.4) and the within
+        # mode (SPEC 8.5) (engine-contract section 10;
         # implementation-notes Task 6B "No mode gating").
         if self.use_strand:
             mask = strand_keep_mask(out, q_meta, a_meta)
             mask = mask | (out[a_id].to_numpy() < 0)
             out = out[mask].reset_index(drop=True)
 
-        # Canonical contains post-filter (SPEC 8.4, Task 6C): the shared
-        # query-contains-annotation predicate, applied AFTER the ordinary
-        # backend overlap candidate generation and BEFORE left
-        # reconstruction. Candidate generation is lossless because a true
-        # containment pair necessarily overlaps; the filter only removes
-        # non-qualifying candidate rows. Unmatched (-loj sentinel) rows
+        # Canonical interval-relation post-filter (SPEC 8.4 contains,
+        # Task 6C; SPEC 8.5 within, Task 6D): the shared predicate
+        # selected by ``mode``, applied AFTER the ordinary backend
+        # overlap candidate generation and BEFORE left reconstruction.
+        # Candidate generation is lossless because a containment pair in
+        # either direction necessarily overlaps; the filter only removes
+        # non-qualifying candidate rows. Both predicates are plain
+        # boundary comparisons on canonical coordinates — never inferred
+        # from an overlap fraction — and their conjunction with the
+        # orthogonal strand predicate is a logical AND (the filter order
+        # is therefore not observable). Unmatched (-loj sentinel) rows
         # pass through untouched, and a query losing every candidate is
         # emitted exactly once as unmatched by the left logic below.
-        # Deliberately not applied to the ``within`` placeholder, whose
-        # predicate is Task 6D scope.
+        relation_mask = None
         if self.mode == "contains":
-            mask = contains_keep_mask(out)
-            mask = mask | (out[a_id].to_numpy() < 0)
-            out = out[mask].reset_index(drop=True)
+            relation_mask = contains_keep_mask(out)
+        elif self.mode == "within":
+            relation_mask = within_keep_mask(out)
+        if relation_mask is not None:
+            relation_mask = relation_mask | (out[a_id].to_numpy() < 0)
+            out = out[relation_mask].reset_index(drop=True)
 
         # Canonical min_overlap post-filter (SPEC 8.2, Task 6A): the
         # shared query-fraction predicate, applied AFTER the backend
@@ -436,10 +495,11 @@ class BedtoolsEngine(AnnotationEngine):
         # (left mode) or omitted (inner mode). Unmatched (-loj sentinel)
         # rows pass through untouched. SPEC 8.2 is defined for the
         # overlap method, so the filter applies to overlap mode only;
-        # the contains mode (SPEC 8.4) and the non-normative within
-        # placeholder keep their own predicates and are deliberately
-        # exempt (Task 6A review finding; Task 6C pins the contains
-        # exemption with a regression test).
+        # the contains mode (SPEC 8.4) and the within mode (SPEC 8.5)
+        # keep their own interval-relation predicates and are
+        # deliberately exempt (Task 6A review finding; the contains
+        # exemption is pinned by a Task 6C regression test and the within
+        # exemption by a Task 6D regression test).
         if self.min_overlap is not None and self.mode == "overlap":
             mask = min_overlap_keep_mask(out, self.min_overlap)
             mask = mask | (out[a_id].to_numpy() < 0)
@@ -820,6 +880,13 @@ class PolarsBioEngine(AnnotationEngine):
       overlap) plus the shared canonical predicate
       ``contains_keep_mask``, applied after matching and before left
       reconstruction. ``min_overlap`` is NOT applied in contains mode.
+    - ``mode="within"`` (Task 6D, SPEC 8.5) is the directional inverse
+      of ``contains``: the ANNOTATION interval fully contains the QUERY
+      interval. Pinned polars-bio 0.35.1 exposes no containment primitive
+      at all (only ``overlap``/``nearest``/coverage/count operations),
+      so ordinary ``pb.overlap`` candidates plus the shared canonical
+      predicate ``within_keep_mask`` are used, after matching and before
+      left reconstruction. ``min_overlap`` is NOT applied in within mode.
     - Backend exceptions propagate to the caller. A valid no-match is
       not an exception: it remains a valid empty (0-row) result.
     """
@@ -836,21 +903,17 @@ class PolarsBioEngine(AnnotationEngine):
         validate_canonical_interval_table(coord_df)
         validate_canonical_interval_table(annot_df)
 
-        if self.mode in ("overlap", "contains"):
-            # ``contains`` (SPEC 8.4, Task 6C) shares the ordinary overlap
-            # candidate generation (containment implies overlap, so this
-            # is lossless and never a Cartesian product); the shared
-            # canonical contains predicate is applied inside
-            # ``_adapt_overlap_result``. how is respected for left mode.
+        if self.mode in ("overlap", "contains", "within"):
+            # ``contains`` (SPEC 8.4, Task 6C) and ``within`` (SPEC 8.5,
+            # Task 6D) share the ordinary overlap candidate generation (a
+            # containment pair in either direction implies overlap, so
+            # this is lossless and never a Cartesian product); the shared
+            # canonical interval-relation predicate selected by ``mode``
+            # is applied inside ``_adapt_overlap_result``. how is
+            # respected for left mode.
             return self._overlap(coord_df, annot_df, how)
         if self.mode == "closest":
             return self._nearest(coord_df, annot_df)
-        if self.mode == "within":
-            # Non-normative placeholder mapping (engine-contract 9/11):
-            # plain overlap for now; _filter_fraction is a documented no-op.
-            return self._filter_fraction(
-                self._overlap(coord_df, annot_df, how), mode=self.mode
-            )
         raise ValueError(f"Unknown mode: {self.mode}")
 
     # ------------------------------------------------------------------
@@ -924,21 +987,26 @@ class PolarsBioEngine(AnnotationEngine):
         # composes with min_overlap by logical AND. Deliberately NOT
         # mode-gated (unlike min_overlap below): SPEC 8.3 defines
         # strand relative to the *selected* interval predicate, so it
-        # also applies to the contains mode and the non-normative within
-        # placeholder path (engine-contract section 10;
+        # also applies to the contains mode (SPEC 8.4) and the within
+        # mode (SPEC 8.5) (engine-contract section 10;
         # implementation-notes Task 6B "No mode gating").
         if self.use_strand:
             df = df[strand_keep_mask(df, q_meta, a_meta)].reset_index(drop=True)
 
-        # Canonical contains post-filter (SPEC 8.4, Task 6C) — the same
-        # shared predicate as BedtoolsEngine, applied over the ordinary
-        # pb.overlap candidate pairs. Every raw row is a matched pair, so
-        # the mask applies to all rows; queries losing every candidate
-        # are reconstructed as unmatched below (left mode). Deliberately
-        # not applied to the non-normative ``within`` placeholder, whose
-        # predicate is Task 6D scope.
+        # Canonical interval-relation post-filter (SPEC 8.4 contains,
+        # Task 6C; SPEC 8.5 within, Task 6D) — the same shared predicate
+        # as BedtoolsEngine, applied over the ordinary pb.overlap
+        # candidate pairs. Both predicates are plain boundary comparisons
+        # on canonical coordinates, never inferred from an overlap
+        # fraction, and their conjunction with the orthogonal strand
+        # predicate is a logical AND (the filter order is therefore not
+        # observable). Every raw row is a matched pair, so the mask
+        # applies to all rows; queries losing every candidate are
+        # reconstructed as unmatched below (left mode).
         if self.mode == "contains":
             df = df[contains_keep_mask(df)].reset_index(drop=True)
+        elif self.mode == "within":
+            df = df[within_keep_mask(df)].reset_index(drop=True)
 
         # Canonical min_overlap post-filter (SPEC 8.2, Task 6A) — the
         # same shared predicate as BedtoolsEngine. Every raw pb.overlap
@@ -946,9 +1014,10 @@ class PolarsBioEngine(AnnotationEngine):
         # queries losing every match are reconstructed as unmatched
         # below (left mode). SPEC 8.2 is defined for the overlap method,
         # so the filter applies to overlap mode only; the contains mode
-        # (SPEC 8.4) and the non-normative within placeholder keep their
-        # own predicates and are deliberately exempt (Task 6A review
-        # finding; Task 6C pins the contains exemption with a test).
+        # (SPEC 8.4) and the within mode (SPEC 8.5) keep their own
+        # interval-relation predicates and are deliberately exempt (Task
+        # 6A review finding; the contains exemption is pinned by a Task
+        # 6C test and the within exemption by a Task 6D test).
         if self.min_overlap is not None and self.mode == "overlap":
             df = df[min_overlap_keep_mask(df, self.min_overlap)].reset_index(drop=True)
 
@@ -1034,13 +1103,6 @@ class PolarsBioEngine(AnnotationEngine):
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
-
-    def _filter_fraction(self, res: pd.DataFrame, mode: str) -> pd.DataFrame:
-        # Non-normative ``within`` placeholder (engine-contract 9/11):
-        # no filtering is applied yet; pass through unchanged. (``contains``
-        # is normative as of Task 6C and uses ``contains_keep_mask``
-        # instead of this no-op.)
-        return res
 
     @staticmethod
     def _metadata_columns(df: pd.DataFrame) -> List[str]:

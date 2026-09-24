@@ -80,8 +80,12 @@ class Settings:
             "bedtools_args": {"wa": True, "wb": True}
         },
         "within": {
-            "description": "Find annotations completely within coordinates",
-            "bedtools_args": {"wa": True, "wb": True, "F": 1.0}
+            # SPEC 8.5 (Task 6D): query contained within annotation. Candidates
+            # come from an ordinary overlap; the containment predicate is the
+            # shared canonical within_keep_mask post-filter, not a backend
+            # fraction flag (bedtools -F 1.0 is the opposite direction).
+            "description": "Return annotations that fully contain each query interval",
+            "bedtools_args": {"wa": True, "wb": True}
         },
         "closest": {
             "description": "Find nearest annotation (even without overlap)",

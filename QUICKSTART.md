@@ -121,7 +121,7 @@ Upload one of:
 ### Annotation Modes
 - **Overlap**: Find any overlapping annotations (default)
 - **Contains**: Return annotations fully contained within each query interval (query contains annotation)
-- **Within**: Annotations must be within the coordinate
+- **Within**: Return annotations that fully contain each query interval (query is contained within annotation)
 - **Closest**: Find nearest annotation
 
 ---
