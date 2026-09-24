@@ -168,12 +168,14 @@ as a **shared canonical post-filter** over ordinary backend overlap
 pairs — after backend matching, before left-mode reconstruction — by
 BOTH engines, so the meaning is identical by construction. The filter
 applies in `overlap` mode only (SPEC 8.2 is defined for the overlap
-method); the non-normative contains/within placeholders keep their
-pre-Task-6A behavior (Task 6A review decision). Bedtools
+method); `contains` (section 11) has its own predicate and the
+non-normative `within` placeholder keeps its pre-Task-6A behavior
+(Task 6A review decision; the `contains` exemption is pinned by a Task
+6C regression test). Bedtools
 `-f` is NOT used for `min_overlap` (bedtools rejects `-f 0.0` — its
 range is `(0.0, 1.0]` — and backend options must not define the
-parameter); `-f`/`-F` remain only for the non-normative
-contains/within placeholders. Pinned polars-bio 0.35.1 `overlap` exposes
+parameter); `-f`/`-F` remain only for the non-normative `within`
+placeholder. Pinned polars-bio 0.35.1 `overlap` exposes
 no fraction mechanism, so the Polars-Bio engine enforces the same
 shared predicate explicitly. The parameter is validated once in the
 shared `AnnotationEngine` constructor via `validate_min_overlap`.
@@ -192,16 +194,61 @@ Missing/unknown strand (canonical missing, or an absent strand column on either 
 
 In left mode, a query whose geometrical overlaps all fail the strand predicate appears exactly once, unmatched (SPEC 7.2); a query with at least one qualifying match emits only its qualifying matches. The predicate composes with `min_overlap` by logical AND (no precedence). Canonical strand values other than `+`/`-`/missing are rejected by `validate_canonical_interval_table`, which both engines invoke before any backend execution.
 
-The predicate is deliberately **not** mode-gated (unlike the Task 6A `min_overlap` gate, which SPEC 8.2 limits to the overlap method): it therefore also applies to the non-normative `contains`/`within` placeholder paths, identically on both engines. Those placeholder predicates remain Task 6C/6D scope; only the strand composition behavior changed.
+The predicate is deliberately **not** mode-gated (unlike the Task 6A `min_overlap` gate, which SPEC 8.2 limits to the overlap method): it therefore also applies to `contains` mode (section 11) and to the non-normative `within` placeholder path, identically on both engines. (`contains` became normative in Task 6C; the `within` predicate remains Task 6D scope.)
 
-## 11. Contains / within
+## 11. Contains (fixed in Task 6C) and within (future scope)
 
-These operations require explicit predicates. A provisional mathematical definition for later confirmation is:
+`mode="contains"` means **the QUERY interval fully contains the
+ANNOTATION interval** (SPEC 8.4):
 
-- query **within** annotation: `annot_start <= coord_start` and `coord_end <= annot_end`;
-- query **contains** annotation: `coord_start <= annot_start` and `annot_end <= coord_end`.
+```text
+contains(Q, A) = q_start <= a_start AND q_end >= a_end
+```
 
-Before implementation, verify that these definitions match UI wording and existing user expectations. Ordinary overlap followed by no filtering is NOT a valid implementation.
+Directionality is fixed: the query is the containing interval and the
+annotation is the contained interval. Equal intervals and shared
+left/right boundaries qualify; partial overlaps, boundary-touching
+(non-overlapping) intervals, and annotation-contains-query (the
+`within` direction) do not.
+
+`contains` is explicitly NOT `min_overlap = 1.0` (section 9 / SPEC
+8.2): the two predicates are independent in both directions, and
+`min_overlap` is not applied in contains mode.
+
+Implementation (Task 6C): the predicate lives at the contract level as
+`streamlit_app/core/annotator.py::contains_keep_mask` and is applied as
+a **shared canonical post-filter** over ordinary backend overlap
+candidate pairs — after backend matching, before left-mode
+reconstruction — by BOTH engines, so the meaning is identical by
+construction (the same architecture as the Task 6A `min_overlap` and
+Task 6B `strand` predicates). Candidate generation is ordinary overlap,
+never a Cartesian query x annotation product and never a
+backend-native containment flag: a true containment pair necessarily
+overlaps, so overlap candidates are lossless and the shared filter then
+removes every non-qualifying row.
+
+- Bedtools does NOT use `-f 1.0` (or any fraction flag) for `contains`.
+  Bedtools `-f` is a fraction of A (the query) and is a different,
+  version-coupled, backend-defined predicate, so it must not define the
+  AnnotateR contract; the old `-f 1.0` placeholder mapping is removed.
+  `-f`/`-F` remain only for the non-normative `within` placeholder.
+- Pinned polars-bio 0.35.1 exposes no query-contains-annotation
+  primitive (verified against the installed package), so the shared
+  predicate is applied post-hoc there as well.
+
+`use_strand` composes with `contains` by logical AND (section 10): a
+contained pair must also satisfy the strand predicate under
+`use_strand=True`, and missing/unknown strand is not a wildcard. In left
+mode a query whose overlapping annotations all fail the containment or
+strand predicate appears exactly once, unmatched (SPEC 7.2).
+
+`within` (the reverse relation — annotation fully contains query,
+provisionally `annot_start <= coord_start` and `coord_end <= annot_end`)
+is a distinct predicate and remains **non-normative future scope**
+(PLAN Task 6D). It MUST NOT be treated as an alias of `contains` or as
+implemented. The historical `within` placeholder mapping (bedtools
+`-F 1.0`; polars-bio plain overlap with a documented no-op filter) is
+unchanged by Task 6C.
 
 ## 12. Closest
 
