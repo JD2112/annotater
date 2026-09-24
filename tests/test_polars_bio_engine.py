@@ -115,7 +115,7 @@ def test_polars_raw_output_has_no_backend_artifacts():
 def test_polars_raw_accepted_by_canonicalizer_for_all_how_modes():
     """The schema guarantee lives at the raw layer: canonicalize must
     accept the engine output as-is for every how/mode combination."""
-    for mode in ("overlap", "contains", "closest"):
+    for mode in ("overlap", "contains", "within", "closest"):
         for how in ("inner", "left"):
             raw = PolarsBioEngine(mode=mode).intersect(QUERY, ANNOT, how=how)
             extra = ("distance",) if mode == "closest" else ()
@@ -129,7 +129,7 @@ def test_polars_inner_empty_inputs_return_empty_result():
     closest mode yields one row per query only when an annotation exists
     (k=1), so an empty annotation table yields 0 rows in every case."""
     empty = _empty_interval_table()
-    for mode in ("overlap", "contains", "closest"):
+    for mode in ("overlap", "contains", "within", "closest"):
         for left, right in (
             (empty, ANNOT),
             (QUERY, empty),
