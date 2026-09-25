@@ -1,0 +1,41 @@
+# The image ships only what the app (and the in-container smokes) need:
+# app.py, streamlit_app/, data/examples/, requirements.txt,
+# benchmarks/benchmark_engines.py, scripts/docker_smoke.sh.
+
+# VCS / agent tooling
+.git
+.github
+.pi
+.venv
+venv
+env
+
+# Python build/test artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Local artifacts that must never reach the image
+benchmarks/results/
+*.log
+.DS_Store
+
+# Legacy Shiny app (not part of the Streamlit product)
+app/
+renv.lock
+renv/
+
+# Documentation / specs (read the repo for these, not the image)
+docs/
+tests/
+*.md
+!README.md
+
+# Local data (only the bundled examples ship in the image)
+data/*
+!data/examples/

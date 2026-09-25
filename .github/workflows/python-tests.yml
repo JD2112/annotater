@@ -54,3 +54,32 @@ jobs:
 
       - name: Run test suite
         run: pytest
+
+  docker-smoke:
+    name: docker build + in-container smoke + benchmark smoke (linux/amd64)
+    # ubuntu-latest is x86_64, so the amd64 image builds natively (no QEMU).
+    # The macOS runner has no Docker daemon, so this job is Linux-only.
+    # This job verifies the production image end-to-end without a registry:
+    # build, engine/health smoke (scripts/docker_smoke.sh), and a small
+    # deterministic benchmark run whose parity gate fails the job if the two
+    # canonical engines disagree (PLAN Task 8).
+    # The FULL benchmark (docs/benchmark.md) is deliberately NOT a CI gate:
+    # performance numbers are reporting data, not pass/fail criteria, and
+    # timing thresholds would be flaky on shared runners.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image (linux/amd64)
+        run: docker build --platform linux/amd64 -t annotater:ci .
+
+      - name: In-container smoke (imports, bedtools, engines, annotation, health)
+        # NOTE: --entrypoint bash is required — the image ENTRYPOINT is the
+        # Streamlit server (the Serve entry point), and plain `docker run ... bash ...`
+        # would append the args to it and start the web server instead of the smoke.
+        run: docker run --rm --entrypoint bash annotater:ci /app/scripts/docker_smoke.sh
+
+      - name: Benchmark smoke (deterministic, parity-gated)
+        run: docker run --rm --entrypoint python annotater:ci \
+            /app/benchmarks/benchmark_engines.py --quick
