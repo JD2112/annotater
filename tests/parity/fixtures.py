@@ -48,6 +48,12 @@ class ParityCase:
     bedtools_xfail: str = ""
     polars_xfail: str = ""
     engine_kwargs: dict = field(default_factory=dict)
+    #: Task 6E (closest cases only): explicit expected canonical
+    #: distances aligned with ``pairs`` — an ``int`` for matched rows,
+    #: ``None`` for unmatched rows. Values are hand-derived from the
+    #: SPEC 8.6 half-open gap formula, never from backend output. An
+    #: empty tuple means "no distances" (every non-closest case).
+    distances: tuple = ()
 
 
 # ---------------------------------------------------------------------------

@@ -111,7 +111,7 @@ Rules:
 - A query with no annotation match MUST produce exactly one row with its `coord_*` values preserved, annotation fields represented using the canonical missing-value convention, and `has_overlap == False`.
 - Rows with a match MUST have `has_overlap == True`.
 
-This contract corresponds conceptually to the behavior required from a left outer genomic intersection and MUST NOT be approximated by “return only overlapping left rows”.
+This contract corresponds conceptually to the behavior required from a left outer genomic intersection and MUST NOT be approximated by “return only overlapping left rows”. In closest mode (SPEC 8.6), “match” means an attached nearest annotation (possibly separated); `has_overlap` there is the attachment flag, not an overlap predicate.
 
 ## 8. Operation semantics and milestone gating
 
@@ -228,9 +228,85 @@ Q [0,100), A [10,20): contains qualifies; within does NOT
 - `how="inner"` emits one canonical row for every qualifying query/annotation pair (zero rows when none qualify), preserving query order then annotation input order. `how="left"` follows 7.2: every query row survives, a query with qualifying annotations emits exactly one row per qualifying annotation, and a query with zero qualifying annotations emits exactly one unmatched row (`has_overlap == False`, annotation fields canonical missing). Overlapping-but-not-contained annotations and annotations contained by the query do not count as matches.
 - The predicate is evaluated after canonicalization on both engines; `within` MUST NOT be implemented as unfiltered ordinary overlap, and MUST NOT be delegated to a backend-native containment/fraction option whose direction is backend-defined. In particular bedtools `-F` is a minimum overlap as a fraction of B (here the annotation), so a native `-F 1.0` mapping expresses the opposite (`contains`) relation and MUST NOT define `within`.
 
-### 8.6 Closest
+### 8.6 Closest (fixed in Task 6E)
 
-Closest/nearest behavior MUST be specified separately, including tie handling, distance sign/definition, overlapping intervals, and deterministic ordering. It is not part of the first parity task.
+`mode="closest"` has ONE normative, backend-independent meaning. Both
+engines MUST implement it with identical behavior and identical canonical
+distance values for the same input, and neither backend-native
+closest/nearest call (bedtools `closest`, polars-bio `nearest`) MAY be
+used for the selection or the distance.
+
+**Candidate set.** For each query, the candidate annotations are the
+rows of the SAME chromosome only. Distance is never defined across
+chromosomes. When `use_strand = True`, SPEC 8.3 strand eligibility
+applies to the candidate set BEFORE nearest selection: a query and
+annotation qualify as candidates only when both carry known strand
+metadata and the strands match exactly; missing/unknown strand never
+qualifies as a wildcard. When `use_strand = False`, strand is ignored
+entirely. This is strand-BEFORE-nearest, not a post-filter on the
+winning rows: an ineligible annotation (e.g. opposite strand) MUST NOT
+suppress a farther eligible one.
+
+**Distance.** For a query interval `Q = [q_start, q_end)` and a candidate
+annotation `A = [a_start, a_end)` (canonical 0-based half-open
+integers), the distance is the exact integer
+
+    distance(Q, A) = max(0, a_start - q_end, q_start - a_end)
+
+the number of genomic bases in the gap between the two intervals:
+
+- overlapping intervals have distance 0;
+- touching (bookended) intervals (`a_start == q_end` or `a_end ==
+  q_start`) have distance 0;
+- a one-base gap has distance 1;
+- a larger gap is the exact number of intervening bases.
+
+The computation MUST be exact integer arithmetic; floating point MUST
+NOT be used (large genomic coordinates would silently corrupt beyond
+2**53). Backend-native distances are non-normative and MUST NOT
+surface: on bedtools 2.31.1, `closest -d` reports gap + 1 for separated
+pairs (76 where the canonical gap is 75; 1 for touching pairs), and
+polars-bio `nearest.distance` reports the gap itself (75; 0 for
+overlapping/touching).
+
+**Selection and ties.** Per query, every candidate at the minimum
+distance is returned — ALL tied-nearest annotations, with no arbitrary
+one-tie selection and no deduplication of duplicate-valued annotations.
+Row order is query input order, then annotation input order among the
+ties — never genomic sort order. Distance does not affect WHICH rows
+are emitted (it is an annotation of the selected rows), so ties never
+break by distance.
+
+**`how="inner"`.** A query with no eligible candidate (no same-
+chromosome annotation, or no same-strand annotation in stranded mode)
+contributes ZERO rows.
+
+**`how="left"`.** Every query with no eligible candidate MUST appear
+exactly once with `has_overlap = False`, canonical missing values for
+every `annot_*` field, and canonical missing (`pd.NA`) `distance`; a
+query with at least one tied-nearest annotation appears once per
+qualifying annotation (the selection rule above), consistent with the
+left-mode wording of 8.4/8.5. In closest mode `has_overlap` is
+interpreted as "an annotation was attached" — `True` for every matched
+row (including overlapping, touching, and separated rows) and `False`
+for unmatched left rows; it is NOT an overlap predicate.
+
+**Result columns.** The result MUST carry an extra `distance` column
+with a canonical missing-aware integer type (nullable Int64): matched
+rows carry an integer >= 0; unmatched left rows carry canonical missing
+(`pd.NA`), never 0. No other closest-specific column is normative.
+
+**Exclusions.** `min_overlap` (SPEC 8.2), `contains` (SPEC 8.4), and
+`within` (SPEC 8.5) do NOT participate in closest mode: closest is
+neither an overlap-qualification, containment, nor boundary predicate
+(it only ranks candidate annotations by gap distance). In particular,
+touching intervals have distance 0 in closest even though they do NOT
+overlap under SPEC 8.2.
+
+The distance formula, candidate rules, tie behavior, ordering, and
+missing-candidate behavior above are the normative contract; any engine
+implementation that reproduces backend-native closest/nearest behavior
+instead of this definition is a defect.
 
 ## 9. Backend requirements
 
@@ -276,7 +352,7 @@ The parity suite MUST include minimal fixtures for at least:
 - chromosome naming normalization;
 - coordinate-system boundary conversion.
 
-Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); strand fixtures were added in Task 6B (`tests/parity/test_strand_parity.py`); contains fixtures were added in Task 6C (`tests/parity/test_contains_parity.py`); within fixtures were added in Task 6D (`tests/parity/test_within_parity.py`); a later milestone MUST add closest fixtures.
+Minimum-overlap fixtures were added in Task 6A (`tests/parity/test_min_overlap_parity.py`); strand fixtures were added in Task 6B (`tests/parity/test_strand_parity.py`); contains fixtures were added in Task 6C (`tests/parity/test_contains_parity.py`); within fixtures were added in Task 6D (`tests/parity/test_within_parity.py`); closest fixtures were added in Task 6E (`tests/parity/test_closest_parity.py`), including representative closest cases in the differential layer.
 
 ### 10.3 Comparison
 

@@ -184,6 +184,9 @@ def _empty_canonical_result(columns: Iterable[str]) -> pd.DataFrame:
         "annot_start": "Int64",
         "annot_end": "Int64",
         HAS_OVERLAP_COLUMN: "bool",
+        # Canonical closest distance (SPEC 8.6, Task 6E): nullable
+        # integer even in an empty result.
+        "distance": "Int64",
     }
     return pd.DataFrame(
         {

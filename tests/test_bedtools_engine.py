@@ -157,9 +157,11 @@ def test_bedtools_left_unmatched_annot_fields_are_canonical_missing():
 def test_bedtools_empty_inputs_matrix():
     """Genuinely empty input -> genuinely empty result (SPEC 9.2: this is
     NOT an error). inner mode always yields 0 rows for any empty side;
-    left mode yields exactly the (non-empty) query rows, each unmatched;
-    closest mode yields one row per query only when an annotation exists,
-    so an empty annotation table yields 0 rows in every case."""
+    left mode yields exactly the (non-empty) query rows, each unmatched.
+    Since Task 6E, closest follows the SAME rule as every other mode:
+    inner yields 0 rows when either side is empty, left preserves each
+    query as one unmatched row even with an empty annotation table
+    (SPEC 8.6 / 7.2)."""
     empty = _empty_interval_table(feature=[])
     for mode in ("overlap", "contains", "within", "closest"):
         for left, right in (
@@ -169,9 +171,7 @@ def test_bedtools_empty_inputs_matrix():
         ):
             for how in ("inner", "left"):
                 result = BedtoolsEngine(mode=mode).intersect(left, right, how=how)
-                if mode == "closest":
-                    expected = len(left) if len(right) else 0
-                elif how == "left":
+                if how == "left":
                     expected = len(left)
                 else:
                     expected = 0
@@ -238,28 +238,34 @@ def test_bedtools_duplicate_rows_preserve_identity_order():
 
 
 def test_bedtools_closest_distance_column_is_canonical_extra():
-    """closest mode keeps the backend distance as an explicit extra
+    """closest mode keeps the canonical distance as an explicit extra
     column (documented in the engine docstring), appended after the
-    canonical columns; the layout is validated (9 raw columns)."""
+    canonical columns; the layout is validated (9 raw columns).
+
+    The value is AnnotateR's canonical half-open gap (SPEC 8.6,
+    Task 6E), recomputed from canonical coordinates — NOT bedtools
+    ``-d``: for this pair bedtools reports 76 (gap + 1) while the
+    canonical gap is 100 - 25 = 75. See the Task 6E regression fixture
+    ``closest_off_by_one_regression`` in tests/parity/."""
     q = interval_table([CHR], [100], [200], gene=["g1"])
     a = interval_table([CHR], [15], [25], feature=["f1"])
     raw = BedtoolsEngine(mode="closest").intersect(q, a, how="inner")
     canonical = list(canonical_result_columns(q, a))
     assert list(raw.columns)[: len(canonical)] == canonical
     assert list(raw.columns)[len(canonical):] == ["distance"]
-    # bedtools -d reports 76 for this pair (its own non-normative distance
-    # definition — closest's full semantics are Task 6 scope); this pins
-    # the lossless Int64 round-trip of the reported value, not the gap
-    # arithmetic itself. Overlapping pairs report 0 (see parity cases).
-    assert raw["distance"].iloc[0] == 76
+    # canonical gap = 100 - 25 = 75 (nullable integer, not bedtools -d)
+    assert raw["distance"].iloc[0] == 75
+    assert str(raw["distance"].dtype) == "Int64"
 
 
 def test_bedtools_overlap_does_not_delegate_strand_to_backend(monkeypatch):
-    """Task 6B: the overlap path never delegates strand semantics to
-    bedtools. ``use_strand=True`` runs an ordinary (unstranded)
-    ``intersect`` — the shared canonical strand predicate is applied
-    post-hoc in AnnotateR instead — so no ``s`` flag is forwarded. The
-    non-normative closest placeholder keeps its native ``-s``."""
+    """Task 6B/6E: no path delegates strand semantics to bedtools. The
+    overlap path runs an ordinary (unstranded) ``intersect`` (the shared
+    canonical strand predicate is applied post-hoc in AnnotateR), so no
+    ``s`` flag is forwarded. Since Task 6E, closest does not invoke
+    ``BedTool.closest`` AT ALL — the shared canonical selection
+    (SPEC 8.6) replaces it — so neither ``-s`` nor ``-d``/``-t`` can
+    reach a public result."""
     seen_intersect = {}
     seen_closest = {}
     real_intersect = pybedtools.BedTool.intersect
@@ -281,9 +287,25 @@ def test_bedtools_overlap_does_not_delegate_strand_to_backend(monkeypatch):
     BedtoolsEngine().intersect(_query(), _annot(), how="left")
     assert seen_intersect["s"] is None
 
-    # closest remains the non-normative placeholder (Task 6E scope):
-    # its native -s forwarding is unchanged by Task 6B.
+    # Task 6E: closest never calls bedtools closest (no -s, no -d, no -t,
+    # and no genomically-sorted-input requirement leaks into the contract).
     BedtoolsEngine(use_strand=True, mode="closest").intersect(_query(), _annot())
-    assert seen_closest["s"] is True
     BedtoolsEngine(mode="closest").intersect(_query(), _annot())
-    assert seen_closest["s"] is False
+    assert seen_closest == {}
+
+
+def test_bedtools_closest_does_not_require_genomic_sort():
+    """SPEC 8.6 (Task 6E): bedtools ``closest`` demands genomically
+    sorted input, but that backend requirement must NOT leak into the
+    AnnotateR contract. Queries and annotations supplied OUT of
+    coordinate order must produce the canonical result in INPUT order —
+    the bedtools closest binary is never invoked to enforce sorting.
+    """
+    q = interval_table([CHR, CHR], [2000, 10], [2100, 20], gene=["qA", "qB"])
+    a = interval_table([CHR, CHR], [1900, 5], [2050, 15], feature=["aW", "aY"])
+    raw = BedtoolsEngine(mode="closest").intersect(q, a, how="inner")
+    # canonical order = query input order (not genomic order)
+    assert list(raw["coord_gene"]) == ["qA", "qB"]
+    assert list(raw["annot_feature"]) == ["aW", "aY"]
+    # both overlap the same-chromosome annotation -> distance 0
+    assert list(raw["distance"]) == [0, 0]

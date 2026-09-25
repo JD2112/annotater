@@ -189,7 +189,7 @@ AnnotateR's `use_strand` has one normative, backend-independent meaning (SPEC 8.
 
 Missing/unknown strand (canonical missing, or an absent strand column on either input) is NOT a wildcard and NOT a strand — no stranded match is possible for such a row, including unknown-vs-unknown. This is identical for both engines by construction: the predicate lives at the contract level as `streamlit_app/core/annotator.py::strand_keep_mask` and is applied as a **shared canonical post-filter** over ordinary backend overlap pairs — after backend matching, before left-mode reconstruction — by BOTH engines (the same architecture as the Task 6A `min_overlap` predicate).
 
-- Bedtools does NOT use native `-s` for the overlap path: bedtools' stranded behavior (its undocumented treatment of `.` and its column-6 dependency) must not define the AnnotateR contract. The non-normative `closest` placeholder keeps its native `-s` forwarding unchanged (Task 6E scope).
+- Bedtools does NOT use native `-s` for the overlap path: bedtools' stranded behavior (its undocumented treatment of `.` and its column-6 dependency) must not define the AnnotateR contract. Task 6E removed the native `-s` forwarding from the closest path as well: both engines now apply the shared strand predicate to the closest candidate set BEFORE nearest selection (SPEC 8.6).
 - Pinned polars-bio 0.35.1 `overlap` exposes no strand option, so the shared predicate is applied post-hoc there as well.
 
 In left mode, a query whose geometrical overlaps all fail the strand predicate appears exactly once, unmatched (SPEC 7.2); a query with at least one qualifying match emits only its qualifying matches. The predicate composes with `min_overlap` by logical AND (no precedence). Canonical strand values other than `+`/`-`/missing are rejected by `validate_canonical_interval_table`, which both engines invoke before any backend execution.
@@ -293,19 +293,58 @@ contained pair must also satisfy the strand predicate under
 mode a query whose overlapping annotations all fail the containment or
 strand predicate appears exactly once, unmatched (SPEC 7.2).
 
-## 12. Closest
+## 12. Closest (fixed in Task 6E)
 
-Closest requires a separate contract for:
+`closest` now has the one normative, backend-independent contract of
+SPEC 8.6. Both engines implement it through the shared canonical
+selection in `streamlit_app/core/annotator.py` (`interval_distance`,
+`closest_matches`, `canonical_closest`); NEITHER engine calls a
+backend-native closest/nearest operation (no pybedtools `BedTool.closest`,
+no polars-bio `nearest`), so the selection, the ties, the ordering, and
+the distance are identical by construction.
 
-- distance definition;
-- whether overlaps have distance 0;
-- upstream/downstream sign;
-- ties;
-- multiple nearest records;
-- strand-aware behavior;
-- left completeness.
+- **Distance.** `distance(Q, A) = max(0, a_start - q_end, q_start - a_end)`
+  — the exact integer number of bases in the gap between the two
+  0-based half-open intervals. Overlaps and touching (bookended) pairs
+  are 0; a one-base gap is 1; a larger gap is the exact base count.
+  Integer-only arithmetic (no floats); the shared helper
+  `interval_distance` is the single definition.
+- **Candidates.** Same-chromosome annotations only, per query. Under
+  `use_strand=True`, SPEC 8.3 strand eligibility is applied to the
+  candidate set BEFORE nearest selection (strand-before-nearest, not a
+  post-filter on winners): missing/unknown strand never qualifies as a
+  wildcard, and an ineligible nearer annotation cannot suppress a
+  farther eligible one. `use_strand=False` ignores strand entirely.
+- **Ties.** ALL tied-nearest annotations are returned per query (no
+  arbitrary one-tie selection, no deduplication); row order is query
+  input order, then annotation input order among the ties. Distance
+  never breaks ties (it annotates the selected rows). Duplicate-valued
+  annotations each produce their own rows.
+- **No extra predicates.** `min_overlap` (SPEC 8.2), `contains` (8.4),
+  and `within` (8.5) do NOT participate in closest mode.
+- **`how="inner"`.** Zero rows for a query with no eligible candidate.
+  **`how="left"`.** Every query appears exactly once; a query with no
+  eligible candidate appears exactly once with `has_overlap=False`,
+  canonical-missing `annot_*` fields and canonical-missing distance.
+  In closest mode `has_overlap` means "an annotation was attached"
+  (True for matched rows including separated ones, False for unmatched
+  left rows) — it is not an overlap predicate (SPEC 7.2/8.6).
+- **`distance` column.** The closest result carries one extra column,
+  `distance`, with canonical nullable-integer (Int64) values: integer
+  >= 0 for matched rows, `pd.NA` for unmatched left rows. It is the
+  first extra column carried through the canonicalization layer.
+- **Native distances are non-normative and never surface.** Bedtools
+  2.31.1 `closest -d` reports gap + 1 for separated pairs (76 where the
+  canonical gap is 75; 1 for touching pairs) and polars-bio 0.35.1
+  `nearest.distance` reports the gap itself (75; 0 for overlapping and
+  touching) — the Task 5 documented 76-vs-75 discrepancy. The canonical
+  gap (75) is returned on both engines; the regression is pinned in
+  `tests/parity/test_closest_parity.py` (including a direct assertion
+  that the native bedtools value differs and never leaks).
 
-Do not infer all of these from backend defaults.
+Do not infer any of these from backend defaults: any implementation
+that reproduces backend-native closest/nearest behavior instead of the
+SPEC 8.6 definition is a defect.
 
 ## 13. Backend notes
 

@@ -14,6 +14,14 @@ Task 5 for Bedtools): neither engine swallows backend exceptions, and
 DISCOVERED in Task 3: the old ``_bedtool_to_df`` caught all
 ``to_dataframe`` exceptions and returned an empty DataFrame) is a
 positive test again.
+
+Since Task 6E, ``mode="closest"`` makes no backend call at all (the
+shared canonical selection replaces bedtools ``closest`` and
+``pb.nearest``), so its failure contract is: malformed input raises
+explicitly for both engines, and no native failure can be converted
+into an unmatched row — pinned by
+``test_polars_closest_never_invokes_backend_nearest`` and
+``test_closest_malformed_input_raises_instead_of_empty``.
 """
 
 from __future__ import annotations
@@ -22,6 +30,7 @@ import pandas as pd
 import pytest
 
 from streamlit_app.core import BedtoolsEngine, PolarsBioEngine
+from streamlit_app.core.schema import CanonicalSchemaError
 
 from .comparator import interval_table
 
@@ -84,15 +93,39 @@ def test_polars_overlap_backend_failure_propagates(monkeypatch):
         PolarsBioEngine().intersect(_query(), _annot(), how="inner")
 
 
-def test_polars_nearest_backend_failure_propagates(monkeypatch):
+def test_polars_closest_never_invokes_backend_nearest(monkeypatch):
+    """Task 6E / SPEC 8.6: closest is the shared canonical selection, so
+    the engine never calls polars-bio's native ``nearest``. Neither its
+    ``k=1`` tie-dropping neighbor selection nor its native ``distance``
+    column can define (or fail) an AnnotateR result — and since no
+    backend call happens, there is no native failure that could ever be
+    converted into an unmatched or empty result (SPEC 9.2).
+
+    (This replaces the pre-Task-6E placeholder test, which asserted
+    that a *pb.nearest* failure propagated from the closest path; that
+    path no longer exists.)
+    """
     import polars_bio
 
-    def _boom(*args, **kwargs):
-        raise RuntimeError("simulated polars-bio nearest backend failure")
+    calls = []
+    monkeypatch.setattr(
+        polars_bio, "nearest", lambda *args, **kwargs: calls.append("nearest")
+    )
+    result = PolarsBioEngine(mode="closest").intersect(_query(), _annot())
+    assert calls == []  # native nearest is never consulted
+    assert len(result) == 1  # canonical result computed in AnnotateR
 
-    monkeypatch.setattr(polars_bio, "nearest", _boom)
-    with pytest.raises(RuntimeError, match="simulated polars-bio nearest backend failure"):
-        PolarsBioEngine(mode="closest").intersect(_query(), _annot())
+
+def test_closest_malformed_input_raises_instead_of_empty():
+    """Closest's only failure mode is explicit input validation (SPEC
+    9.2): malformed canonical input must raise the concrete
+    ``CanonicalSchemaError`` for BOTH engines, never return an
+    empty/unmatched result and never raise an accidental internal
+    error type."""
+    bad_query = pd.DataFrame({"start": [10], "end": [20]})  # no 'chr'
+    for engine_cls in (BedtoolsEngine, PolarsBioEngine):
+        with pytest.raises(CanonicalSchemaError, match="missing required column"):
+            engine_cls(mode="closest").intersect(bad_query, _annot(), how="inner")
 
 
 def test_bedtools_result_parsing_failure_propagates(monkeypatch):

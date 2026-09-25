@@ -598,6 +598,9 @@ counts, and swallowed every `to_dataframe` exception.
   gap for the same pair is 75). Closest's full semantics stay Task 6;
   the adapter only guarantees a lossless `Int64` round-trip of the
   backend-reported value (`NA` when no feature was found).
+  (**Superseded by Task 6E — see the Task 6E section below: closest no
+  longer consumes any backend-native selection or distance; the
+  canonical gap is 75 on both engines, pinned by a regression test.)**
 - **`bedtools closest` requires genomically sorted input** (pre-existing
   bedtools requirement, unchanged): unsorted query/annotation frames
   raise `BEDToolsError` from the binary itself, which now propagates
@@ -861,6 +864,9 @@ breaking; the 76-vs-75 discrepancy noted in Task 5 remains).
   predicate post-hoc — the same architecture as Task 6A `min_overlap`.
   The stranded serialization + native `-s` remain ONLY in the
   non-normative `closest` placeholder, unchanged (Task 6E scope).
+  (**Superseded by Task 6E:** the closest path no longer uses stranded
+  serialization or native `-s`; both engines apply the shared strand
+  predicate to the closest candidate set before nearest selection.)
 - **No mode gating.** The shared strand predicate applies to every mode
   that routes through the engines' overlap path (overlap and the
   non-normative contains/within placeholders), because SPEC 8.3 defines
@@ -947,7 +953,8 @@ breaking; the 76-vs-75 discrepancy noted in Task 5 remains).
   both engines (documented above); the placeholders remain
   non-normative.
 - Closest: unchanged (native `-s` on bedtools, ignored on polars-bio),
-  non-normative, Task 6E scope.
+  non-normative, Task 6E scope. (**Superseded by Task 6E — closest is
+  fully normative now; see the Task 6E section below.**)
 
 ### Test command and baseline (Task 6B)
 
@@ -1316,3 +1323,134 @@ and parity-protected. The one documented gap left in Task 6 is `closest`
 full semantics (distance definition, tie breaking; the 76-vs-75
 backend discrepancy noted in Task 5 remains, as does the native bedtools
 `-s` forwarding there). Task 6E (closest) is not started.
+(**Superseded by Task 6E — see the Task 6E section below: closest is
+now normative, the 76-vs-75 discrepancy is resolved canonically to 75
+on both engines, and the native `-s` forwarding is gone.**)
+
+---
+
+## Task 6E — Closest semantics (backend-independent `closest`)
+
+### What was built
+
+`mode="closest"` is now a fully normative, backend-independent operation
+(SPEC 8.6, engine-contract section 12). Both engines return the SAME
+nearest rows, the SAME canonical integer distance, the SAME tie behavior,
+and the SAME ordering for the same input.
+
+- **One shared canonical definition** in
+  `streamlit_app/core/annotator.py`:
+  - `interval_distance(q_start, q_end, a_start, a_end)` —
+    `max(0, a_start - q_end, q_start - a_end)`, exact integer numpy
+    arithmetic (no floats; large-coordinate regression pinned).
+  - `closest_matches(query, annotation, use_strand)` — per-query
+    selection over SAME-CHROMOSOME candidates. Under `use_strand=True`
+    the SPEC 8.3 strand predicate is applied to the candidate set BEFORE
+    nearest selection (strand-before-nearest; missing/unknown strand is
+    not a wildcard; an ineligible nearer annotation cannot suppress a
+    farther eligible one). ALL candidates tied at the minimum distance
+    are returned. Subtlety found by independent review: the canonical
+    missing value is `pd.NA`, and a plain Python membership test
+    (`strand not in STRAND_VALUES`) on `pd.NA` raises
+    `TypeError: boolean value of NA is ambiguous` instead of being
+    False — the annotation bucket loop therefore checks
+    `pd.isna(strand) or strand not in STRAND_VALUES`, mirroring the
+    NA-safe `Series.isin` membership test on the query side. Pinned by
+    `test_pdna_strand_ineligible_not_crash_both_engines`.
+  - `canonical_closest(...)` — assembles the canonical result frame:
+    query input order, then annotation input order among the ties;
+    `has_overlap=True` on every matched row (attachment flag, not an
+    overlap predicate); left-mode queries with no eligible candidate
+    appear exactly once with `has_overlap=False`, canonical-missing
+    `annot_*` fields and canonical-missing distance.
+- **Both engines delegate entirely to the shared selection**
+  (`BedtoolsEngine` and `PolarsBioEngine` dispatch `mode="closest"` to
+  `canonical_closest` before any backend call): no pybedtools
+  `BedTool.closest`, no polars-bio `pb.nearest`, no native distance, no
+  native strand forwarding, no bedtools sorted-input requirement on the
+  closest path. `min_overlap` is still validated at engine construction
+  but is deliberately NOT applied in closest mode.
+- **Result schema:** one extra column `distance` (nullable `Int64`;
+  integer >= 0 on matched rows, `pd.NA` on unmatched left rows). The
+  canonicalization layer (`schema.py`) declares/handles the closest
+  extra column; the parity comparator validates per-row expected
+  distances.
+- **Tests:** `tests/parity/test_closest_parity.py` (41 canonical
+  ParityCase entries — 36 named scenarios including inner/left splits —
+  × 2 engines with explicit expected rows AND explicit expected
+  distances, both hand-derived from the SPEC 8.6 formula — never from
+  backend output — plus `interval_distance`/`closest_matches` unit tests
+  and focused regressions) and closest entries in the differential layer
+  (`test_differential_parity.py`, 20 closest cases, comparing the full
+  canonical result INCLUDING `distance` directly engine-vs-engine).
+  Zero-row closest results are checked for the `distance` column too
+  (empty distances tuples are passed through, never collapsed to None).
+
+### Behavior changes
+
+- Closest results are canonical, not backend-native:
+  - the Task 5 76-vs-75 discrepancy (bedtools `closest -d` reports
+    gap + 1 for separated pairs; polars-bio `nearest.distance` reports
+    the gap) is resolved to the canonical gap **75** on BOTH engines;
+    a regression test also asserts the native bedtools value (76) is
+    produced by the binary and never leaks into AnnotateR results;
+  - touching (bookended) pairs are distance **0** on both engines
+    (bedtools native would report 1);
+  - ALL tied-nearest annotations are returned on both engines (previously
+    the backend's arbitrary one-tie selection);
+  - row order is query input order on both engines (previously the
+    backend's own ordering, and bedtools required genomically sorted
+    input — the closest path no longer serializes anything to bedtools).
+- `use_strand` now affects closest identically on both engines
+  (strand-before-nearest, missing strand never a wildcard) — previously
+  native `-s` on bedtools and ignored on polars-bio.
+- `how="left"` closest: unmatched query rows carry `distance=pd.NA` and
+  canonical-missing annotation fields on both engines (previously each
+  backend's own missing convention).
+- Empty inputs: empty query → empty result (inner and left); empty
+  annotation → empty result (inner) or one unmatched row per query with
+  `pd.NA` distance (left), on both engines. No native backend call is
+  made for closest at all, so there is no native failure mode to
+  swallow; malformed input is rejected by the engines' shared
+  pre-dispatch validation (SPEC 9.2).
+
+### Unchanged
+
+- Overlap/min_overlap (Task 6A), strand (Task 6B), contains (Task 6C),
+  and within (Task 6D) behavior is unchanged.
+- No dependency changes; no new dependencies.
+- The public mode is still `mode="closest"`; the UI mode name is
+  unchanged (only its help text now describes the canonical semantics).
+
+### Test command and baseline (Task 6E)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Repository-wide: **813 passed, 0 xfailed, 0 XPASS, 0 failed, 0
+skipped** (previous main baseline: 684 passed; +129 from the closest
+parity fixtures, helper unit tests, regressions, the `pd.NA`-strand
+review regression, and the updated engine-level closest tests).
+Focused: closest contract parity + helpers + regressions and the
+differential layer together 210 passed.
+Pinned environment: Python 3.12.14, bedtools 2.31.1, pybedtools 0.12.1,
+polars 1.44.2, polars-bio 0.35.1, pandas 3.0.6.
+
+Two independent subagent reviews (spec conformance + test adequacy) ran
+on the final tree. The test-adequacy review passed with three minor
+findings (all fixed: empty-result `distance`-column hardening, two new
+absent-strand-column stranded fixtures, concrete-exception pin for the
+malformed-input contract). The spec-conformance review found one
+blocker — the `pd.NA` strand crash above — which was fixed and verified
+in a second review round; its remaining note (SPEC 8.6 left-mode
+wording vs all-ties emission) was resolved by rewording the spec.
+
+### Remaining known deviations (Task 6 backlog)
+
+NONE left in the Task 6 mode backlog: overlap + `min_overlap` (6A),
+strand (6B), contains (6C), within (6D), and closest (6E) are all
+normative and parity-protected, including closest in the differential
+layer.

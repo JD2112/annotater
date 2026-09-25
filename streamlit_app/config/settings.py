@@ -88,8 +88,12 @@ class Settings:
             "bedtools_args": {"wa": True, "wb": True}
         },
         "closest": {
-            "description": "Find nearest annotation (even without overlap)",
-            "bedtools_args": {"d": True, "t": "first"}
+            "description": (
+                "Return the nearest annotation interval(s). Tied nearest "
+                "annotations are all returned. Distance is the canonical "
+                "number of bases between intervals; overlapping or "
+                "touching intervals have distance 0."
+            )
         }
     }
     

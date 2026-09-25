@@ -42,6 +42,10 @@ _NORMATIVE_DTYPES = {
     "annot_start": "Int64",
     "annot_end": "Int64",
     HAS_OVERLAP_COLUMN: "bool",
+    # Canonical closest distance (SPEC 8.6, Task 6E): nullable integer
+    # on every closest result (matched rows carry an integer >= 0,
+    # unmatched left rows carry pd.NA).
+    "distance": "Int64",
 }
 
 
@@ -134,6 +138,7 @@ def run_engine(engine_cls, coord_df: pd.DataFrame, annot_df: pd.DataFrame,
 
 def run_and_canonicalize(engine_cls, coord_df: pd.DataFrame,
                          annot_df: pd.DataFrame, how: str = "inner",
+                         extra_columns: tuple = (),
                          **engine_kwargs) -> pd.DataFrame:
     """
     Run an engine and apply the canonical result adapter.
@@ -144,15 +149,21 @@ def run_and_canonicalize(engine_cls, coord_df: pd.DataFrame,
     canonical frame. If the engine leaks backend artifacts or omits
     canonical columns, canonicalization raises ``CanonicalSchemaError``
     and the test fails at exactly that layer.
+
+    ``extra_columns`` declares operation-specific additions (for
+    example ``("distance",)`` for closest mode, SPEC 8.6 / Task 6E).
     """
     result = run_engine(engine_cls, coord_df, annot_df, how=how, **engine_kwargs)
-    return canonicalize_annotation_result(result, coord_df, annot_df)
+    return canonicalize_annotation_result(
+        result, coord_df, annot_df, extra_columns=extra_columns
+    )
 
 
 def build_expected_result(
     coord_df: pd.DataFrame,
     annot_df: pd.DataFrame,
     pairs: list,
+    distances: tuple = None,
 ) -> pd.DataFrame:
     """
     Build the normative expected canonical result from explicit pairs.
@@ -162,15 +173,28 @@ def build_expected_result(
     then original annotation row order within each query; an unmatched
     query (``None``) appears exactly once at its own query position.
 
+    ``distances`` (optional, Task 6E) is a tuple aligned with ``pairs``
+    giving the EXPLICIT expected canonical closest distance per row — an
+    ``int`` for matched rows, ``None`` for unmatched rows. When given,
+    the expected frame gains the ``distance`` column (nullable integer).
+    The values come from the test case (derived from the SPEC 8.6
+    formula by hand), never from any backend output.
+
     The expected frame is derived purely from the two input tables and
     the explicit pair list — no backend output is involved.
     """
+    if distances is not None and len(distances) != len(pairs):
+        raise AssertionError(
+            f"distances ({len(distances)}) must align with pairs ({len(pairs)})"
+        )
     columns = canonical_result_columns(coord_df, annot_df)
+    if distances is not None:
+        columns = columns + ("distance",)
     coord_meta = interval_metadata_columns(coord_df)
     annot_meta = interval_metadata_columns(annot_df)
 
     records = []
-    for qi, ai in pairs:
+    for row_index, (qi, ai) in enumerate(pairs):
         row = {}
         qrow = coord_df.iloc[qi]
         row["coord_chr"] = qrow["chr"]
@@ -193,6 +217,9 @@ def build_expected_result(
                 value = arow[name]
                 row[f"annot_{name}"] = pd.NA if is_missing(value) else value
             row[HAS_OVERLAP_COLUMN] = True
+        if distances is not None:
+            value = distances[row_index]
+            row["distance"] = pd.NA if value is None else int(value)
         records.append(row)
 
     frame = pd.DataFrame(records, columns=columns)
@@ -221,14 +248,21 @@ def check_expected(
     pairs: list,
     how: str = "inner",
     label: str = "",
+    distances: tuple = None,
     **engine_kwargs,
 ) -> None:
     """
     Layer 1+2 of the oracle: run ``engine_cls`` and compare the
     canonicalized result strictly against the explicit expected frame.
+
+    ``distances`` (closest mode, Task 6E) supplies the explicit expected
+    canonical distance per row and switches on the ``distance`` extra
+    column at the canonicalization layer.
     """
+    extra_columns = ("distance",) if distances is not None else ()
     actual = run_and_canonicalize(
-        engine_cls, coord_df, annot_df, how=how, **engine_kwargs
+        engine_cls, coord_df, annot_df, how=how,
+        extra_columns=extra_columns, **engine_kwargs,
     )
-    expected = build_expected_result(coord_df, annot_df, pairs)
+    expected = build_expected_result(coord_df, annot_df, pairs, distances=distances)
     assert_canonical_equal(actual, expected, label=label)
