@@ -109,6 +109,12 @@ Upload one of:
 
 ## ⚙️ Configuration Options
 
+### Annotation Engine
+- **Bedtools** (default): the reference implementation; requires the `bedtools` system binary
+- **Polars-Bio**: the in-process implementation; ships inside the Python package (no external binary)
+
+Both engines are interchangeable execution backends: the same input and options produce the same canonical result, schema, and exports on either. Selecting an unavailable backend shows a clear error instead of silently falling back to the other.
+
 ### Coordinate Systems
 - **Auto-detect**: Let the app figure it out (recommended)
 - **0-based (BED)**: For BED, BAM files
@@ -119,10 +125,14 @@ Upload one of:
 - **Manual**: Choose target style (UCSC, Ensembl)
 
 ### Annotation Modes
-- **Overlap**: Find any overlapping annotations (default)
+- **Overlap**: Find any overlapping annotations (default); optional minimum overlap fraction (0 = any positive overlap)
 - **Contains**: Return annotations fully contained within each query interval (query contains annotation)
 - **Within**: Return annotations that fully contain each query interval (query is contained within annotation)
 - **Closest**: Return the nearest annotation interval(s); tied nearest annotations are all returned, with a canonical `distance` column (0 for overlapping/touching intervals)
+
+### Strand
+- **Off (default)**: strand is not required for a match
+- **On**: a pair qualifies only if both intervals carry an explicit strand (+ or -) and the strands are equal; missing strand values do not act as wildcards
 
 ---
 

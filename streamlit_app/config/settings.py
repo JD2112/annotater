@@ -65,10 +65,12 @@ class Settings:
         }
     }
     
-    # Annotation modes
+    # Annotation modes. The descriptions are the normative short
+    # user-facing contract (SPEC 8.2-8.6); do not imply backend
+    # differences (both engines are contractually equivalent).
     ANNOTATION_MODES = {
         "overlap": {
-            "description": "Find annotations overlapping coordinates (any overlap)",
+            "description": "Return annotation intervals that overlap each query interval",
             "bedtools_args": {"wa": True, "wb": True}
         },
         "contains": {
@@ -89,14 +91,18 @@ class Settings:
         },
         "closest": {
             "description": (
-                "Return the nearest annotation interval(s). Tied nearest "
-                "annotations are all returned. Distance is the canonical "
-                "number of bases between intervals; overlapping or "
-                "touching intervals have distance 0."
+                "Return the nearest annotation interval(s); all equally "
+                "nearest ties are retained. Overlapping or touching "
+                "intervals have distance 0."
             )
         }
     }
     
+    # Engine selection (Task 7): the single source for engine options,
+    # the key -> engine-class mapping, and the default backend is
+    # streamlit_app/core/engine_registry.py. The default is the historical
+    # default (Bedtools), preserved by product decision (Task 7 §13).
+
     # UI settings
     THEME = {
         "primaryColor": "#006DAE",

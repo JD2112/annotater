@@ -2,7 +2,7 @@
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red.svg)](https://streamlit.io/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.64-red.svg)](https://streamlit.io/)
 
 A web-based tool for annotating genomic coordinates with support for multiple file formats, automatic chromosome ID standardization, and coordinate system conversion.
 
@@ -14,7 +14,7 @@ A web-based tool for annotating genomic coordinates with support for multiple fi
 - 🧩 **Chromosome ID Standardization**: Auto-detect and convert between UCSC (chr1), Ensembl (1), and NCBI styles
 - 📐 **Coordinate System Handling**: Automatic conversion between 0-based and 1-based systems
 - 🎯 **Multiple Annotation Modes**: Overlap, contains, within, closest feature
-- ⚡ **Fast Processing**: Uses bedtools C++ backend for performance
+- ⚡ **Interchangeable Execution Backends**: Bedtools and Polars-Bio are both available; the engine is a user-selectable execution choice that changes performance characteristics only — the same input and options produce the same canonical result and exports on either backend
 - 🔍 **SNP Support**: Handle both single positions and genomic intervals
 - 📊 **Interactive UI**: Modern Streamlit interface with real-time previews
 - 🐳 **Docker Ready**: Containerized for easy deployment
@@ -37,13 +37,16 @@ docker-compose up
 ### Local Installation
 
 ```bash
-# Install system dependencies (macOS)
+# Install system dependencies — required only for the Bedtools backend
+# (macOS)
 brew install bedtools
 
 # Or on Linux
 sudo apt-get install bedtools
 
 # Install Python dependencies
+# (the Polars-Bio backend ships inside the Python package and needs no
+# external binary; bedtools is only needed for the Bedtools backend)
 pip install -r requirements.txt
 
 # Run application
@@ -57,9 +60,13 @@ streamlit run streamlit_app/streamlit_app.py
    - Upload your annotation file (GFF, GTF, or custom format)
 
 2. **Configure Settings** (optional)
+   - Annotation engine: Bedtools (reference, external binary) or Polars-Bio (in-process, no external binary required) — interchangeable execution backends with identical semantics
    - Coordinate system (auto-detected by default)
    - Chromosome ID handling (auto-converted by default)
    - Annotation mode (overlap, contains, within, closest)
+   - Strand matching (off by default: strand is not required; when on, both intervals must carry an explicit, equal strand)
+   - Minimum overlap fraction (overlap mode only; 0 = any positive overlap)
+   - Feature type filter for GFF/GTF annotations
 
 3. **Run Annotation**
    - Click "Run Annotation"

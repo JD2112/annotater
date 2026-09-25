@@ -1,13 +1,20 @@
 """
 AnnotateR - Genomic Coordinate Annotation Tool
 
-Main Streamlit application
+Main Streamlit application.
 
-Authors: Jyotirmoy Das, Ph.D. & Massimiliano Volpe, Ph.D.
-Contact: jyotirmoy.das@liu.se
-License: GNU GPLv3
+Pipeline (Task 7): the engine choice changes execution only.
+
+    upload -> detect/parse format -> canonical normalize
+            -> [engine selector: Bedtools | Polars-Bio]
+            -> canonical result -> preview / metrics / downloads
+
+Parser selection, coordinate interpretation, metadata handling, result
+schema, and export semantics are identical for both backends; only the
+interval engine differs.
 """
 
+import logging
 import sys
 from pathlib import Path
 
@@ -16,754 +23,988 @@ from pathlib import Path
 # no matter where `streamlit run` is invoked from.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Import core modules
-from streamlit_app.core import (
-    ChromosomeMapper,
-    CoordinateConverter,
-    CoordinateNormalizer,
-    FormatDetector,
-    BEDParser,
-    GFFParser,
-    VCFParser,
-    CustomParser,
-    AnnotationEngine,
-    BedtoolsEngine,
-    PolarsBioEngine,
-    get_summary_stats,
-    normalize_intervals,
-    parse_and_normalize,
-    CanonicalSchemaError
-)
-from streamlit_app.utils import FileValidator, DataValidator, format_file_size, save_uploaded_file
-from streamlit_app.config import Settings
-
-import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import streamlit as st
 
+from streamlit_app.config import Settings
+from streamlit_app.core import (
+    ChromosomeMapper,
+    CustomParser,
+    FormatDetector,
+    canonicalize_annotation_result,
+    normalize_intervals,
+    parse_and_normalize,
+    CanonicalSchemaError,
+)
+from streamlit_app.core.engine_registry import (
+    DEFAULT_ENGINE,
+    ENGINE_OPTIONS,
+    EngineUnavailableError,
+    build_engine,
+    engine_available,
+    engine_label,
+    unavailable_message,
+)
+from streamlit_app.utils import (
+    DataValidator,
+    format_file_size,
+    save_uploaded_file,
+)
 
+logger = logging.getLogger("annotater.app")
+
+# ---------------------------------------------------------------------------
 # Page configuration
+# ---------------------------------------------------------------------------
+
 st.set_page_config(
     page_title=f"{Settings.APP_NAME} - {Settings.DESCRIPTION}",
     page_icon="🧬",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# Custom CSS
-st.markdown("""
-<style>
-    .main-header {
-        text-align: center;
-        padding: 1rem 0;
-        background: linear-gradient(135deg, #006DAE 0%, #0099DD 100%);
-        color: white;
-        border-radius: 10px;
-        margin-bottom: 2rem;
-    }
-    .info-box {
-        padding: 1rem;
-        background-color: #f0f7ff;
-        border-left: 4px solid #006DAE;
-        border-radius: 5px;
-        margin: 1rem 0;
-    }
-    .warning-box {
-        padding: 1rem;
-        background-color: #fff3cd;
-        border-left: 4px solid #ffc107;
-        border-radius: 5px;
-        margin: 1rem 0;
-    }
-    .success-box {
-        padding: 1rem;
-        background-color: #d4edda;
-        border-left: 4px solid #28a745;
-        border-radius: 5px;
-        margin: 1rem 0;
-    }
-</style>
-""", unsafe_allow_html=True)
+#: UI option labels in display order (user-facing, no internal class names).
+ENGINE_UI_OPTIONS = [label for _, label in ENGINE_OPTIONS]
+_ENGINE_LABEL_TO_KEY = {label: key for key, label in ENGINE_OPTIONS}
+
+_RESULT_STATE_KEYS = (
+    "result_signature",
+    "result_df",
+    "result_coord_df",
+    "result_engine",
+    "result_mode",
+    "result_join",
+    "result_coord_format",
+)
+
+_COORD_SYSTEM_OPTIONS = [
+    "Auto-detect",
+    "0-based (BED)",
+    "1-based (GFF/GTF/VCF)",
+]
+
+_CHR_STYLES = [
+    "UCSC (chr1, chr2, ...)",
+    "Ensembl (1, 2, ...)",
+    "Keep original",
+]
+
+_FEATURE_TYPE_OPTIONS = [
+    "gene", "transcript", "exon", "CDS", "5UTR", "3UTR",
+    "start_codon", "stop_codon",
+]
 
 
-def main():
-    """Main application"""
-    
-    # Header
-    st.markdown(f"""
-    <div class="main-header">
-        <h1>🧬 {Settings.APP_NAME}</h1>
-        <p>{Settings.DESCRIPTION}</p>
-        <small>Version {Settings.VERSION}</small>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    # Sidebar configuration
-    with st.sidebar:
-        st.header("⚙️ Configuration")
-        
-        # Engine Selection (New!)
-        st.subheader("🚀 Processing Engine")
-        engine_choice = st.selectbox(
-            "Annotation Engine",
-            options=["Bedtools (Standard)", "Polars-Bio (Fast, Experimental)"],
-            index=0,
-            help="Bedtools uses pybedtools. Polars-Bio uses a high-performance Rust backend."
-        )
-        
-        # Coordinate system settings
-        st.subheader("📐 Coordinate System")
-        
-        coord_system_option = st.selectbox(
-            "Input coordinates",
-            options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF/VCF)"],
-            help=("For known formats (BED/GFF/GTF/VCF) the coordinate system is "
-                  "fixed by the format specification; for custom files this option "
-                  "declares it (default: 0-based half-open).")
-        )
-        
-        annot_system_option = st.selectbox(
-            "Annotation coordinates",
-            options=["Auto-detect", "0-based (BED)", "1-based (GFF/GTF/VCF)"],
-            help=("For known formats (BED/GFF/GTF/VCF) the coordinate system is "
-                  "fixed by the format specification; for custom files this option "
-                  "declares it (default: 0-based half-open).")
-        )
-        
-        # Chromosome ID handling
-        st.subheader("🧩 Chromosome IDs")
-        
-        chr_handling = st.radio(
-            "Handling strategy",
-            options=["Auto-convert if needed", "Manual specification"],
-            help="Auto-convert will standardize chromosome IDs automatically"
-        )
-        
-        target_chr_style = None
-        if chr_handling == "Manual specification":
-            target_chr_style = st.selectbox(
-                "Target style",
-                options=["UCSC (chr1, chr2, ...)", "Ensembl (1, 2, ...)", "Keep original"],
-                help="Convert all chromosome IDs to this style"
-            )
-        
-        # Annotation mode
-        st.subheader("🎯 Annotation Mode")
-        
-        mode = st.selectbox(
-            "Intersection mode",
-            options=list(Settings.ANNOTATION_MODES.keys()),
-            format_func=lambda x: f"{x.title()}: {Settings.ANNOTATION_MODES[x]['description']}"
-        )
-        
-        # Feature type filter (for GFF/GTF files)
-        st.subheader("🔬 Feature Filter")
-        
-        feature_types = st.multiselect(
-            "Filter by feature type",
-            options=["gene", "transcript", "exon", "CDS", "5UTR", "3UTR", "start_codon", "stop_codon"],
-            default=["gene"],
-            help="Only include these feature types from annotation file (GFF/GTF)"
-        )
-        
-        if not feature_types:
-            st.warning("⚠️ No features selected - all features will be included")
-            
-        # Advanced options
-        with st.expander("🔧 Advanced Options"):
-            use_strand = st.checkbox(
-                "Consider strand information",
-                help="Only match rows where both carry an explicit strand "
-                "(+) or -) and the strands are the same; rows with a "
-                "missing strand never match in this mode. In closest mode "
-                "this is applied BEFORE the nearest selection: a nearer "
-                "opposite-strand (or missing-strand) annotation cannot "
-                "suppress a farther same-strand one."
-            )
-            
-            min_overlap = st.slider(
-                "Minimum overlap fraction",
-                0.0, 1.0, 0.0, 0.1,
-                help="Fraction of coordinate that must overlap (0 = any overlap)"
-            )
-            
-            show_stats = st.checkbox(
-                "Show summary statistics",
-                value=True
-            )
-            
-        settings = {
-            "coord_system": coord_system_option,
-            "annot_system": annot_system_option,
-            "chr_handling": chr_handling,
-            "target_chr_style": target_chr_style,
-            "mode": mode,
-            "feature_types": feature_types,
-            "engine": engine_choice
-        }
-        
-    # Main content area
-    tab1, tab2, tab3 = st.tabs(["📤 Upload & Annotate", "📊 Results", "ℹ️ Help"])
-    
-    with tab1:
-        st.markdown("### 1. Upload Files")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.info("Input Coordinates (BED, VCF, etc.)")
-            coord_file = st.file_uploader("Choose coordinate file", type=["bed", "txt", "tsv", "csv", "vcf"])
-            
-            # Show file info if uploaded
-            if coord_file:
-                st.caption(f"Size: {format_file_size(coord_file.size)}")
-        
-        with col2:
-            st.info("Annotation File (GTF, GFF, BED)")
-            annot_file = st.file_uploader("Choose annotation file", type=["gtf", "gff", "gff3", "bed"])
-            
-            if annot_file:
-                st.caption(f"Size: {format_file_size(annot_file.size)}")
-                
-        # Run annotation button (placeholder for logic below)
-    
-        # Preview files
-        if coord_file or annot_file:
-            with st.expander("👀 Preview Files", expanded=True):
-                preview_col1, preview_col2 = st.columns(2)
-                
-                with preview_col1:
-                    st.markdown("**Coordinate File Preview**")
-                    if coord_file:
-                        try:
-                            # Save and parse coordinate file
-                            coord_path = save_uploaded_file(coord_file)
-                            coord_format = FormatDetector.detect(str(coord_path))
-                            if coord_format == "custom":
-                                # No fixed coordinate columns yet; normalize
-                                # only after explicit column mapping.
-                                coord_df = CustomParser.parse(str(coord_path))
-                            else:
-                                # Canonical 0-based half-open, per the format
-                                # specification; independent of engine choice.
-                                coord_df = parse_and_normalize(
-                                    str(coord_path),
-                                    fmt=coord_format,
-                                    declared_system=_declared_coordinate_system(coord_system_option),
-                                )
-                            st.dataframe(coord_df.head(10), use_container_width=True)
-                            st.caption(f"Format: {coord_format.upper()} | Rows: {len(coord_df):,}")
-                            # Store in session state
-                            st.session_state.coord_df = coord_df
-                            st.session_state.coord_format = coord_format
-                        except Exception as e:
-                            st.error(f"Error parsing file: {str(e)}")
-                    else:
-                        st.info("Waiting for upload...")
-                
-                with preview_col2:
-                    st.markdown("**Annotation File Preview**")
-                    if annot_file:
-                        try:
-                            # Save and parse annotation file
-                            annot_path = save_uploaded_file(annot_file)
-                            annot_format = FormatDetector.detect(str(annot_path))
-                            
-                            if annot_format in ["gff", "gtf", "bed", "vcf"]:
-                                parse_kwargs = (
-                                    {"feature_types": feature_types}
-                                    if annot_format in ["gff", "gtf"]
-                                    else {}
-                                )
-                                annot_df = parse_and_normalize(
-                                    str(annot_path),
-                                    fmt=annot_format,
-                                    declared_system=_declared_coordinate_system(annot_system_option),
-                                    **parse_kwargs,
-                                )
-                            else:
-                                annot_df = CustomParser.parse(str(annot_path))
-                            
-                            st.dataframe(annot_df.head(10), use_container_width=True)
-                            st.caption(f"Format: {annot_format.upper()} | Rows: {len(annot_df):,}")
-                            
-                            # Store in session state
-                            st.session_state.annot_df = annot_df
-                            st.session_state.annot_format = annot_format
-                            
-                        except Exception as e:
-                            st.error(f"Error parsing file: {str(e)}")
-                    else:
-                        st.info("Waiting for upload...")
-        
-        # Column mapping for custom files
-        if 'coord_df' in st.session_state and st.session_state.coord_format == "custom":
-            with st.expander("🗺️ Map Coordinate Columns", expanded=True):
-                coord_df = st.session_state.coord_df
-                suggestions = CustomParser.suggest_columns(coord_df)
-                
-                map_col1, map_col2, map_col3 = st.columns(3)
-                
-                with map_col1:
-                    chr_col = st.selectbox(
-                        "Chromosome column",
-                        options=coord_df.columns.tolist(),
-                        index=list(coord_df.columns).index(suggestions['chr']) if suggestions['chr'] else 0
-                    )
-                
-                with map_col2:
-                    start_col = st.selectbox(
-                        "Start position",
-                        options=coord_df.columns.tolist(),
-                        index=list(coord_df.columns).index(suggestions['start']) if suggestions['start'] else 1
-                    )
-                
-                with map_col3:
-                    end_options = ['None (single positions)'] + coord_df.columns.tolist()
-                    end_col = st.selectbox(
-                        "End position",
-                        options=end_options,
-                        index=(list(coord_df.columns).index(suggestions['end']) + 1) if suggestions['end'] else 0
-                    )
-                
-                # Apply mapping
-                if st.button("Apply Column Mapping"):
-                    end_col_name = None if end_col == 'None (single positions)' else end_col
-                    mapped_df = CustomParser.map_columns(coord_df, chr_col, start_col, end_col_name)
-                    try:
-                        # Normalize the mapped table to canonical 0-based
-                        # half-open using the declared coordinate system
-                        # (default: 0-based).
-                        mapped_df = normalize_intervals(
-                            mapped_df,
-                            coordinate_system=_declared_coordinate_system(coord_system_option) or "0-based",
-                        )
-                    except CanonicalSchemaError as e:
-                        st.error(f"Mapped table is not valid canonical input: {e}")
-                    else:
-                        st.session_state.coord_df = mapped_df
-                        st.success("✅ Column mapping applied!")
-        
-        # Similar mapping for annotation file
-        if 'annot_df' in st.session_state and st.session_state.annot_format == "custom":
-            with st.expander("🗺️ Map Annotation Columns", expanded=True):
-                st.info("Use same process as coordinate file to map annotation columns")
-        
-        # Run annotation
-        st.markdown("---")
-        
-        if st.button("🚀 Run Annotation", type="primary", use_container_width=True):
-            if 'coord_df' not in st.session_state or 'annot_df' not in st.session_state:
-                st.error("Please wait for files to finish parsing")
-            else:
-                run_annotation(
-                    st.session_state.coord_df,
-                    st.session_state.annot_df,
-                    mode,
-                    use_strand,
-                    min_overlap,
-                    show_stats,
-                    chr_handling == "Auto-convert if needed",
-                    target_chr_style,
-                    feature_types,
-                    engine_choice
-                )
-        
-        # Display results from session state if available (for filter persistence)
-        elif 'result_df' in st.session_state:
-            display_results(
-                st.session_state.result_df,
-                st.session_state.result_coord_df,
-                st.session_state.result_annot_df,
-                st.session_state.show_stats
-            )
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(f"""
-    <div style='text-align: center; color: #666; padding: 1rem;'>
-        <p>© 2025 Developed by <strong>Jyotirmoy Das, Ph.D.</strong> & <strong>Massimiliano Volpe, Ph.D.</strong></p>
-        <p>Contact: <a href='mailto:jyotirmoy.das@liu.se'>jyotirmoy.das@liu.se</a> | <a href='mailto:massimiliano.volpe@scilifelab.se'>massimiliano.volpe@scilifelab.se</a></p>
-        <p>Version {Settings.VERSION} | License: GNU GPLv3</p>
-        <p><em>Powered by Streamlit, pybedtools, and bedtools</em></p>
-    </div>
-    """, unsafe_allow_html=True)
-
-
-def run_annotation(
-    coord_df: pd.DataFrame,
-    annot_df: pd.DataFrame,
-    mode: str,
-    use_strand: bool,
-    min_overlap: float,
-    show_stats: bool,
-    auto_convert_chr: bool,
-    target_chr_style: str = None,
-    feature_types: list = None,
-    engine_type: str = None
-):
-    """Execute annotation workflow"""
-    
-    with st.spinner("Processing..."):
-        try:
-            # Step 1: Validate data
-            st.info("🔍 Validating data...")
-            
-            is_valid, error = DataValidator.validate_coordinates(coord_df)
-            if not is_valid:
-                st.error(f"Coordinate validation failed: {error}")
-                return
-            
-            is_valid, error = DataValidator.validate_coordinates(annot_df)
-            if not is_valid:
-                st.error(f"Annotation validation failed: {error}")
-                return
-            
-            # Step 1.5: Filter annotation by feature type
-            if feature_types and 'feature' in annot_df.columns:
-                original_count = len(annot_df)
-                annot_df = annot_df[annot_df['feature'].isin(feature_types)]
-                filtered_count = len(annot_df)
-                st.info(f"🔬 Filtered annotations: {filtered_count:,} features (from {original_count:,})")
-                
-                if filtered_count == 0:
-                    st.warning("⚠️ No annotations match the selected feature types!")
-                    return
-            
-            # Step 2: Check chromosome compatibility
-            st.info("🧩 Checking chromosome IDs...")
-            
-            mapper = ChromosomeMapper()
-            mismatch_info = mapper.find_mismatches(
-                coord_df['chr'].unique().tolist(),
-                annot_df['chr'].unique().tolist()
-            )
-            
-            if not mismatch_info['styles_match']:
-                suggestion = mapper.get_conversion_suggestion(mismatch_info)
-                st.warning(suggestion)
-                
-                if auto_convert_chr and mismatch_info['can_auto_convert']:
-                    # Auto-convert to common style
-                    target_style = "ucsc"
-                    st.info(f"Converting chromosome IDs to {target_style} style...")
-                    
-                    coord_df, _, _ = mapper.standardize_dataframe(coord_df, 'chr', target_style)
-                    annot_df, _, _ = mapper.standardize_dataframe(annot_df, 'chr', target_style)
-                    
-                    st.success("✅ Chromosome IDs standardized!")
-            
-            # Step 3: Annotate
-            st.info(f"🎯 Running {mode} annotation...")
-            
-            # Select engine based on setting (passed as argument or check session/global?)
-            # Ideally pass engine_type to this function
-            
-            if "Polars-Bio" in engine_type:
-                engine = PolarsBioEngine(
-                    use_strand=use_strand,
-                    min_overlap=min_overlap if min_overlap > 0 else None,
-                    mode=mode
-                )
-            else:
-                engine = BedtoolsEngine(
-                    use_strand=use_strand,
-                    min_overlap=min_overlap if min_overlap > 0 else None,
-                    mode=mode
-                )
-            
-            result_df = engine.intersect(coord_df, annot_df, how="left")
-            
-            st.success(f"✅ Annotation complete! Found {len(result_df):,} results.")
-            
-            # Store results in session state for persistence
-            st.session_state.result_df = result_df
-            st.session_state.result_coord_df = coord_df
-            st.session_state.result_annot_df = annot_df
-            st.session_state.show_stats = show_stats
-            
-            # Step 4: Display results
-            display_results(result_df, coord_df, annot_df, show_stats)
-            
-        except Exception as e:
-            st.error(f"❌ Error during annotation: {str(e)}")
-            st.exception(e)
-
-
-def display_results(result_df: pd.DataFrame, coord_df: pd.DataFrame, annot_df: pd.DataFrame, show_stats: bool):
-    """Display annotation results with charts and gene list"""
-    
-    st.markdown("---")
-    st.subheader("📊 Results")
-    
-    if result_df.empty:
-        st.warning("⚠️ No overlapping annotations found!")
-        return
-    
-    # Summary statistics
-    if show_stats:
-        col1, col2, col3, col4 = st.columns(4)
-        
-        # Calculate overlap stats
-        if 'has_overlap' in result_df.columns:
-            overlapping = result_df['has_overlap'].sum()
-            non_overlapping = len(result_df) - overlapping
-        else:
-            overlapping = len(result_df)
-            non_overlapping = 0
-        
-        with col1:
-            st.metric("Total Entries", f"{len(result_df):,}")
-        
-        with col2:
-            st.metric("Overlapping", f"{overlapping:,}", 
-                     help="Coordinates with annotation overlap")
-        
-        with col3:
-            st.metric("Intergenic", f"{non_overlapping:,}",
-                     help="Coordinates without annotation overlap")
-        
-        with col4:
-            annot_rate = (overlapping / len(result_df) * 100) if len(result_df) > 0 else 0
-            st.metric("Overlap Rate", f"{annot_rate:.1f}%")
-    
-    # Feature Distribution Charts (using full data, not filtered)
-    st.markdown("### 📈 Summary Charts")
-    
-    chart_col1, chart_col2 = st.columns(2)
-    
-    with chart_col1:
-        # Feature type distribution pie chart
-            # Harmonize feature column detection for both engines
-            feature_col_candidates = [
-                'annot_feature', 'feature', 'coord_feature_2', 'coord_feature', 'feature_2'
-            ]
-            feature_col = next((col for col in feature_col_candidates if col in result_df.columns), None)
-            if feature_col:
-                valid_features = result_df[result_df[feature_col].astype(str).isin(['-1', '.', 'nan']) == False]
-                if len(valid_features) > 0:
-                    feature_counts = valid_features[feature_col].value_counts()
-                    fig_pie = px.pie(
-                        values=feature_counts.values,
-                        names=feature_counts.index,
-                        title="Feature Type Distribution",
-                        color_discrete_sequence=px.colors.qualitative.Set2
-                    )
-                    fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-                    fig_pie.update_layout(showlegend=True, height=350)
-                    st.plotly_chart(fig_pie, use_container_width=True)
-                else:
-                    st.info("ℹ️ No feature type data available for chart")
-            else:
-                st.info("ℹ️ No feature type data available for chart")
-    
-    with chart_col2:
-        # Chromosome distribution bar chart
-        chr_col_candidates = [
-            'coord_chr', 'chr', 'coord_chrom_1', 'coord_chrom_2', 'chrom', 'chrom_1', 'chrom_2'
-        ]
-        chr_col = next((col for col in chr_col_candidates if col in result_df.columns), None)
-        if chr_col:
-            chr_counts = result_df[chr_col].value_counts().head(15)
-            fig_bar = px.bar(
-                x=chr_counts.index,
-                y=chr_counts.values,
-                title="Annotations per Chromosome (Top 15)",
-                labels={'x': 'Chromosome', 'y': 'Count'},
-                color=chr_counts.values,
-                color_continuous_scale='Blues'
-            )
-            fig_bar.update_layout(showlegend=False, height=350)
-            st.plotly_chart(fig_bar, use_container_width=True)
-    
-    # Gene List Export
-    st.markdown("### 🧬 Gene List Export")
-    
-    # Try to find gene names in the results - prioritize annotation columns
-    gene_col = None
-    # Priority order: annotation gene names > annotation IDs > coordinate names (last resort)
-    possible_gene_cols = [
-        # Annotation gene names (highest priority)
-        'annot_Name', 'annot_gene_name', 'annot_name',
-        # Raw gene names (might exist without prefix)
-        'gene_name', 'Name',
-        # Annotation IDs (less preferred but usable)
-        'annot_gene_id', 'annot_ID', 'gene_id', 'ID',
-        # Generic
-        'gene', 'Gene', 'GENE', 'symbol', 'Symbol',
-        # Coordinate names (lowest priority - these are YOUR region names, not gene names)
-        # 'coord_name' - intentionally excluded to avoid confusion
-    ]
-    
-    for col in possible_gene_cols:
-        if col in result_df.columns:
-            # For annotation columns, also check if they have valid data
-            if col.startswith('annot_'):
-                # Check if this column has non-null values (not all -1 or .)
-                valid_values = result_df[col].dropna()
-                valid_values = valid_values[~valid_values.astype(str).isin(['-1', '.', 'nan', ''])]
-                if len(valid_values) > 0:
-                    gene_col = col
-                    break
-            else:
-                gene_col = col
-                break
-
-    if gene_col and len(result_df) > 0:
-        # Extract unique gene names
-        gene_list = result_df[gene_col].dropna().unique().tolist()
-        # Filter out placeholder values
-        gene_list = [g for g in gene_list if str(g) not in ['-1', '.', 'nan', '']]
-        
-        if gene_list:
-            gene_col1, gene_col2 = st.columns([1, 1])
-            with gene_col1:
-                # Count genes
-                top_genes = result_df[gene_col].value_counts().head(10)
-                
-                fig_top = px.bar(
-                    x=top_genes.values,
-                    y=top_genes.index,
-                    orientation='h',
-                    title="Top 10 (by annotation count)",
-                    labels={'x': 'Count', 'y': 'Gene/Feature'},
-                    color=top_genes.values,
-                    color_continuous_scale='Viridis'
-                )
-                fig_top.update_layout(showlegend=False, height=300, yaxis={'categoryorder':'total ascending'})
-                st.plotly_chart(fig_top, use_container_width=True)
-
-            with gene_col2:
-                st.markdown("**Quick Actions:**")
-                # Gene list as text for copying
-                gene_text = "\n".join(sorted(gene_list))
-                st.download_button(
-                    label="📥 Download Gene List (.txt)",
-                    data=gene_text,
-                    file_name="gene_list.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-                # Comma-separated for pasting
-                gene_csv = ", ".join(sorted(gene_list))
-                st.download_button(
-                    label="📥 Comma-separated (.csv)",
-                    data=gene_csv,
-                    file_name="gene_list.csv",
-                    mime="text/plain",
-                    use_container_width=True,
-                    key="gene_csv"
-                )
-                # Copy to clipboard blocks
-                with st.expander("📋 Copy to clipboard"):
-                    st.caption("One gene per line:")
-                    st.code(gene_text, language="text")
-                    st.caption("Comma-separated:")
-                    st.code(gene_csv, language="text")
-                    st.markdown("---")
-                    st.markdown("**📌 Paste into:**")
-                    st.markdown("• [g:Profiler](https://biit.cs.ut.ee/gprofiler)")
-                    st.markdown("• [Enrichr](https://maayanlab.cloud/Enrichr)")
-                    st.markdown("• [DAVID](https://davidbioinformatics.nih.gov/tools.jsp)")
-                    st.markdown("• [STRING](https://string-db.org)")
-        else:
-            st.info("ℹ️ No valid gene names found in results")
-        st.info("ℹ️ No gene name column found in results. Columns available: " + ", ".join(result_df.columns.tolist()[:10]))
-    
-    # Results table with filter
-    st.markdown("### 📄 Annotated Data")
-    
-    # Filter toggle just above table
-    if 'has_overlap' in result_df.columns:
-        result_filter = st.radio(
-            "Filter:",
-            options=["All", "Overlapping only", "Intergenic only"],
-            horizontal=True,
-            key="result_filter"
-        )
-        
-        # Apply filter to display dataframe
-        if result_filter == "Overlapping only":
-            display_df = result_df[result_df['has_overlap'] == True]
-        elif result_filter == "Intergenic only":
-            display_df = result_df[result_df['has_overlap'] == False]
-        else:
-            display_df = result_df
-        
-        st.caption(f"Showing {len(display_df):,} of {len(result_df):,} entries")
-    else:
-        display_df = result_df
-    
-    st.dataframe(display_df, use_container_width=True, height=400)
-    
-    # Download options (use filtered data)
-    st.markdown("### ⬇️ Download Results")
-    
-    download_col1, download_col2, download_col3 = st.columns(3)
-    
-    with download_col1:
-        csv = display_df.to_csv(index=False)
-        st.download_button(
-            label="📥 Download CSV",
-            data=csv,
-            file_name="annotated_coordinates.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with download_col2:
-        tsv = display_df.to_csv(index=False, sep='\t')
-        st.download_button(
-            label="📥 Download TSV",
-            data=tsv,
-            file_name="annotated_coordinates.tsv",
-            mime="text/tab-separated-values",
-            use_container_width=True
-        )
-    
-    with download_col3:
-        # Excel download requires openpyxl
-        try:
-            from io import BytesIO
-            buffer = BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                display_df.to_excel(writer, index=False, sheet_name='Annotations')
-            
-            st.download_button(
-                label="📥 Download Excel",
-                data=buffer.getvalue(),
-                file_name="annotated_coordinates.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        except ImportError:
-            st.caption("Excel export requires openpyxl")
-    
-    # VCF Download (only if input was VCF)
-    if 'coord_format' in st.session_state and st.session_state.coord_format == 'vcf':
-        st.markdown("### 🧬 VCF Export")
-        st.info("Reconstructed VCF with annotations added to INFO field.")
-        
-        vcf_content = convert_df_to_vcf(display_df)
-        st.download_button(
-            label="📥 Download Annotated VCF",
-            data=vcf_content,
-            file_name="annotated_variants.vcf",
-            mime="application/octet-stream",
-            use_container_width=True,
-            key="download_vcf"
-        )
-
+# ---------------------------------------------------------------------------
+# Small helpers (backend-independent)
+# ---------------------------------------------------------------------------
 
 def _declared_coordinate_system(option: str):
-    """Map a sidebar coordinate-system selector to an explicit system."""
+    """Map a UI coordinate-system selector to an explicit system (or None)."""
     if option.startswith("0-based"):
         return "0-based"
     if option.startswith("1-based"):
         return "1-based"
     return None
 
+
+def _file_identity(uploaded):
+    """Identity of an uploaded file for cache/invalidation purposes."""
+    if uploaded is None:
+        return None
+    return (uploaded.name, uploaded.size)
+
+
+def _target_style_key(option: str):
+    """Map the manual chromosome-style selector to a mapper style key."""
+    if option is None:
+        return None
+    if option.startswith("UCSC"):
+        return "ucsc"
+    if option.startswith("Ensembl"):
+        return "ensembl"
+    return None  # "Keep original"
+
+
+def _clear_results_state():
+    """Explicit invalidation of stored results (Task 7, state safety)."""
+    for key in _RESULT_STATE_KEYS:
+        st.session_state.pop(key, None)
+
+
+def _config_signature(cfg: dict, coord_identity, annot_identity, coord_format):
+    """
+    Signature of every semantics-affecting input of one run.
+
+    Any change — engine, mode, inputs, join-relevant options, min_overlap,
+    strand, coordinate systems, chromosome handling, feature filter, or
+    file/mapping identity — changes the signature, so stored results can
+    never be displayed as if they belonged to the new configuration.
+    """
+    return (
+        cfg["engine"],
+        cfg["mode"],
+        cfg["join"],
+        cfg["use_strand"],
+        cfg["min_overlap"] if cfg["mode"] == "overlap" else None,
+        cfg["coord_system"],
+        cfg["annot_system"],
+        cfg["chr_handling"],
+        cfg["target_chr_style"],
+        tuple(cfg["feature_types"]),
+        coord_identity,
+        annot_identity,
+        coord_format,
+        st.session_state.get("coord_mapping"),
+    )
+
+
+def _min_overlap_for(cfg: dict):
+    """
+    Engine-facing min_overlap value.
+
+    min_overlap is meaningful for the overlap mode only (SPEC 8.2); other
+    modes never receive it, so a stale slider value cannot leak into a
+    contains/within/closest run. ``0`` maps to ``None`` (ordinary positive
+    overlap) per the existing UI/API policy.
+    """
+    value = cfg["min_overlap"]
+    if cfg["mode"] != "overlap" or not value:
+        return None
+    return float(value)
+
+
+# ---------------------------------------------------------------------------
+# Parsing (backend-independent; cached per file identity)
+# ---------------------------------------------------------------------------
+
+def _get_parsed_frame(state_key: str, uploaded, declared_system,
+                      invalidate_mapping: bool = False):
+    """
+    Parse an uploaded file to its (pre-mapping) DataFrame, caching by
+    file identity so unchanged files are not re-parsed on every rerun.
+
+    Returns {"identity", "format", "df"} or None (nothing uploaded, or a
+    parse failure already surfaced as a user-visible error).
+    """
+    if uploaded is None:
+        st.session_state.pop(state_key, None)
+        return None
+
+    identity = _file_identity(uploaded)
+    cached = st.session_state.get(state_key)
+    if isinstance(cached, dict) and cached["identity"] == identity:
+        return cached
+
+    path = save_uploaded_file(uploaded)
+    fmt = FormatDetector.detect(str(path))
+    if fmt == "custom":
+        # No fixed coordinate columns yet; canonical normalization for
+        # custom files happens only after explicit column mapping.
+        try:
+            df = CustomParser.parse(str(path))
+        except Exception as exc:
+            st.error(f"Could not parse the uploaded file `{uploaded.name}`: {exc}")
+            return None
+    else:
+        # Known formats have a specification-fixed coordinate system;
+        # this path is independent of the engine choice.
+        try:
+            df = parse_and_normalize(
+                str(path),
+                fmt=fmt,
+                declared_system=declared_system,
+            )
+        except Exception as exc:
+            st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
+            return None
+
+    info = {"identity": identity, "format": fmt, "df": df}
+    st.session_state[state_key] = info
+    if invalidate_mapping:
+        # A new coordinate file invalidates any previously applied
+        # column mapping.
+        st.session_state.pop("coord_mapping", None)
+        st.session_state.pop("coord_mapped_df", None)
+    return info
+
+
+def _resolve_coord_frame(coord_info, cfg):
+    """
+    The canonical query frame: parsed frame for known formats, or the
+    explicitly mapped + normalized frame for custom files (None when no
+    valid mapping has been applied yet).
+    """
+    if coord_info is None:
+        return None
+    if coord_info["format"] != "custom":
+        return coord_info["df"]
+    mapping = st.session_state.get("coord_mapping")
+    if not mapping:
+        return None
+    # If the declared coordinate system changed after the mapping was
+    # applied, the mapped frame is stale: require an explicit re-map.
+    current_system = _declared_coordinate_system(cfg["coord_system"]) or "0-based"
+    if mapping[3] != current_system:
+        st.session_state.pop("coord_mapping", None)
+        st.session_state.pop("coord_mapped_df", None)
+        return None
+    return st.session_state.get("coord_mapped_df")
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: configuration (grouped, backend choice isolated)
+# ---------------------------------------------------------------------------
+
+def render_sidebar() -> dict:
+    with st.sidebar:
+        st.header("Configure")
+
+        # --- Engine ------------------------------------------------
+        engine_label_sel = st.radio(
+            "Annotation engine",
+            ENGINE_UI_OPTIONS,
+            index=ENGINE_UI_OPTIONS.index(engine_label(DEFAULT_ENGINE)),
+            key="engine",
+            help=(
+                "Execution backend for the interval operation. Both engines "
+                "produce contractually equivalent results; only the "
+                "backend changes."
+            ),
+        )
+        st.caption(
+            "**Bedtools** — reference implementation (external binary). "
+            "**Polars-Bio** — in-process implementation "
+            "(no external binary required)."
+        )
+        engine_key = _ENGINE_LABEL_TO_KEY[engine_label_sel]
+        if not engine_available(engine_key):
+            st.warning(unavailable_message(engine_key))
+
+        st.divider()
+
+        # --- Input interpretation -----------------------------------
+        st.subheader("Input coordinates")
+        coord_system = st.selectbox(
+            "Query coordinates",
+            _COORD_SYSTEM_OPTIONS,
+            key="coord_system",
+            help=(
+                "For known formats (BED/GFF/GTF/VCF) the coordinate system "
+                "is fixed by the format specification; for custom files this "
+                "declares it (default: 0-based half-open)."
+            ),
+        )
+        annot_system = st.selectbox(
+            "Annotation coordinates",
+            _COORD_SYSTEM_OPTIONS,
+            key="annot_system",
+            help=(
+                "For known formats (BED/GFF/GTF/VCF) the coordinate system "
+                "is fixed by the format specification; for custom files this "
+                "declares it (default: 0-based half-open)."
+            ),
+        )
+        chr_handling = st.radio(
+            "Chromosome ID handling",
+            ["Auto-convert if needed", "Manual specification"],
+            key="chr_handling",
+            help=(
+                "Auto-convert standardizes chromosome IDs when the two "
+                "files use different naming styles."
+            ),
+        )
+        target_chr_style = None
+        if chr_handling == "Manual specification":
+            target_chr_style = st.selectbox(
+                "Target style",
+                _CHR_STYLES,
+                key="target_chr_style",
+                help="Convert both files' chromosome IDs to this style",
+            )
+
+        st.divider()
+
+        # --- Operation ---------------------------------------------
+        st.subheader("Operation")
+        mode = st.selectbox(
+            "Mode",
+            list(Settings.ANNOTATION_MODES.keys()),
+            format_func=lambda m: m.title(),
+            key="mode",
+            help="Interval relation between query and annotation",
+        )
+        st.caption(Settings.ANNOTATION_MODES[mode]["description"])
+        if mode == "closest":
+            st.caption(
+                "Distance is the number of bases between intervals; "
+                "overlapping or touching intervals have distance 0, and "
+                "if several annotations tie for the nearest, all of them "
+                "are returned."
+            )
+
+        join = st.radio(
+            "Join behavior",
+            ["Keep all query rows (left join)", "Matched rows only (inner join)"],
+            key="join",
+            help=(
+                "Left keeps every query row (unmatched rows carry canonical "
+                "missing annotation values); inner keeps only rows with a "
+                "qualifying annotation."
+            ),
+        )
+        join = "left" if join.startswith("Keep all") else "inner"
+
+        use_strand = st.checkbox(
+            "Require query and annotation to have the same explicit strand",
+            key="use_strand",
+            help=(
+                "Only pairs where both rows carry an explicit strand (+ or -) "
+                "and the strands are equal qualify. Missing strand values do "
+                "not act as wildcards. Applies to all operation modes."
+            ),
+        )
+
+        if mode == "overlap":
+            min_overlap = st.slider(
+                "Minimum overlap fraction",
+                0.0,
+                1.0,
+                0.0,
+                0.1,
+                key="min_overlap",
+                help=(
+                    "Minimum fraction of each query interval that must "
+                    "overlap a single annotation interval. 0 = any positive "
+                    "overlap. Applies to the overlap mode only."
+                ),
+            )
+        else:
+            min_overlap = None
+            st.caption("Minimum overlap fraction applies to the overlap mode only.")
+
+        st.divider()
+
+        # --- Feature filter (GFF/GTF) -------------------------------
+        st.subheader("Feature filter")
+        feature_types = st.multiselect(
+            "Filter by feature type",
+            _FEATURE_TYPE_OPTIONS,
+            default=["gene"],
+            key="feature_types",
+            help=(
+                "Only include these feature types from the annotation file "
+                "(GFF/GTF). Leave empty to include all features."
+            ),
+        )
+        if not feature_types:
+            st.caption("No feature types selected — all features will be included.")
+
+    return {
+        "engine": engine_key,
+        "coord_system": coord_system,
+        "annot_system": annot_system,
+        "chr_handling": chr_handling,
+        "target_chr_style": target_chr_style,
+        "mode": mode,
+        "join": join,
+        "use_strand": use_strand,
+        "min_overlap": min_overlap,
+        "feature_types": list(feature_types),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Main column: upload, run, results
+# ---------------------------------------------------------------------------
+
+def render_upload_section(cfg: dict):
+    st.header("1. Upload")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Query coordinates**")
+        coord_file = st.file_uploader(
+            "Choose coordinate file",
+            type=["bed", "txt", "tsv", "csv", "vcf"],
+            key="coord_file",
+        )
+        if coord_file:
+            st.caption(f"{coord_file.name} · {format_file_size(coord_file.size)}")
+
+    with col2:
+        st.markdown("**Annotation features**")
+        annot_file = st.file_uploader(
+            "Choose annotation file",
+            type=["gtf", "gff", "gff3", "bed", "txt", "tsv", "csv"],
+            key="annot_file",
+        )
+        if annot_file:
+            st.caption(f"{annot_file.name} · {format_file_size(annot_file.size)}")
+
+    # Parse (or reuse the cached parse) — independent of the engine.
+    coord_info = _get_parsed_frame(
+        "coord_parse", coord_file,
+        _declared_coordinate_system(cfg["coord_system"]),
+        invalidate_mapping=True,
+    )
+    annot_info = _get_parsed_frame(
+        "annot_parse", annot_file,
+        _declared_coordinate_system(cfg["annot_system"]),
+    )
+
+    # Previews (backend-independent by construction).
+    if coord_info or annot_info:
+        pv1, pv2 = st.columns(2)
+
+        with pv1:
+            st.markdown("**Coordinate preview**")
+            if coord_info:
+                st.dataframe(coord_info["df"].head(10), height=220)
+                if coord_info["format"] == "custom":
+                    st.caption("Custom format — map the columns below before running.")
+                else:
+                    st.caption(
+                        f"Format: {coord_info['format'].upper()} | "
+                        f"Rows: {len(coord_info['df']):,} (canonical 0-based half-open)"
+                    )
+            else:
+                st.info("Waiting for upload...")
+
+        with pv2:
+            st.markdown("**Annotation preview**")
+            if annot_info:
+                st.dataframe(annot_info["df"].head(10), height=220)
+                if annot_info["format"] == "custom":
+                    st.caption(
+                        "Custom format — the file must contain `chr`/`start`/`end` "
+                        "columns (0-based half-open) to be usable."
+                    )
+                else:
+                    st.caption(
+                        f"Format: {annot_info['format'].upper()} | "
+                        f"Rows: {len(annot_info['df']):,} (canonical 0-based half-open)"
+                    )
+            else:
+                st.info("Waiting for upload...")
+
+    # Resolve the canonical query frame first: this also clears a mapping
+    # that became stale because the declared coordinate system changed.
+    coord_df = _resolve_coord_frame(coord_info, cfg)
+
+    # Column mapping for custom coordinate files (shown until a mapping
+    # has been applied; a stale mapping is cleared in _resolve_coord_frame).
+    if (
+        coord_info
+        and coord_info["format"] == "custom"
+        and not st.session_state.get("coord_mapping")
+    ):
+        with st.expander("Map coordinate columns", expanded=True):
+            _render_coord_mapping_ui(coord_info, cfg)
+
+    return coord_info, annot_info, coord_df
+
+
+def _render_coord_mapping_ui(coord_info, cfg):
+    coord_df = coord_info["df"]
+    suggestions = CustomParser.suggest_columns(coord_df)
+    columns = coord_df.columns.tolist()
+
+    map_col1, map_col2, map_col3 = st.columns(3)
+
+    with map_col1:
+        chr_col = st.selectbox(
+            "Chromosome column",
+            columns,
+            index=columns.index(suggestions["chr"]) if suggestions["chr"] in columns else 0,
+            key="map_chr_col",
+        )
+    with map_col2:
+        start_col = st.selectbox(
+            "Start position",
+            columns,
+            index=columns.index(suggestions["start"]) if suggestions["start"] in columns else min(1, len(columns) - 1),
+            key="map_start_col",
+        )
+    with map_col3:
+        end_options = ["None (single positions)"] + columns
+        end_index = 0
+        if suggestions["end"] in columns:
+            end_index = columns.index(suggestions["end"]) + 1
+        end_col = st.selectbox(
+            "End position",
+            end_options,
+            index=end_index,
+            key="map_end_col",
+        )
+
+    if st.button("Apply column mapping", key="apply_mapping"):
+        end_col_name = None if end_col == "None (single positions)" else end_col
+        system = _declared_coordinate_system(cfg["coord_system"]) or "0-based"
+        try:
+            mapped_df = CustomParser.map_columns(
+                coord_df, chr_col, start_col, end_col_name
+            )
+            # Single positions without an end column: end = start + 1,
+            # so the interval covers the position itself.
+            if end_col_name is None:
+                mapped_df["end"] = mapped_df["start"] + 1
+            mapped_df = normalize_intervals(mapped_df, coordinate_system=system)
+        except (CanonicalSchemaError, ValueError, KeyError) as exc:
+            st.error(f"Column mapping failed: {exc}")
+        else:
+            st.session_state["coord_mapping"] = (chr_col, start_col, end_col_name, system)
+            st.session_state["coord_mapped_df"] = mapped_df
+            st.success(
+                "Column mapping applied — the canonical preview below reflects "
+                "the mapped table."
+            )
+            st.dataframe(mapped_df.head(10), height=220)
+
+
+def run_annotation(cfg: dict, coord_df, annot_info, signature):
+    """Execute the annotation workflow for the current configuration."""
+    if coord_df is None:
+        st.error(
+            "No usable query table: upload a coordinate file, and if it is in "
+            "a custom format, apply the column mapping first."
+        )
+        return
+    if annot_info is None:
+        st.error("Upload an annotation file first.")
+        return
+    annot_df = annot_info["df"]
+    annot_format = annot_info["format"]
+
+    # --- Validation (invalid user configuration, not a backend error) ---
+    is_valid, error = DataValidator.validate_coordinates(coord_df)
+    if not is_valid:
+        st.error(f"Query coordinate file is not valid: {error}")
+        return
+    is_valid, error = DataValidator.validate_coordinates(annot_df)
+    if not is_valid:
+        st.error(f"Annotation file is not valid: {error}")
+        return
+
+    # --- Feature filter (GFF/GTF only) ---
+    if (
+        annot_format in ("gff", "gtf")
+        and cfg["feature_types"]
+        and "feature" in annot_df.columns
+    ):
+        original_count = len(annot_df)
+        annot_df = annot_df[annot_df["feature"].isin(cfg["feature_types"])].copy()
+        if len(annot_df) == 0:
+            st.warning(
+                f"No annotations match the selected feature types "
+                f"(filtered {original_count:,} features). Adjust the feature "
+                f"filter and run again."
+            )
+            return
+        st.caption(
+            f"Using {len(annot_df):,} of {original_count:,} annotation "
+            f"features (feature filter)."
+        )
+
+    # --- Chromosome ID compatibility ---
+    mapper = ChromosomeMapper()
+    mismatch_info = mapper.find_mismatches(
+        coord_df["chr"].unique().tolist(),
+        annot_df["chr"].unique().tolist(),
+    )
+    if not mismatch_info["styles_match"]:
+        suggestion = mapper.get_conversion_suggestion(mismatch_info)
+        if cfg["chr_handling"] == "Auto-convert if needed":
+            if mismatch_info["can_auto_convert"]:
+                target_style = "ucsc"
+                st.info(f"Standardizing chromosome IDs to {target_style} style...")
+                coord_df, _, _ = mapper.standardize_dataframe(coord_df, "chr", target_style)
+                annot_df, _, _ = mapper.standardize_dataframe(annot_df, "chr", target_style)
+                st.caption("Chromosome IDs standardized.")
+            else:
+                st.warning(suggestion)
+        else:
+            target = _target_style_key(cfg["target_chr_style"])
+            if target:
+                st.info(
+                    f"Standardizing chromosome IDs to {target} style "
+                    "(manual specification)..."
+                )
+                coord_df, _, _ = mapper.standardize_dataframe(coord_df, "chr", target)
+                annot_df, _, _ = mapper.standardize_dataframe(annot_df, "chr", target)
+            else:
+                st.warning(
+                    "Chromosome ID styles differ and 'Keep original' is selected; "
+                    "rows on differently-named chromosomes will not match."
+                )
+
+    # --- Engine selection (execution only; explicit failure, no fallback) ---
+    try:
+        engine = build_engine(
+            cfg["engine"],
+            mode=cfg["mode"],
+            use_strand=cfg["use_strand"],
+            min_overlap=_min_overlap_for(cfg),
+        )
+    except EngineUnavailableError as exc:
+        st.error(str(exc))
+        return
+    except ValueError as exc:
+        st.error(f"Invalid option: {exc}")
+        return
+    label = engine_label(cfg["engine"])
+
+    # --- Execution ---
+    try:
+        with st.spinner(f"Running {cfg['mode']} annotation with {label}..."):
+            raw_result = engine.intersect(coord_df, annot_df, how=cfg["join"])
+        # The canonical result contract is the UI/export boundary: both
+        # backends must pass the same adapter, so the engine choice can
+        # never change the result schema, missing-value representation,
+        # or exported content (Task 7 §6, SPEC 6).
+        result_df = canonicalize_annotation_result(
+            raw_result,
+            coord_df,
+            annot_df,
+            extra_columns=("distance",) if cfg["mode"] == "closest" else (),
+        )
+    except Exception as exc:
+        # Backend execution failure: log the full traceback for developers,
+        # show a concise, labeled error to the user (SPEC 9.2).
+        logger.exception(
+            "%s backend failed during %s annotation (%s join)",
+            label, cfg["mode"], cfg["join"],
+        )
+        st.error(
+            f"{label} failed during {cfg['mode']} annotation "
+            f"({cfg['join']} join): {exc}"
+        )
+        return
+
+    # --- Store results with the configuration signature ---
+    st.session_state.update(
+        {
+            "result_signature": signature,
+            "result_df": result_df,
+            "result_coord_df": coord_df,
+            "result_engine": label,
+            "result_mode": cfg["mode"],
+            "result_join": cfg["join"],
+            "result_coord_format": _coord_format_of(cfg),
+        }
+    )
+
+
+def _coord_format_of(cfg: dict):
+    """Format of the currently parsed coordinate file (for VCF export)."""
+    info = st.session_state.get("coord_parse")
+    return info["format"] if isinstance(info, dict) else None
+
+
+def render_results_section(cfg: dict, coord_identity, annot_identity, coord_format):
+    st.header("3. Results")
+
+    signature = _config_signature(cfg, coord_identity, annot_identity, coord_format)
+    stored_signature = st.session_state.get("result_signature")
+
+    # State safety: any change to engine/options/inputs invalidates stored
+    # results explicitly — a stale result is never displayed as if it
+    # belonged to the current configuration.
+    if stored_signature is None or stored_signature != signature:
+        _clear_results_state()
+        st.info(
+            "No results yet. Upload both files, configure the operation, "
+            "and run the annotation."
+        )
+        return
+
+    result_df = st.session_state["result_df"]
+    coord_df = st.session_state["result_coord_df"]
+    engine_name = st.session_state["result_engine"]
+    mode = st.session_state["result_mode"]
+    coord_format = st.session_state["result_coord_format"]
+
+    if result_df.empty:
+        how = st.session_state.get("result_join", "left")
+        if how == "left":
+            st.info(
+                "No results to display — the query table contained no "
+                "intervals."
+            )
+        else:
+            st.info(
+                "No qualifying annotations were found for the selected "
+                "operation and options (inner join keeps matched rows "
+                "only)."
+            )
+        return
+
+    # Valid zero-match state: information, NOT an error.
+    if not result_df["has_overlap"].any():
+        st.info(
+            "No qualifying annotations were found for the selected operation "
+            "and options."
+        )
+
+    _render_summary_metrics(result_df, coord_df, engine_name, mode)
+
+    # Display filter (cosmetic only; canonical data is never mutated).
+    if "has_overlap" in result_df.columns:
+        result_filter = st.radio(
+            "Show",
+            ["All", "Matched only", "Unmatched only"],
+            horizontal=True,
+            key="result_filter",
+        )
+        if result_filter == "Matched only":
+            display_df = result_df[result_df["has_overlap"] == True]  # noqa: E712
+        elif result_filter == "Unmatched only":
+            display_df = result_df[result_df["has_overlap"] == False]  # noqa: E712
+        else:
+            display_df = result_df
+        st.caption(f"Showing {len(display_df):,} of {len(result_df):,} rows")
+    else:
+        display_df = result_df
+
+    st.dataframe(display_df, height=400)
+
+    _render_downloads(display_df, coord_format)
+
+    with st.expander("Charts and gene list"):
+        _render_charts_and_gene_list(display_df)
+
+
+def _render_summary_metrics(result_df, coord_df, engine_name, mode):
+    matched = int(result_df["has_overlap"].sum())
+    unmatched = len(result_df) - matched
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Query rows", f"{len(coord_df):,}")
+    m2.metric("Result rows", f"{len(result_df):,}")
+    m3.metric(
+        "Matched rows",
+        f"{matched:,}",
+        help="Result rows with an attached annotation (has_overlap = true)",
+    )
+    m4.metric(
+        "Unmatched rows",
+        f"{unmatched:,}",
+        help="Query rows kept by the left join without a qualifying annotation",
+    )
+
+    e1, e2, e3 = st.columns(3)
+    e1.metric("Engine", engine_name)
+    e2.metric("Operation", mode)
+    if mode == "closest":
+        e3.metric(
+            "Distance column present",
+            "Yes" if "distance" in result_df.columns else "No",
+            help="closest mode adds the canonical distance column",
+        )
+
+
+def _render_downloads(display_df, coord_format):
+    st.subheader("Download")
+    st.caption(
+        "Exports the rows currently shown above (use the display filter to "
+        "narrow the export)."
+    )
+
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        st.download_button(
+            "Download CSV",
+            data=display_df.to_csv(index=False),
+            file_name="annotated_coordinates.csv",
+            mime="text/csv",
+        )
+    with d2:
+        st.download_button(
+            "Download TSV",
+            data=display_df.to_csv(index=False, sep="\t"),
+            file_name="annotated_coordinates.tsv",
+            mime="text/tab-separated-values",
+        )
+    with d3:
+        try:
+            from io import BytesIO
+
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                display_df.to_excel(writer, index=False, sheet_name="Annotations")
+            st.download_button(
+                "Download Excel",
+                data=buffer.getvalue(),
+                file_name="annotated_coordinates.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        except ImportError:
+            st.caption("Excel export requires openpyxl")
+
+    if coord_format == "vcf":
+        st.info(
+            "Reconstructed VCF with annotations added to the INFO field. "
+            "Shown only when the coordinate input is VCF."
+        )
+        st.download_button(
+            "Download annotated VCF",
+            data=convert_df_to_vcf(display_df),
+            file_name="annotated_variants.vcf",
+            mime="application/octet-stream",
+            key="download_vcf",
+        )
+
+
+def _find_gene_column(df: pd.DataFrame):
+    """Best-effort gene/feature name column in canonical results."""
+    possible_gene_cols = [
+        "annot_Name", "annot_gene_name", "annot_name",
+        "gene_name", "Name",
+        "annot_gene_id", "annot_ID", "gene_id", "ID",
+        "gene", "Gene", "GENE", "symbol", "Symbol",
+    ]
+    for col in possible_gene_cols:
+        if col in df.columns:
+            if col.startswith("annot_"):
+                valid = df[col].dropna()
+                valid = valid[~valid.astype(str).isin(["-1", ".", "nan", ""])]
+                if len(valid) > 0:
+                    return col
+            else:
+                return col
+    return None
+
+
+def _render_charts_and_gene_list(df):
+    chart_col1, chart_col2 = st.columns(2)
+
+    with chart_col1:
+        feature_col = next(
+            (
+                c
+                for c in ("annot_feature", "feature", "coord_feature")
+                if c in df.columns
+            ),
+            None,
+        )
+        if feature_col:
+            valid = df[
+                ~df[feature_col].astype(str).isin(["-1", ".", "nan"])
+            ]
+            if len(valid) > 0:
+                counts = valid[feature_col].value_counts()
+                fig = px.pie(
+                    values=counts.values,
+                    names=counts.index,
+                    title="Feature type distribution",
+                    color_discrete_sequence=px.colors.qualitative.Set2,
+                )
+                fig.update_traces(textposition="inside", textinfo="percent+label")
+                fig.update_layout(showlegend=True, height=350)
+                st.plotly_chart(fig)
+            else:
+                st.info("No feature type data available for the chart.")
+        else:
+            st.info("No feature type data available for the chart.")
+
+    with chart_col2:
+        chr_col = next(
+            (
+                c
+                for c in (
+                    "coord_chr", "chr", "chrom",
+                    "coord_chrom_1", "coord_chrom_2", "chrom_1", "chrom_2",
+                )
+                if c in df.columns
+            ),
+            None,
+        )
+        if chr_col:
+            chr_counts = df[chr_col].value_counts().head(15)
+            fig = px.bar(
+                x=chr_counts.index,
+                y=chr_counts.values,
+                title="Annotations per chromosome (top 15)",
+                labels={"x": "Chromosome", "y": "Count"},
+                color=chr_counts.values,
+                color_continuous_scale="Blues",
+            )
+            fig.update_layout(showlegend=False, height=350)
+            st.plotly_chart(fig)
+        else:
+            st.info("No chromosome data available for the chart.")
+
+    # --- Gene list ---
+    gene_col = _find_gene_column(df)
+    if gene_col is None:
+        st.info("No gene/feature name column found in the results.")
+        return
+
+    gene_list = [
+        g
+        for g in df[gene_col].dropna().unique().tolist()
+        if str(g) not in ["-1", ".", "nan", ""]
+    ]
+    if not gene_list:
+        st.info("No valid gene names found in the results.")
+        return
+
+    gene_col1, gene_col2 = st.columns(2)
+    with gene_col1:
+        top = df[gene_col].value_counts().head(10)
+        fig = px.bar(
+            x=top.values,
+            y=top.index,
+            orientation="h",
+            title="Top 10 genes (by annotation count)",
+            labels={"x": "Count", "y": "Gene/feature"},
+            color=top.values,
+            color_continuous_scale="Viridis",
+        )
+        fig.update_layout(
+            showlegend=False,
+            height=300,
+            yaxis={"categoryorder": "total ascending"},
+        )
+        st.plotly_chart(fig)
+
+    with gene_col2:
+        st.markdown("**Gene list actions**")
+        gene_text = "\n".join(sorted(gene_list))
+        gene_csv = ", ".join(sorted(gene_list))
+        st.download_button(
+            "Download gene list (.txt)",
+            data=gene_text,
+            file_name="gene_list.txt",
+            mime="text/plain",
+            key="gene_txt",
+        )
+        st.download_button(
+            "Download gene list (comma-separated)",
+            data=gene_csv,
+            file_name="gene_list.csv",
+            mime="text/csv",
+            key="gene_csv",
+        )
+        with st.expander("Copy to clipboard"):
+            st.caption("One gene per line:")
+            st.code(gene_text, language="text")
+            st.caption("Comma-separated:")
+            st.code(gene_csv, language="text")
+            st.markdown(
+                "Paste into [g:Profiler](https://biit.cs.ut.ee/gprofiler), "
+                "[Enrichr](https://maayanlab.cloud/Enrichr), "
+                "[DAVID](https://davidbioinformatics.nih.gov/tools.jsp), or "
+                "[STRING](https://string-db.org)."
+            )
+
+
+# ---------------------------------------------------------------------------
+# VCF export (unchanged canonical semantics; kept at module level)
+# ---------------------------------------------------------------------------
 
 def _vcf_field(value) -> str:
     """
@@ -772,7 +1013,7 @@ def _vcf_field(value) -> str:
     Prevents ``"<NA>"``/``"nan"`` sentinels from leaking into exports.
     """
     if pd.api.types.is_scalar(value) and pd.isna(value):
-        return '.'
+        return "."
     return str(value)
 
 
@@ -786,69 +1027,73 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         "##source=AnnotatorApp",
         f"##date={pd.Timestamp.now().strftime('%Y%m%d')}",
         "##INFO=<ID=ANNOT,Number=.,Type=String,Description=\"Annotations added by AnnotatorApp formatted as Key=Value\">",
-        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO"
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
     ]
-    
+
     # Map internal columns to VCF standard columns
     # Canonical start is 0-based and equals POS - 1, so POS = coord_start + 1.
     # (Using coord_end would be wrong for multi-base variants.)
-    
+
     res = df.copy()
-    
+
     # Ensure required columns exist, fill with '.' if missing
     required_map = {
-        'coord_chr': 'CHROM',
-        'coord_start': 'POS',
-        'coord_id': 'ID',
-        'coord_ref': 'REF',
-        'coord_alt': 'ALT',
-        'coord_qual': 'QUAL',
-        'coord_filter': 'FILTER'
+        "coord_chr": "CHROM",
+        "coord_start": "POS",
+        "coord_id": "ID",
+        "coord_ref": "REF",
+        "coord_alt": "ALT",
+        "coord_qual": "QUAL",
+        "coord_filter": "FILTER",
     }
-    
+
     # Check which columns we actually have
     available_map = {}
     for int_col, vcf_col in required_map.items():
         if int_col in df.columns:
             available_map[int_col] = vcf_col
         # Special handling if coord_ prefix is missing
-        elif int_col.replace('coord_', '') in df.columns:
-             available_map[int_col.replace('coord_', '')] = vcf_col
-    
+        elif int_col.replace("coord_", "") in df.columns:
+            available_map[int_col.replace("coord_", "")] = vcf_col
+
     if not available_map:
         return "##Error: Could not reconstruct VCF. Missing coordinate columns."
 
     # Identify annotation columns for INFO field
-    annot_cols = [c for c in df.columns if c.startswith('annot_') and c not in ['annot_chr', 'annot_start', 'annot_end', 'has_overlap']]
-    
+    annot_cols = [
+        c
+        for c in df.columns
+        if c.startswith("annot_") and c not in ["annot_chr", "annot_start", "annot_end", "has_overlap"]
+    ]
+
     vcf_rows = []
-    
+
     for _, row in res.iterrows():
         # Build standard fields
         fields = []
-        fields.append(_vcf_field(row.get('coord_chr', row.get('chr', '.'))))
-        
+        fields.append(_vcf_field(row.get("coord_chr", row.get("chr", "."))))
+
         # POS: reconstruct the 1-based VCF position from the canonical start
         # (POS = coord_start + 1)
-        pos_value = row.get('coord_start', row.get('start', '.'))
+        pos_value = row.get("coord_start", row.get("start", "."))
         try:
             fields.append(str(int(pos_value) + 1))
         except (TypeError, ValueError):
-            fields.append('.')
-        
+            fields.append(".")
+
         # ID/REF/ALT: canonical missing must export as '.', never '<NA>'.
-        fields.append(_vcf_field(row.get('coord_id', row.get('id', '.'))))
-        fields.append(_vcf_field(row.get('coord_ref', row.get('ref', '.'))))
-        fields.append(_vcf_field(row.get('coord_alt', row.get('alt', '.'))))
+        fields.append(_vcf_field(row.get("coord_id", row.get("id", "."))))
+        fields.append(_vcf_field(row.get("coord_ref", row.get("ref", "."))))
+        fields.append(_vcf_field(row.get("coord_alt", row.get("alt", "."))))
         # QUAL/FILTER: canonical missing (e.g. VCF FILTER "." = filters not
         # applied) must be exported as the VCF MISSING value, not as a
         # rendered "<NA>"/"nan" token.
-        fields.append(_vcf_field(row.get('coord_qual', row.get('qual', '.'))))
-        fields.append(_vcf_field(row.get('coord_filter', row.get('filter', '.'))))
-        
+        fields.append(_vcf_field(row.get("coord_qual", row.get("qual", "."))))
+        fields.append(_vcf_field(row.get("coord_filter", row.get("filter", "."))))
+
         # Build INFO field
         info_parts = []
-        
+
         # Add annotations
         annot_parts = []
         for col in annot_cols:
@@ -858,22 +1103,67 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
             if pd.api.types.is_scalar(raw_val) and pd.isna(raw_val):
                 continue
             val = str(raw_val)
-            if val and val not in ['.', 'nan', '-1', 'None', '<NA>']:
-                key = col.replace('annot_', '')
+            if val and val not in [".", "nan", "-1", "None", "<NA>"]:
+                key = col.replace("annot_", "")
                 # Clean value for VCF compatibility
-                clean_val = val.replace(';', '|').replace(' ', '_').replace('=', ':')
+                clean_val = val.replace(";", "|").replace(" ", "_").replace("=", ":")
                 annot_parts.append(f"{key}={clean_val}")
-        
+
         if annot_parts:
             info_parts.append(";".join(annot_parts))
         else:
             info_parts.append(".")
-            
+
         fields.append(";".join(info_parts))
-        
+
         vcf_rows.append("\t".join(fields))
-        
+
     return "\n".join(lines + vcf_rows)
+
+
+# ---------------------------------------------------------------------------
+# Page assembly
+# ---------------------------------------------------------------------------
+
+def main():
+    st.title(Settings.APP_NAME)
+    st.caption(
+        "Annotate genomic coordinates against a feature set. Bedtools and "
+        "Polars-Bio are interchangeable execution backends: the same input "
+        "and options produce the same canonical result."
+    )
+
+    cfg = render_sidebar()
+
+    coord_info, annot_info, coord_df = render_upload_section(cfg)
+    coord_format = coord_info["format"] if coord_info else None
+    signature = _config_signature(
+        cfg,
+        coord_info["identity"] if coord_info else None,
+        annot_info["identity"] if annot_info else None,
+        coord_format,
+    )
+
+    st.header("2. Run annotation")
+    if st.button("Run annotation", type="primary", key="run_button"):
+        run_annotation(cfg, coord_df, annot_info, signature)
+
+    render_results_section(cfg, coord_info["identity"] if coord_info else None,
+                           annot_info["identity"] if annot_info else None, coord_format)
+
+    st.divider()
+    st.markdown(
+        "<div style='text-align:center;color:#666;'>"
+        "Developed by <strong>Jyotirmoy Das, Ph.D.</strong> & "
+        "<strong>Massimiliano Volpe, Ph.D.</strong><br/>"
+        "Contact: "
+        "<a href='mailto:jyotirmoy.das@liu.se'>jyotirmoy.das@liu.se</a> | "
+        "<a href='mailto:massimiliano.volpe@scilifelab.se'>massimiliano.volpe@scilifelab.se</a><br/>"
+        f"Version {Settings.VERSION} | License: GNU GPLv3 | "
+        "Powered by Streamlit, with Bedtools and Polars-Bio backends"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

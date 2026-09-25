@@ -14,8 +14,14 @@ import tempfile
 import numpy as np
 import pandas as pd
 import polars as pl
-import polars_bio as pb
 import pybedtools
+
+# NOTE (Task 7): ``polars_bio`` is imported lazily inside
+# ``PolarsBioEngine._overlap`` (not at module level) so that the package
+# — and therefore the Bedtools backend — remains importable in
+# environments where polars-bio is not installed. Backend availability is
+# surfaced by the UI (engine registry) as an explicit, actionable error;
+# there is no silent fallback.
 from .schema import (
     CANONICAL_MISSING,
     HAS_OVERLAP_COLUMN,
@@ -1223,6 +1229,14 @@ class PolarsBioEngine(AnnotationEngine):
     # ------------------------------------------------------------------
 
     def _overlap(self, coord_df: pd.DataFrame, annot_df: pd.DataFrame, how: str) -> pd.DataFrame:
+        # Lazy import: see module-level note (Task 7). polars-bio extends
+        # polars.DataFrame (e.g. ``config_meta``) on import, so this must
+        # happen before any backend frame is prepared. An ImportError
+        # here propagates as a backend initialization failure (SPEC 9.2
+        # explicit error path); the UI normally pre-blocks unavailable
+        # backends via the engine registry.
+        import polars_bio as pb
+
         q_meta = self._metadata_columns(coord_df)
         a_meta = self._metadata_columns(annot_df)
         q_id = self._row_id_column(coord_df.columns, _PB_QUERY_ROW_ID)
