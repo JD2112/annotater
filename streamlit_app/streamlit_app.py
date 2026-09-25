@@ -844,7 +844,10 @@ def _render_downloads(display_df, coord_format):
             st.caption("Excel export requires openpyxl")
 
     if coord_format == "vcf":
-        st.info("Reconstructed VCF with annotations added to the INFO field.")
+        st.info(
+            "Reconstructed VCF with annotations added to the INFO field. "
+            "Shown only when the coordinate input is VCF."
+        )
         st.download_button(
             "Download annotated VCF",
             data=convert_df_to_vcf(display_df),
