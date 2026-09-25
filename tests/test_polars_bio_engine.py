@@ -125,9 +125,11 @@ def test_polars_raw_accepted_by_canonicalizer_for_all_how_modes():
 def test_polars_inner_empty_inputs_return_empty_result():
     """Genuinely empty input -> genuinely empty result (SPEC 9.2: this is
     NOT an error). inner mode always yields 0 rows for any empty side;
-    left mode yields exactly the (non-empty) query rows, each unmatched;
-    closest mode yields one row per query only when an annotation exists
-    (k=1), so an empty annotation table yields 0 rows in every case."""
+    left mode yields exactly the (non-empty) query rows, each unmatched.
+    Since Task 6E, closest follows the SAME rule as every other mode:
+    inner yields 0 rows when either side is empty, left preserves each
+    query as one unmatched row even with an empty annotation table
+    (SPEC 8.6 / 7.2)."""
     empty = _empty_interval_table()
     for mode in ("overlap", "contains", "within", "closest"):
         for left, right in (
@@ -137,9 +139,7 @@ def test_polars_inner_empty_inputs_return_empty_result():
         ):
             for how in ("inner", "left"):
                 result = PolarsBioEngine(mode=mode).intersect(left, right, how=how)
-                if mode == "closest":
-                    expected = len(left) if len(right) else 0
-                elif how == "left":
+                if how == "left":
                     expected = len(left)
                 else:
                     expected = 0
@@ -164,17 +164,21 @@ def test_polars_left_empty_annotation_preserves_queries():
 
 
 def test_polars_nearest_distance_column_is_canonical_extra():
-    """closest mode keeps the backend distance as an explicit extra column
+    """closest mode keeps the canonical distance as an explicit extra column
     (documented in the engine docstring), appended after the canonical
-    columns."""
+    columns. The value is AnnotateR's canonical half-open gap (SPEC 8.6,
+    Task 6E) recomputed by the shared ``interval_distance`` — never the
+    backend-native ``pb.nearest`` column (which is no longer consulted
+    at all; its ``k=1`` default also drops tied nearest rows)."""
     q = interval_table([CHR], [100], [200], gene=["g1"])
     a = interval_table([CHR], [15], [25], feature=["f1"])
     raw = PolarsBioEngine(mode="closest").intersect(q, a, how="inner")
     canonical = list(canonical_result_columns(q, a))
     assert list(raw.columns)[: len(canonical)] == canonical
     assert list(raw.columns)[len(canonical):] == ["distance"]
-    # half-open gap between [15,25) and [100,200) is 100 - 25 = 75
+    # canonical half-open gap between [15,25) and [100,200) is 100 - 25 = 75
     assert raw["distance"].iloc[0] == 75
+    assert str(raw["distance"].dtype) == "Int64"
 
 
 def test_polars_malformed_input_raises_explicit_error():

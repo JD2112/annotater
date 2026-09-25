@@ -122,7 +122,7 @@ Upload one of:
 - **Overlap**: Find any overlapping annotations (default)
 - **Contains**: Return annotations fully contained within each query interval (query contains annotation)
 - **Within**: Return annotations that fully contain each query interval (query is contained within annotation)
-- **Closest**: Find nearest annotation
+- **Closest**: Return the nearest annotation interval(s); tied nearest annotations are all returned, with a canonical `distance` column (0 for overlapping/touching intervals)
 
 ---
 

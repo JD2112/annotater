@@ -1576,6 +1576,456 @@ WITHIN_CASES = [
 ]
 
 # ---------------------------------------------------------------------------
+# Closest semantics (inner + left) — Task 6E, SPEC 8.6.
+#
+# ``mode="closest"`` has ONE normative, backend-independent meaning:
+# per query, over SAME-CHROMOSOME annotations only (with SPEC 8.3 strand
+# eligibility applied BEFORE nearest selection when ``use_strand=True``),
+# the canonical half-open gap
+#
+#     distance(Q, A) = max(0, a_start - q_end, q_start - a_end)
+#
+# is minimized and EVERY annotation tied at that minimum is returned in
+# annotation input order (overall order: query input order, then tie
+# order). Overlapping and touching (bookended) intervals have distance 0;
+# a one-base gap has distance 1; a larger gap is the exact number of
+# intervening bases. Backend-native distances (bedtools ``-d``, polars-bio
+# ``nearest.distance``) are non-normative and never used: the expected
+# ``distances`` below are hand-derived from the formula above, never from
+# backend output. ``min_overlap`` (SPEC 8.2) and the contains/within
+# predicates (SPEC 8.4/8.5) do not participate in closest mode.
+#
+# ``how="inner"``: zero rows for a query with no eligible candidate.
+# ``how="left"``: every query survives; a query with no eligible candidate
+# appears exactly once with ``has_overlap=False``, canonical-missing
+# ``annot_*`` fields and canonical-missing (``pd.NA``) distance.
+#
+# Every case carries explicit ``pairs`` (expected rows, canonical order)
+# and explicit ``distances`` (expected canonical distance per row,
+# ``None`` for unmatched left rows) — both engines must reproduce both
+# through the shared canonical selection.
+# ---------------------------------------------------------------------------
+
+CLOSEST_CASES = [
+    # 1. Exact overlap: distance 0.
+    ParityCase(
+        "closest_exact_overlap",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 2. Exact equality: distance 0.
+    ParityCase(
+        "closest_exact_equality",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [10], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 3. Containment (annotation inside query): distance 0 — selected
+    # because distance == minimum, NOT because a contains predicate ran.
+    ParityCase(
+        "closest_containment",
+        interval_table([CHR], [10], [30], gene=["g1"]),
+        interval_table([CHR], [15], [20], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 4. Touching right: a_start == q_end -> distance 0 (deliberately
+    # different from overlap qualification, where touching does NOT overlap).
+    ParityCase(
+        "closest_touching_right",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [20], [30], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 5. Touching left: a_end == q_start -> distance 0.
+    ParityCase(
+        "closest_touching_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [10], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 6. One-base gap right: a_start == q_end + 1 -> distance 1.
+    ParityCase(
+        "closest_one_base_gap_right",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [21], [30], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(1,),
+    ),
+    # 7. One-base gap left: a_end == q_start - 1 -> distance 1.
+    ParityCase(
+        "closest_one_base_gap_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [9], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(1,),
+    ),
+    # 8. Larger gap right: exact base count.
+    ParityCase(
+        "closest_larger_gap_right",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [25], [35], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(5,),
+    ),
+    # 9. Larger gap left: exact base count.
+    ParityCase(
+        "closest_larger_gap_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [0], [5], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(5,),
+    ),
+    # 10. The Task 5 documented 76-vs-75 off-by-one regression: canonical
+    # gap = 100 - 25 = 75. Bedtools ``closest -d`` would report 76
+    # (gap + 1 for separated pairs); polars-bio ``nearest`` reports 75.
+    # NEITHER native value is consulted: the canonical formula is normative.
+    ParityCase(
+        "closest_off_by_one_regression_76_vs_75",
+        interval_table([CHR], [100], [200], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(75,),
+    ),
+    # 11. Two candidates, different distances: nearest only.
+    ParityCase(
+        "closest_two_candidates_nearest_only",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [21, 40], [30, 50], feature=["f1", "f2"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(1,),
+    ),
+    # 12. Symmetric left/right tie: BOTH returned, annotation input order.
+    ParityCase(
+        "closest_symmetric_tie",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [0, 25], [5, 30], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "closest"},
+        distances=(5, 5),
+    ),
+    # 13. Multiple overlapping candidates: all distance-0 ties returned;
+    # the distance-1 annotation is NOT.
+    ParityCase(
+        "closest_multiple_overlapping_ties",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(
+            [CHR, CHR, CHR], [11, 18, 21], [15, 30, 30],
+            feature=["f1", "f2", "f3"],
+        ),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "closest"},
+        distances=(0, 0),
+    ),
+    # 14. Touching + overlapping tie: both at distance 0, both returned.
+    ParityCase(
+        "closest_touching_and_overlap_tie",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [15, 20], [25, 30], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "closest"},
+        distances=(0, 0),
+    ),
+    # 15. Duplicate tied annotations: two rows, no deduplication.
+    ParityCase(
+        "closest_duplicate_nearest_annotations",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [25, 25], [30, 30], feature=["f1", "f2"]),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "closest"},
+        distances=(5, 5),
+    ),
+    # 16. Duplicate queries: each query identity resolved independently.
+    ParityCase(
+        "closest_duplicate_queries_preserved",
+        interval_table([CHR, CHR], [10, 10], [20, 20], gene=["g1", "g2"]),
+        interval_table([CHR], [25], [30], feature=["f1"]),
+        ((0, 0), (1, 0)),
+        engine_kwargs={"mode": "closest"},
+        distances=(5, 5),
+    ),
+    # 17. Three-way tie at the same positive distance: all three, in
+    # annotation INPUT order (not coordinate order).
+    ParityCase(
+        "closest_three_way_tie_input_order",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(
+            [CHR, CHR, CHR], [25, 0, 25], [30, 5, 35],
+            feature=["f1", "f2", "f3"],
+        ),
+        ((0, 0), (0, 1), (0, 2)),
+        engine_kwargs={"mode": "closest"},
+        distances=(5, 5, 5),
+    ),
+    # 18. Annotation on a different chromosome, numerically closer
+    # (distance 0 if the chromosomes matched): never a candidate.
+    ParityCase(
+        "closest_different_chromosome_ignored",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(
+            ["chrB", CHR], [11, 40], [15, 50], feature=["f1", "f2"],
+        ),
+        ((0, 1),),
+        engine_kwargs={"mode": "closest"},
+        distances=(20,),
+    ),
+    # 19. No same-chromosome annotation: inner -> zero rows;
+    # left -> exactly one unmatched query row (missing distance).
+    ParityCase(
+        "closest_no_same_chromosome_inner",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(["chrB"], [11], [15], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "closest"},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_no_same_chromosome_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table(["chrB"], [11], [15], feature=["f1"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "closest"},
+        distances=(None,),
+    ),
+    # 20. Strand off: the nearest candidate is chosen regardless of strand.
+    ParityCase(
+        "closest_strand_off_ignores_strand",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [21], [30], feature=["f1"], strand=["-"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(1,),
+    ),
+    # 21. STRANDED-BEFORE-NEAREST (mandatory fixture). Same geometry,
+    # both strand settings:
+    #     A "-" distance 1, B "+" distance 10
+    # use_strand=False -> A wins (strand ignored);
+    # use_strand=True  -> B wins (A is strand-ineligible BEFORE selection,
+    # so it cannot suppress the farther same-strand candidate).
+    ParityCase(
+        "closest_stranded_off_returns_nearer_opposite_strand",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(
+            [CHR, CHR], [21, 30], [30, 40],
+            feature=["f1", "f2"], strand=["-", "+"],
+        ),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(1,),
+    ),
+    ParityCase(
+        "closest_stranded_farther_same_strand_wins",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(
+            [CHR, CHR], [21, 30], [30, 40],
+            feature=["f1", "f2"], strand=["-", "+"],
+        ),
+        ((0, 1),),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(10,),
+    ),
+    # 22. Stranded, same distance on both strands: only the same-strand
+    # candidate qualifies.
+    ParityCase(
+        "closest_stranded_off_same_distance_returns_both",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(
+            [CHR, CHR], [0, 25], [5, 30],
+            feature=["f1", "f2"], strand=["-", "+"],
+        ),
+        ((0, 0), (0, 1)),
+        engine_kwargs={"mode": "closest"},
+        distances=(5, 5),
+    ),
+    ParityCase(
+        "closest_stranded_same_distance_keeps_same_strand",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(
+            [CHR, CHR], [0, 25], [5, 30],
+            feature=["f1", "f2"], strand=["-", "+"],
+        ),
+        ((0, 1),),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(5,),
+    ),
+    # 23. Stranded, no same-strand candidate: inner -> zero rows;
+    # left -> exactly one unmatched query row.
+    ParityCase(
+        "closest_stranded_no_same_strand_inner",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        (),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_stranded_no_same_strand_left",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["-"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(None,),
+    ),
+    # 24. Missing QUERY strand is not a wildcard: no candidate qualifies.
+    ParityCase(
+        "closest_missing_query_strand_not_eligible",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=["+"]),
+        (),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(),
+    ),
+    # 25. Missing ANNOTATION strand is not eligible in stranded mode; the
+    # farther same-strand annotation is the nearest.
+    ParityCase(
+        "closest_missing_annotation_strand_not_eligible",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_missing_annotation_strand_farther_same_strand_wins",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=["+"]),
+        interval_table(
+            [CHR, CHR], [21, 30], [30, 40],
+            feature=["f1", "f2"], strand=[None, "+"],
+        ),
+        ((0, 1),),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(10,),
+    ),
+    # 26. Both strands missing: unknown-vs-unknown does not qualify.
+    ParityCase(
+        "closest_both_missing_strand_not_wildcard",
+        interval_table([CHR], [10], [20], gene=["g1"], strand=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], strand=[None]),
+        (),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(),
+    ),
+    # 27. min_overlap does NOT affect closest: even a threshold of 1.0
+    # (which would reject every non-100%-covering pair in overlap mode)
+    # leaves the nearest selection unchanged.
+    ParityCase(
+        "closest_min_overlap_no_effect",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR, CHR], [15, 21], [25, 30], feature=["f1", "f2"]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest", "min_overlap": 1.0},
+        distances=(0,),
+    ),
+    # 28. Metadata (including missing values) preserved on closest rows.
+    ParityCase(
+        "closest_metadata_preserved",
+        interval_table([CHR], [10], [20], gene=["g1"], score=[0.5], note=[None]),
+        interval_table([CHR], [15], [25], feature=["f1"], label=["3.5"], flag=[True]),
+        ((0, 0),),
+        engine_kwargs={"mode": "closest"},
+        distances=(0,),
+    ),
+    # 29. Empty query: empty result for both inner and left.
+    ParityCase(
+        "closest_empty_query_inner",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "closest"},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_empty_query_left",
+        interval_table([], [], [], gene=[]),
+        interval_table([CHR], [10], [30], feature=["f1"]),
+        (),
+        how="left",
+        engine_kwargs={"mode": "closest"},
+        distances=(),
+    ),
+    # 30. Empty annotation: inner -> empty; left -> one unmatched row per
+    # query (canonical-missing distance), never phantom "nearest" hits.
+    ParityCase(
+        "closest_empty_annotation_inner",
+        interval_table([CHR, CHR], [15, 100], [20, 200], gene=["g1", "g2"]),
+        interval_table([], [], [], feature=[]),
+        (),
+        engine_kwargs={"mode": "closest"},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_empty_annotation_left",
+        interval_table([CHR, CHR], [15, 100], [20, 200], gene=["g1", "g2"]),
+        interval_table([], [], [], feature=[]),
+        ((0, None), (1, None)),
+        how="left",
+        engine_kwargs={"mode": "closest"},
+        distances=(None, None),
+    ),
+    # Left mode: matched and unmatched queries mixed; the unmatched row
+    # appears exactly once at its own query position with pd.NA distance.
+    ParityCase(
+        "closest_left_mixed_matched_unmatched",
+        interval_table([CHR, "chrC"], [10, 10], [20, 20], gene=["g1", "g2"]),
+        interval_table([CHR], [25], [30], feature=["f1"]),
+        ((0, 0), (1, None)),
+        how="left",
+        engine_kwargs={"mode": "closest"},
+        distances=(5, None),
+    ),
+    # Ordering: queries are emitted in INPUT order, never genomic order —
+    # even when an earlier input query has a larger distance than a later
+    # one (distance 475 before distance 0).
+    ParityCase(
+        "closest_query_input_order_not_genomic",
+        interval_table([CHR, CHR], [500, 10], [600, 20], gene=["g1", "g2"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, 0), (1, 0)),
+        engine_kwargs={"mode": "closest"},
+        distances=(475, 0),
+    ),
+    # 33. Stranded mode with NO strand column at all on either input:
+    # a missing strand column means no stranded match is possible (SPEC
+    # 8.3) — inner -> zero rows; left -> exactly one unmatched query row
+    # with canonical-missing distance.
+    ParityCase(
+        "closest_stranded_absent_strand_column_inner",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        (),
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(),
+    ),
+    ParityCase(
+        "closest_stranded_absent_strand_column_left",
+        interval_table([CHR], [10], [20], gene=["g1"]),
+        interval_table([CHR], [15], [25], feature=["f1"]),
+        ((0, None),),
+        how="left",
+        engine_kwargs={"mode": "closest", "use_strand": True},
+        distances=(None,),
+    ),
+]
+
+# ---------------------------------------------------------------------------
 # Differential (Bedtools vs Polars-Bio) cases — a deliberately small set of
 # representative fixtures spanning the semantic surface.
 # ---------------------------------------------------------------------------
@@ -1696,4 +2146,33 @@ _WITHIN_DIFFERENTIAL_NAMES = {
 }
 DIFFERENTIAL_CASES += [
     c for c in WITHIN_CASES if c.name in _WITHIN_DIFFERENTIAL_NAMES
+]
+# Task 6E: representative closest fixtures for the direct
+# engine-vs-engine layer (boundary distances, all-ties, the off-by-one
+# regression, strand-before-nearest, left reconstruction, empty inputs,
+# input-order preservation).
+_CLOSEST_DIFFERENTIAL_NAMES = {
+    "closest_exact_overlap",
+    "closest_touching_right",
+    "closest_one_base_gap_right",
+    "closest_off_by_one_regression_76_vs_75",
+    "closest_symmetric_tie",
+    "closest_multiple_overlapping_ties",
+    "closest_duplicate_nearest_annotations",
+    "closest_three_way_tie_input_order",
+    "closest_different_chromosome_ignored",
+    "closest_no_same_chromosome_left",
+    "closest_stranded_farther_same_strand_wins",
+    "closest_stranded_same_distance_keeps_same_strand",
+    "closest_missing_query_strand_not_eligible",
+    "closest_min_overlap_no_effect",
+    "closest_metadata_preserved",
+    "closest_empty_annotation_left",
+    "closest_left_mixed_matched_unmatched",
+    "closest_query_input_order_not_genomic",
+    "closest_stranded_absent_strand_column_inner",
+    "closest_stranded_absent_strand_column_left",
+}
+DIFFERENTIAL_CASES += [
+    c for c in CLOSEST_CASES if c.name in _CLOSEST_DIFFERENTIAL_NAMES
 ]

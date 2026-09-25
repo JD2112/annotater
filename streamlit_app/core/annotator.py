@@ -22,6 +22,7 @@ from .schema import (
     STRAND_VALUES,
     CanonicalSchemaError,
     canonical_result_columns,
+    interval_metadata_columns,
     validate_canonical_interval_table,
 )
 
@@ -221,6 +222,394 @@ def within_keep_mask(df: pd.DataFrame) -> np.ndarray:
     return (a_start <= q_start) & (a_end >= q_end)
 
 
+def interval_distance(q_start, q_end, a_start, a_end):
+    """
+    Shared canonical ``mode="closest"`` distance (SPEC 8.6, Task 6E).
+
+    For canonical 0-based half-open intervals ``Q=[q_start, q_end)`` and
+    ``A=[a_start, a_end)``::
+
+        distance(Q, A) = max(0, a_start - q_end, q_start - a_end)
+
+    i.e. the number of genomic bases in the gap between the two
+    half-open intervals: overlapping intervals have distance 0,
+    bookended (touching) intervals have distance 0, a one-base gap has
+    distance 1, and a larger gap is the exact number of intervening
+    bases. Accepts scalars or numpy arrays (evaluated elementwise) and
+    uses exact integer arithmetic only — never floating point.
+
+    This is the SINGLE contract-level definition of closest distance.
+    Both engines emit exactly this value, recomputed from canonical
+    coordinates for every emitted row; backend-native distances are
+    non-normative and never surface (observed on bedtools 2.31.1:
+    ``closest -d`` reports gap + 1 for separated pairs — 76 where the
+    canonical gap is 75 — and 1 for bookended pairs; polars-bio 0.35.1
+    ``nearest`` reports the half-open gap itself, 75 / 0. Neither value
+    defines the AnnotateR contract; see docs/references.md).
+    """
+    return np.maximum(0, np.maximum(a_start - q_end, q_start - a_end))
+
+
+def _python_scalar(value):
+    """Reduce numpy scalar types to their Python equivalents.
+
+    The canonicalizer publishes object-dtype metadata columns built via
+    ``astype(object)`` (Python ``int``/``float``/``bool``), so result
+    adapters must emit the same scalar types for identical input values.
+    """
+    if isinstance(value, np.bool_):
+        return bool(value)
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
+
+
+def _values_at(df: pd.DataFrame, column: str, row_ids: np.ndarray) -> np.ndarray:
+    """
+    Original values of ``df[column]`` at positional ``row_ids``.
+
+    Missing input values become canonical missing (``pd.NA``); a row id
+    of -1 (unmatched row) is always canonical missing. Values keep their
+    original semantic type (numpy scalars are reduced to the equivalent
+    Python scalars, mirroring the canonicalizer's object-dtype
+    publication) — no value or dtype re-inference. Shared by the
+    BedtoolsEngine adapter and the shared closest builder.
+    """
+    series = df[column]
+    values = series.to_numpy()
+    missing = series.isna().to_numpy()
+    out = np.full(len(row_ids), pd.NA, dtype=object)
+    valid = row_ids >= 0
+    rv = row_ids[valid]
+    out[valid] = [
+        pd.NA if m else _python_scalar(v)
+        for m, v in zip(missing[rv], values[rv])
+    ]
+    return out
+
+
+def _ints_at(df: pd.DataFrame, column: str, row_ids: np.ndarray):
+    """Integer coordinate values at ``row_ids``; -1 (unmatched) -> pd.NA."""
+    values = df[column].to_numpy()
+    out = pd.array([pd.NA] * len(row_ids), dtype="Int64")
+    for i, rid in enumerate(row_ids):
+        if rid >= 0:
+            out[i] = int(values[rid])
+    return out
+
+
+class _ClosestAnnotations:
+    """
+    One chromosome's (optionally one strand's) annotation rows,
+    precomputed for canonical nearest selection (SPEC 8.6, Task 6E).
+
+    Built once per group: a start-sorted view with the prefix maximum of
+    ends (strict-overlap detection), an end-sorted view (left-gap
+    predecessor lookup), and exact-position hash indexes (recovery of
+    every positive-distance tie without scanning). ``pos`` always holds
+    annotation INPUT row positions, ascending.
+    """
+
+    __slots__ = ("pos", "starts", "ends", "_s_starts", "_pre_max_end",
+                 "_e_ends", "_by_start", "_by_end")
+
+    def __init__(self, pos: np.ndarray, starts: np.ndarray, ends: np.ndarray):
+        self.pos = pos
+        self.starts = starts[pos]
+        self.ends = ends[pos]
+        start_order = np.argsort(self.starts, kind="stable")
+        self._s_starts = self.starts[start_order]
+        self._pre_max_end = np.maximum.accumulate(self.ends[start_order])
+        self._e_ends = np.sort(self.ends, kind="stable")
+        self._by_start = {}
+        self._by_end = {}
+        for p, s, e in zip(pos.tolist(), self.starts.tolist(), self.ends.tolist()):
+            self._by_start.setdefault(s, []).append(p)
+            self._by_end.setdefault(e, []).append(p)
+
+    def minimum_distance(self, q_start: int, q_end: int) -> int:
+        """
+        Minimum canonical ``interval_distance`` from ``[q_start, q_end)``
+        to any group member, computed over the sorted interval arrays via
+        binary search — never by materializing every query x annotation
+        distance:
+
+        - a strict overlap (``start < q_end`` and ``end > q_start``)
+          means 0; the annotations starting below ``q_end`` are exactly
+          the start-sorted prefix ``[0, j)``, so their prefix-maximum end
+          decides whether any of them reaches past ``q_start``;
+        - otherwise the nearest candidate is either the first annotation
+          starting at/after ``q_end`` (right gap) or the last annotation
+          ending at/before ``q_start`` (left gap): any non-overlapping
+          interval satisfies ``start >= q_end`` OR ``end <= q_start``,
+          and ``interval_distance`` is exactly those two gaps.
+
+        Touching intervals fall out as distance 0 from either gap side.
+        """
+        j = int(np.searchsorted(self._s_starts, q_end, side="left"))
+        if j > 0 and int(self._pre_max_end[j - 1]) > q_start:
+            return 0
+        best = None
+        if j < self._s_starts.shape[0]:
+            best = int(self._s_starts[j]) - q_end          # 0 when touching right
+        k = int(np.searchsorted(self._e_ends, q_start, side="right")) - 1
+        if k >= 0:
+            gap = q_start - int(self._e_ends[k])           # 0 when touching left
+            best = gap if best is None else min(best, gap)
+        if best is None:
+            # Defensive fallback (a non-empty group always yields a
+            # candidate above): apply the shared definition directly.
+            best = int(interval_distance(q_start, q_end, self.starts, self.ends).min())
+        return best
+
+    def ties(self, q_start: int, q_end: int, d_min: int) -> np.ndarray:
+        """
+        Every group member at canonical distance ``d_min``, in annotation
+        input order (SPEC 8.6: ALL ties are returned — no arbitrary
+        tie-break, no sorting by coordinate/strand/length/backend order).
+        """
+        if d_min == 0:
+            # distance == 0  <=>  start <= q_end AND end >= q_start
+            # (overlap OR bookended), evaluated with the shared helper.
+            mask = interval_distance(q_start, q_end, self.starts, self.ends) == 0
+            return self.pos[mask]
+        # d > 0: distance == max(0, start - q_end, q_start - end) equals d
+        # iff start == q_end + d (then end > start > q_end > q_start, so
+        # the left gap is negative) OR end == q_start - d (then the right
+        # gap is negative). Both at once would force
+        # end = q_start - d < q_end + d = start, contradicting end >
+        # start — so two exact-position lookups cover every tie, without
+        # scanning the group.
+        positions = list(self._by_start.get(q_end + d_min, ()))
+        positions.extend(self._by_end.get(q_start - d_min, ()))
+        positions.sort()
+        return np.asarray(positions, dtype="int64")
+
+
+def _closest_annotations(
+    annot_df: pd.DataFrame, use_strand: bool
+) -> Dict[object, _ClosestAnnotations]:
+    """
+    Group annotation rows for canonical nearest selection (SPEC 8.6).
+
+    Keyed by chromosome when ``use_strand`` is False; keyed by
+    ``(chromosome, strand)`` when True — so strand eligibility (SPEC
+    8.3) is applied BEFORE nearest selection: only annotations carrying
+    an explicit ``+``/``-`` strand enter a stranded group, and a query
+    only consults the group matching its own explicit strand.
+    Missing/unknown strand never joins a stranded group (not a
+    wildcard), and an input without a strand column yields no groups at
+    all (=> no stranded candidate), identically for both engines.
+    """
+    if len(annot_df) == 0:
+        return {}
+    chr_values = annot_df["chr"].to_numpy(dtype=object)
+    starts = annot_df["start"].to_numpy(dtype="int64")
+    ends = annot_df["end"].to_numpy(dtype="int64")
+    strands = None
+    if use_strand:
+        if "strand" not in annot_df.columns:
+            return {}
+        strands = annot_df["strand"].to_numpy(dtype=object)
+    buckets: Dict[object, list] = {}
+    for idx in range(len(annot_df)):
+        if use_strand:
+            strand = strands[idx]
+            # ``pd.isna`` first: a canonical missing value (``pd.NA``) in
+            # the tuple membership test would raise ``TypeError: boolean
+            # value of NA is ambiguous`` instead of simply being ineligible.
+            if pd.isna(strand) or strand not in STRAND_VALUES:
+                continue  # missing/unknown strand is never eligible
+            key = (chr_values[idx], strand)
+        else:
+            key = chr_values[idx]
+        buckets.setdefault(key, []).append(idx)
+    return {
+        key: _ClosestAnnotations(
+            np.asarray(positions, dtype="int64"), starts, ends
+        )
+        for key, positions in buckets.items()
+    }
+
+
+def closest_matches(
+    coord_df: pd.DataFrame, annot_df: pd.DataFrame, *, use_strand: bool = False
+):
+    """
+    Shared canonical nearest selection (SPEC 8.6, Task 6E).
+
+    Returns ``(query_positions, annot_positions)``: int64 arrays in the
+    canonical row order — query input order, then annotation input order
+    among the tied nearest rows of each query. Queries with no eligible
+    candidate are absent (left-mode reconstruction is the caller's job).
+
+    Per-query pipeline, in this strict order:
+
+    1. same-chromosome candidates only (annotation groups are keyed by
+       chromosome; distance is never defined across chromosomes);
+    2. strand eligibility BEFORE nearest selection when ``use_strand``
+       (SPEC 8.3): both rows must carry an explicit ``+``/``-`` strand
+       and be equal — missing/unknown strand is not a wildcard, so a
+       wrong-strand nearer candidate can never suppress a farther
+       same-strand candidate;
+    3. canonical ``interval_distance`` for every remaining candidate,
+       with the minimum computed over sorted interval arrays;
+    4. ALL candidates at the per-query minimum distance are returned
+       (all ties), keeping annotation input order.
+
+    ``min_overlap`` (SPEC 8.2) and the contains/within predicates (SPEC
+    8.4/8.5) deliberately play no part here: they belong to their own
+    modes.
+
+    Candidate search is constrained, never a genome-wide Cartesian
+    product: annotations are grouped by chromosome (and strand when
+    stranded), minima come from binary searches over sorted arrays, and
+    positive-distance ties are recovered by exact-position hash
+    lookups; only distance-0 ties (all of which are emitted anyway) need
+    a vectorized scan of the query's own group.
+    """
+    empty = (np.empty(0, dtype="int64"), np.empty(0, dtype="int64"))
+    if len(coord_df) == 0 or len(annot_df) == 0:
+        return empty
+    groups = _closest_annotations(annot_df, use_strand)
+    if not groups:
+        return empty
+
+    q_chr = coord_df["chr"].to_numpy(dtype=object)
+    q_starts = coord_df["start"].to_numpy(dtype="int64")
+    q_ends = coord_df["end"].to_numpy(dtype="int64")
+    if use_strand:
+        if "strand" not in coord_df.columns:
+            return empty
+        q_strands = coord_df["strand"].to_numpy(dtype=object)
+        q_stranded_ok = coord_df["strand"].isin(list(STRAND_VALUES)).to_numpy()
+
+    q_parts: list = []
+    a_parts: list = []
+    for i in range(len(coord_df)):
+        if use_strand:
+            if not q_stranded_ok[i]:
+                continue  # a query without an explicit strand never qualifies
+            key = (q_chr[i], q_strands[i])
+        else:
+            key = q_chr[i]
+        group = groups.get(key)
+        if group is None:
+            continue  # no eligible annotation on this chromosome
+        q_start = int(q_starts[i])
+        q_end = int(q_ends[i])
+        d_min = group.minimum_distance(q_start, q_end)
+        ties = group.ties(q_start, q_end, d_min)
+        if len(ties):
+            q_parts.append(np.full(len(ties), i, dtype="int64"))
+            a_parts.append(ties)
+    if not q_parts:
+        return empty
+    return np.concatenate(q_parts), np.concatenate(a_parts)
+
+
+def canonical_closest(
+    coord_df: pd.DataFrame,
+    annot_df: pd.DataFrame,
+    how: str = "inner",
+    *,
+    use_strand: bool = False,
+) -> pd.DataFrame:
+    """
+    Shared canonical ``mode="closest"`` implementation (SPEC 8.6,
+    Task 6E) — used by BOTH engines, so rows, distance, tie behavior and
+    ordering are backend-independent by construction.
+
+    Contract:
+
+    - same-chromosome candidates only (via ``closest_matches``);
+    - strand eligibility before nearest selection when ``use_strand``
+      (SPEC 8.3: explicit equal ``+``/``-``; missing is not a wildcard);
+    - canonical ``interval_distance`` recomputed from canonical
+      coordinates for every emitted row — backend-native distances
+      (bedtools ``-d``, polars-bio ``nearest.distance``) never surface;
+    - ALL annotations tied at the minimum distance are returned, in
+      annotation input order; overall order is query input order then
+      that tie order (genomic input order is never required and never
+      imposed);
+    - ``min_overlap`` (SPEC 8.2) and the contains/within predicates
+      (SPEC 8.4/8.5) do NOT participate in closest mode;
+    - ``how="inner"``: only queries with at least one eligible
+      candidate (zero rows when none). ``how="left"``: every query row
+      survives; a query with no candidate appears exactly once with
+      canonical-missing ``annot_*``, ``has_overlap=False`` and missing
+      ``distance``.
+
+    Returns the raw canonical frame (canonical columns + ``distance``)
+    with ``distance`` as nullable integer (``Int64``, ``pd.NA`` on
+    unmatched rows); an empty result is an empty frame. No backend call
+    is made, so there is no native failure mode to swallow — malformed
+    input remains the engines' explicit pre-dispatch validation (SPEC
+    9.2).
+    """
+    q_meta = interval_metadata_columns(coord_df)
+    a_meta = interval_metadata_columns(annot_df)
+
+    q_pos, a_pos = closest_matches(coord_df, annot_df, use_strand=use_strand)
+
+    if how == "left" and len(coord_df):
+        matched_queries = np.unique(q_pos)
+        unmatched_queries = np.setdiff1d(
+            np.arange(len(coord_df), dtype="int64"), matched_queries
+        )
+        if len(unmatched_queries):
+            q_pos = np.concatenate([q_pos, unmatched_queries])
+            a_pos = np.concatenate(
+                [a_pos, np.full(len(unmatched_queries), -1, dtype="int64")]
+            )
+
+    if len(q_pos) == 0:
+        return pd.DataFrame()
+
+    # Canonical order: query input order, then annotation input order
+    # among that query's ties. The stable sort preserves emission order
+    # within a query, and a query is either fully matched or unmatched
+    # (never both), so unmatched rows land exactly at their own query
+    # position. Backend-internal ordering is irrelevant: no backend runs.
+    order = np.argsort(q_pos, kind="stable")
+    q_pos = q_pos[order]
+    a_pos = a_pos[order]
+    matched = a_pos >= 0
+
+    out = pd.DataFrame(index=pd.RangeIndex(len(q_pos)))
+    out["coord_chr"] = _values_at(coord_df, "chr", q_pos)
+    out["coord_start"] = coord_df["start"].to_numpy(dtype="int64")[q_pos]
+    out["coord_end"] = coord_df["end"].to_numpy(dtype="int64")[q_pos]
+    for name in q_meta:
+        out[f"coord_{name}"] = _values_at(coord_df, name, q_pos)
+    out["annot_chr"] = _values_at(annot_df, "chr", a_pos)
+    out["annot_start"] = _ints_at(annot_df, "start", a_pos)
+    out["annot_end"] = _ints_at(annot_df, "end", a_pos)
+    for name in a_meta:
+        out[f"annot_{name}"] = _values_at(annot_df, name, a_pos)
+    out[HAS_OVERLAP_COLUMN] = matched
+
+    # Canonical distance (nullable integer): recomputed from canonical
+    # coordinates with the single shared helper. The -1 sentinel only
+    # marks unmatched rows inside this builder and is replaced below —
+    # a canonical distance is always >= 0, so -1 can never be emitted.
+    distance_values = np.full(len(a_pos), -1, dtype="int64")
+    safe_a = a_pos[matched]
+    distance_values[matched] = interval_distance(
+        out["coord_start"].to_numpy()[matched],
+        out["coord_end"].to_numpy()[matched],
+        annot_df["start"].to_numpy(dtype="int64")[safe_a],
+        annot_df["end"].to_numpy(dtype="int64")[safe_a],
+    )
+    distance = pd.array(distance_values, dtype="Int64")
+    distance[~matched] = pd.NA
+    out["distance"] = distance
+
+    return out[list(canonical_result_columns(coord_df, annot_df)) + ["distance"]]
+
+
 class AnnotationEngine(ABC):
     """
     Abstract base class for annotation engines
@@ -252,15 +641,11 @@ _BT_QUERY_ROW_ID = "_bt_query_row_id"
 _BT_ANNOT_ROW_ID = "_bt_annot_row_id"
 
 #: Columns per side in the identity-only serialization: chr, start, end,
-#: <row id>.
+#: <row id>. There is deliberately NO stranded serialization anymore:
+#: strand qualification is the shared canonical predicate (SPEC 8.3,
+#: Task 6B), and closest (SPEC 8.6, Task 6E) never invokes bedtools at
+#: all, so no ``-s``/column-6 layout exists anywhere.
 _BT_COLUMNS_PER_SIDE = 4
-#: When the non-normative closest placeholder runs with ``use_strand``,
-#: bedtools ``-s`` requires a strand in column 6, so that path
-#: additionally carries a placeholder score column and an explicit strand
-#: column (chr, start, end, <row id>, ".", strand). The overlap path
-#: NEVER uses the stranded layout: strand qualification is the shared
-#: canonical post-filter (SPEC 8.3, Task 6B).
-_BT_COLUMNS_PER_SIDE_STRANDED = 6
 
 
 class BedtoolsEngine(AnnotationEngine):
@@ -300,9 +685,9 @@ class BedtoolsEngine(AnnotationEngine):
       ``strand_keep_mask`` as a post-filter after matching and before
       left reconstruction. A pair qualifies only if both rows carry an
       explicit canonical strand (``+``/``-``) and the strands are equal;
-      missing/unknown strand is not a wildcard. (The stranded
-      serialization + native ``-s`` remain only in the non-normative
-      closest placeholder, unchanged by Task 6B.)
+      missing/unknown strand is not a wildcard. (Task 6E removed the
+      closest placeholder entirely: closest no longer invokes bedtools
+      at all, so no native ``-s`` serialization or flag exists anywhere.)
     - ``min_overlap`` (Task 6A) is NOT forwarded to bedtools ``-f``:
       the canonical query-fraction contract (SPEC 8.2) is applied as
       the shared post-filter ``min_overlap_keep_mask`` over ordinary
@@ -337,9 +722,24 @@ class BedtoolsEngine(AnnotationEngine):
       (a backend fraction flag must not define an AnnotateR relation).
       ``min_overlap`` is NOT applied in within mode (SPEC 8.2 is
       defined for the overlap method only).
+    - ``mode="closest"`` (Task 6E, SPEC 8.6) is ONE backend-independent
+      operation: the engine delegates to the shared canonical
+      ``canonical_closest`` selection — same-chromosome candidates,
+      strand eligibility BEFORE nearest selection, canonical
+      ``interval_distance``, ALL minimum-distance ties in annotation
+      input order, left reconstruction. The bedtools ``closest`` binary
+      is NOT used at all, so none of its behaviors can define a public
+      result: not the genomically-sorted-input requirement (AnnotateR
+      input order is preserved as-is), not the ``-d`` distance
+      convention (gap + 1 for separated pairs, 1 for bookended pairs),
+      not ``-t first`` tie dropping, and not ``-s`` strand filtering.
+      ``min_overlap`` and the contains/within predicates do not
+      participate in closest mode.
     - Backend and conversion exceptions propagate to the caller. A 0-row
       result with no exception is a genuine no-match (a valid empty
-      result), never a swallowed failure (SPEC 9.2).
+      result), never a swallowed failure (SPEC 9.2). (Closest makes no
+      backend call; its only failure mode is explicit input
+      validation.)
     """
 
     def intersect(
@@ -366,7 +766,16 @@ class BedtoolsEngine(AnnotationEngine):
             # preserves every query row.
             return self._overlap(coord_df, annot_df, how)
         if self.mode == "closest":
-            return self._closest(coord_df, annot_df)
+            # ``closest`` (SPEC 8.6, Task 6E) is ONE backend-independent
+            # operation: both engines delegate to the shared canonical
+            # selection ``canonical_closest`` (same-chromosome,
+            # strand-before-nearest, canonical ``interval_distance``,
+            # all ties, left reconstruction). Nothing about bedtools
+            # ``closest`` — sorted input, ``-d``, ``-t``, ``-s`` — can
+            # influence a public result.
+            return canonical_closest(
+                coord_df, annot_df, how=how, use_strand=self.use_strand
+            )
         raise ValueError(f"Unknown mode: {self.mode}")
 
     # ------------------------------------------------------------------
@@ -423,8 +832,8 @@ class BedtoolsEngine(AnnotationEngine):
         # not an exception and remains a valid empty result, but a backend
         # or conversion error must never be reported as "no matches".
         try:
-            result = self._to_bed(coord_df, q_id, stranded=False).intersect(
-                self._to_bed(annot_df, a_id, stranded=False), **kwargs
+            result = self._to_bed(coord_df, q_id).intersect(
+                self._to_bed(annot_df, a_id), **kwargs
             )
             raw = result.to_dataframe(header=None, dtype=str)
         finally:
@@ -525,79 +934,6 @@ class BedtoolsEngine(AnnotationEngine):
         return self._finalize(out, coord_df, annot_df, q_id, a_id)
 
     # ------------------------------------------------------------------
-    # Closest (non-normative; layout adaptation only — Task 6)
-    # ------------------------------------------------------------------
-
-    def _closest(self, coord_df: pd.DataFrame, annot_df: pd.DataFrame) -> pd.DataFrame:
-        q_meta = self._metadata_columns(coord_df)
-        a_meta = self._metadata_columns(annot_df)
-        q_id = self._row_id_column(coord_df.columns, _BT_QUERY_ROW_ID)
-        a_id = self._row_id_column(annot_df.columns, _BT_ANNOT_ROW_ID)
-
-        # closest (t="first") emits one row per query; with either input
-        # empty there is no deterministic result to emit.
-        if len(coord_df) == 0 or len(annot_df) == 0:
-            return pd.DataFrame()
-
-        per_side = (
-            _BT_COLUMNS_PER_SIDE_STRANDED if self.use_strand else _BT_COLUMNS_PER_SIDE
-        )
-        logger.debug(
-            "Running bedtools closest on %d x %d rows",
-            len(coord_df), len(annot_df),
-        )
-        # Backend failures MUST propagate (SPEC 9.2), same principle as
-        # overlap. Closest is the non-normative placeholder (Task 6E
-        # scope): its native ``-s`` forwarding is unchanged by Task 6B.
-        try:
-            result = self._to_bed(coord_df, q_id, stranded=self.use_strand).closest(
-                self._to_bed(annot_df, a_id, stranded=self.use_strand),
-                d=True, t="first", s=self.use_strand,
-            )
-            raw = result.to_dataframe(header=None, dtype=str)
-        finally:
-            pybedtools.cleanup()
-
-        if raw.empty:
-            return pd.DataFrame()
-        expected_columns = 2 * per_side + 1  # + trailing distance column
-        if raw.shape[1] != expected_columns:
-            raise CanonicalSchemaError(
-                "bedtools raw closest output has an unexpected column layout; "
-                f"expected {expected_columns} columns (A coordinates + "
-                "query row id, B coordinates + annotation row id, distance), "
-                f"got {raw.shape[1]}."
-            )
-
-        qid = self._parse_row_ids(raw.iloc[:, 3].to_numpy(), "query")
-        aid_raw = raw.iloc[:, expected_columns - 2].to_numpy()
-        # Structural match determination, same rule as overlap: '.' in the
-        # internal annotation row-id column is only ever a bedtools
-        # sentinel (no nearest feature found).
-        unmatched = aid_raw == "."
-        aid = np.full(len(aid_raw), -1, dtype="int64")
-        aid[~unmatched] = self._parse_row_ids(aid_raw[~unmatched], "annotation")
-
-        # One row per query; order by query input position.
-        order = np.argsort(qid, kind="stable")
-        distance = pd.array([pd.NA] * len(aid), dtype="Int64")
-        for i in np.where(aid >= 0)[0]:
-            try:
-                distance[i] = int(raw.iloc[i, expected_columns - 1])
-            except ValueError as exc:
-                raise CanonicalSchemaError(
-                    f"bedtools closest distance column is not an integer "
-                    f"(row {i}): {raw.iloc[i, 8]!r}"
-                ) from exc
-
-        out = self._build_result(
-            coord_df, annot_df, q_meta, a_meta, qid[order], aid[order], q_id, a_id
-        )
-        out["distance"] = distance[order]
-        columns = list(canonical_result_columns(coord_df, annot_df)) + ["distance"]
-        return out[columns]
-
-    # ------------------------------------------------------------------
     # Raw-output adaptation (single explicit mapping path)
     # ------------------------------------------------------------------
 
@@ -617,11 +953,11 @@ class BedtoolsEngine(AnnotationEngine):
         Map raw bedtools text output to canonical columns + row ids.
 
         The raw frame is the identity-only serialization (coordinates +
-        internal row ids), always 4 columns per side on the overlap path;
-        the stranded 6-column layout exists only in the non-normative
-        closest placeholder and is not parsed here. Every published value is re-attached from
-        the ORIGINAL input frames by row identity, so no user data is
-        re-inferred from text and no backend sentinel can reach the output.
+        internal row ids), always 4 columns per side — the sole layout
+        in use (closest never serializes anything to bedtools; SPEC 8.6,
+        Task 6E). Every published value is re-attached from the ORIGINAL
+        input frames by row identity, so no user data is re-inferred
+        from text and no backend sentinel can reach the output.
         """
         if raw.shape[1] != expected_columns:
             raise CanonicalSchemaError(
@@ -667,16 +1003,16 @@ class BedtoolsEngine(AnnotationEngine):
         original Python/numpy types (no re-inference of any kind).
         """
         out = pd.DataFrame(index=pd.RangeIndex(len(qid)))
-        out["coord_chr"] = self._values_from(coord_df, "chr", qid)
-        out["coord_start"] = self._values_from(coord_df, "start", qid).astype("int64")
-        out["coord_end"] = self._values_from(coord_df, "end", qid).astype("int64")
+        out["coord_chr"] = _values_at(coord_df, "chr", qid)
+        out["coord_start"] = _values_at(coord_df, "start", qid).astype("int64")
+        out["coord_end"] = _values_at(coord_df, "end", qid).astype("int64")
         for name in q_meta:
-            out[f"coord_{name}"] = self._values_from(coord_df, name, qid)
-        out["annot_chr"] = self._values_from(annot_df, "chr", aid)
-        out["annot_start"] = self._nullable_int_values(annot_df, "start", aid)
-        out["annot_end"] = self._nullable_int_values(annot_df, "end", aid)
+            out[f"coord_{name}"] = _values_at(coord_df, name, qid)
+        out["annot_chr"] = _values_at(annot_df, "chr", aid)
+        out["annot_start"] = _ints_at(annot_df, "start", aid)
+        out["annot_end"] = _ints_at(annot_df, "end", aid)
         for name in a_meta:
-            out[f"annot_{name}"] = self._values_from(annot_df, name, aid)
+            out[f"annot_{name}"] = _values_at(annot_df, name, aid)
         out[HAS_OVERLAP_COLUMN] = aid >= 0
         out[q_id] = qid
         out[a_id] = aid
@@ -722,18 +1058,17 @@ class BedtoolsEngine(AnnotationEngine):
     # ------------------------------------------------------------------
 
     def _to_bed(
-        self, df: pd.DataFrame, row_id: str, *, stranded: bool
+        self, df: pd.DataFrame, row_id: str
     ) -> pybedtools.BedTool:
         """
         Identity-only serialization of a canonical interval table.
 
         Only coordinates and the internal row-identity column cross the
         bedtools text boundary; user metadata is re-attached from the
-        original frame after matching (see ``_build_result``). With
-        ``stranded=True`` (only the non-normative closest placeholder
-        requests this), bedtools ``-s`` additionally requires column 6:
-        a placeholder score plus an explicit strand column (user
-        ``strand`` metadata when present, else "." = unstranded).
+        original frame after matching (see ``_build_result``). There is
+        deliberately no stranded variant: strand qualification is the
+        shared canonical predicate (SPEC 8.3), and closest (SPEC 8.6)
+        never serializes anything to bedtools.
         """
         bed_df = pd.DataFrame(
             {
@@ -743,13 +1078,6 @@ class BedtoolsEngine(AnnotationEngine):
                 row_id: np.arange(len(df), dtype="int64"),
             }
         )
-        if stranded:
-            bed_df["score"] = "."
-            if "strand" in df.columns:
-                strand = df["strand"]
-                bed_df["strand"] = strand.where(strand.notna(), ".").astype(str)
-            else:
-                bed_df["strand"] = "."
         return pybedtools.BedTool.from_dataframe(bed_df)
 
     @staticmethod
@@ -762,55 +1090,6 @@ class BedtoolsEngine(AnnotationEngine):
                 f"bedtools raw output has a non-integer {side} row-id column; "
                 "the identity-only serialization round-trip is broken"
             ) from exc
-
-    @staticmethod
-    def _python_scalar(value):
-        """Reduce numpy scalar types to their Python equivalents.
-
-        The canonicalizer publishes object-dtype metadata columns built
-        via ``astype(object)`` (Python ``int``/``float``/``bool``), so the
-        adapter must emit the same scalar types for identical input values.
-        """
-        if isinstance(value, np.bool_):
-            return bool(value)
-        if isinstance(value, np.integer):
-            return int(value)
-        if isinstance(value, np.floating):
-            return float(value)
-        return value
-
-    @staticmethod
-    def _values_from(df: pd.DataFrame, column: str, row_ids: np.ndarray) -> np.ndarray:
-        """
-        Original values of ``df[column]`` at positional ``row_ids``.
-
-        Missing input values become canonical missing (``pd.NA``); a row id
-        of -1 (unmatched row) is always canonical missing. Values keep
-        their original semantic type (numpy scalars are reduced to the
-        equivalent Python scalars, mirroring the canonicalizer's
-        object-dtype publication) — no value or dtype re-inference.
-        """
-        series = df[column]
-        values = series.to_numpy()
-        missing = series.isna().to_numpy()
-        out = np.full(len(row_ids), pd.NA, dtype=object)
-        valid = row_ids >= 0
-        rv = row_ids[valid]
-        out[valid] = [
-            pd.NA if m else BedtoolsEngine._python_scalar(v)
-            for m, v in zip(missing[rv], values[rv])
-        ]
-        return out
-
-    @staticmethod
-    def _nullable_int_values(df: pd.DataFrame, column: str, row_ids: np.ndarray):
-        """Integer coordinate values at ``row_ids``; -1 (unmatched) -> pd.NA."""
-        values = df[column].to_numpy()
-        out = pd.array([pd.NA] * len(row_ids), dtype="Int64")
-        for i, rid in enumerate(row_ids):
-            if rid >= 0:
-                out[i] = int(values[rid])
-        return out
 
     @staticmethod
     def _metadata_columns(df: pd.DataFrame) -> List[str]:
@@ -853,7 +1132,7 @@ class PolarsBioEngine(AnnotationEngine):
       deterministic canonical ordering (query input order, then
       annotation input order) and the left-mode reconstruction of
       unmatched queries, and they are removed before public output.
-    - ``pb.overlap`` / ``pb.nearest`` are invoked with explicit
+    - ``pb.overlap`` is invoked with explicit
       ``cols1``/``cols2`` and explicit suffixes. The raw backend output
       is mapped to the canonical ``coord_*``/``annot_*`` schema using
       the exact input schemas: provenance comes from input position,
@@ -887,8 +1166,22 @@ class PolarsBioEngine(AnnotationEngine):
       so ordinary ``pb.overlap`` candidates plus the shared canonical
       predicate ``within_keep_mask`` are used, after matching and before
       left reconstruction. ``min_overlap`` is NOT applied in within mode.
+    - ``mode="closest"`` (Task 6E, SPEC 8.6) is ONE backend-independent
+      operation: the engine delegates to the SAME shared canonical
+      ``canonical_closest`` selection as BedtoolsEngine — same rows,
+      same canonical distance, same ties, same ordering BY
+      CONSTRUCTION. Pinned polars-bio 0.35.1 ``nearest`` is
+      deliberately NOT used: its ``k=1`` default drops tied nearest
+      rows (verified: a symmetric distance-5 tie returns 1 of 2 rows),
+      it exposes no strand option at all, and its native ``distance``
+      column is non-normative for the contract — canonical distance is
+      recomputed by the shared ``interval_distance`` instead. (Its
+      observed native gap convention happens to match the canonical
+      formula; bedtools ``-d`` does not — neither defines the contract.)
     - Backend exceptions propagate to the caller. A valid no-match is
-      not an exception: it remains a valid empty (0-row) result.
+      not an exception: it remains a valid empty (0-row) result. (Closest
+      makes no backend call; its only failure mode is explicit input
+      validation.)
     """
 
     def intersect(
@@ -913,7 +1206,16 @@ class PolarsBioEngine(AnnotationEngine):
             # respected for left mode.
             return self._overlap(coord_df, annot_df, how)
         if self.mode == "closest":
-            return self._nearest(coord_df, annot_df)
+            # ``closest`` (SPEC 8.6, Task 6E) is ONE backend-independent
+            # operation: both engines delegate to the shared canonical
+            # selection ``canonical_closest`` (same-chromosome,
+            # strand-before-nearest, canonical ``interval_distance``,
+            # all ties, left reconstruction). pb.nearest — including its
+            # ``k=1`` tie loss and native ``distance`` column — is never
+            # invoked.
+            return canonical_closest(
+                coord_df, annot_df, how=how, use_strand=self.use_strand
+            )
         raise ValueError(f"Unknown mode: {self.mode}")
 
     # ------------------------------------------------------------------
@@ -1040,65 +1342,6 @@ class PolarsBioEngine(AnnotationEngine):
 
         df = df.drop(columns=[_PB_Q_ID_COLUMN, _PB_A_ID_COLUMN])
         return df[list(canonical_result_columns(coord_df, annot_df))]
-
-    # ------------------------------------------------------------------
-    # Closest (non-normative)
-    # ------------------------------------------------------------------
-
-    def _nearest(self, coord_df: pd.DataFrame, annot_df: pd.DataFrame) -> pd.DataFrame:
-        q_meta = self._metadata_columns(coord_df)
-        a_meta = self._metadata_columns(annot_df)
-        q_id = self._row_id_column(coord_df.columns, _PB_QUERY_ROW_ID)
-        a_id = self._row_id_column(annot_df.columns, _PB_ANNOT_ROW_ID)
-        q_frame = self._prepare_backend_frame(coord_df, q_id)
-        a_frame = self._prepare_backend_frame(annot_df, a_id)
-
-        logger.debug("Running pb.nearest on %d x %d rows", len(coord_df), len(annot_df))
-        # Backend failures MUST propagate (SPEC 9.2), same principle as
-        # overlap: a valid no-match is a valid empty result, but a backend
-        # exception must never be reported as "no matches".
-        raw = pb.nearest(
-            q_frame,
-            a_frame,
-            suffixes=_PB_SUFFIXES,
-            cols1=list(_PB_INTERVAL_COLUMNS),
-            cols2=list(_PB_INTERVAL_COLUMNS),
-            output_type="polars.DataFrame",
-        )
-
-        if raw.is_empty():
-            return pd.DataFrame()
-
-        rename, expected = self._canonical_rename_map(q_meta, a_meta, q_id, a_id)
-        df = raw.to_pandas()
-        missing = [c for c in expected if c not in df.columns]
-        # pb.nearest additionally emits an unsuffixed "distance" column.
-        unexpected = [c for c in df.columns if c not in expected and c != "distance"]
-        if missing or unexpected:
-            raise CanonicalSchemaError(
-                "polars-bio raw nearest output columns do not match the "
-                "expected suffixed mapping; column provenance cannot be "
-                f"determined explicitly. missing={missing}, unexpected={unexpected}"
-            )
-        df = df.rename(columns=rename)
-
-        # When no annotation exists, pb.nearest still emits one row per
-        # query with ALL annotation fields null (k=1, no neighbor). Those
-        # rows do not represent a real match; drop them so closest mode
-        # with an empty annotation table returns a genuinely empty result
-        # (SPEC 9.2: a valid empty, not phantom "nearest" hits).
-        df = df[df[_PB_A_ID_COLUMN].notna()].reset_index(drop=True)
-        if df.empty:
-            return pd.DataFrame()
-
-        # One row per query row (k=1); order by query input position.
-        df = df.sort_values(_PB_Q_ID_COLUMN, kind="stable")
-        df[HAS_OVERLAP_COLUMN] = True
-        df = df.drop(columns=[_PB_Q_ID_COLUMN, _PB_A_ID_COLUMN])
-        columns = list(canonical_result_columns(coord_df, annot_df))
-        if "distance" in df.columns:
-            columns.append("distance")
-        return df[columns]
 
     # ------------------------------------------------------------------
     # Shared helpers

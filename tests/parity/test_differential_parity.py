@@ -24,13 +24,19 @@ from .comparator import assert_canonical_equal, run_and_canonicalize
 
 @pytest.mark.parametrize("case", DIFFERENTIAL_CASES, ids=lambda c: c.name)
 def test_bedtools_equals_polars_bio_canonical(case):
+    # Closest mode (Task 6E, SPEC 8.6) carries the canonical nullable
+    # integer ``distance`` extra column; declare it for the
+    # canonicalization layer, mirroring ``check_expected``.
+    extra_columns = (
+        ("distance",) if case.engine_kwargs.get("mode") == "closest" else ()
+    )
     bedtools_result = run_and_canonicalize(
         BedtoolsEngine, case.coord_df, case.annot_df,
-        how=case.how, **case.engine_kwargs,
+        how=case.how, extra_columns=extra_columns, **case.engine_kwargs,
     )
     polars_result = run_and_canonicalize(
         PolarsBioEngine, case.coord_df, case.annot_df,
-        how=case.how, **case.engine_kwargs,
+        how=case.how, extra_columns=extra_columns, **case.engine_kwargs,
     )
     # strict: columns+order, row count, row order, NA-aware values, dtypes
     assert_canonical_equal(

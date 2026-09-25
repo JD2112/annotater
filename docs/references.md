@@ -18,6 +18,7 @@ Implementation notes relevant to AnnotateR:
 - `-f`, `-F`, `-r`, and `-e` have distinct fractional-overlap semantics; do not compress them into one application parameter without explicitly defining the mapping.
 - `-f` is a minimum overlap as a fraction of **A**; `-F` is a minimum overlap as a fraction of **B**. AnnotateR passes the query table as `-a` and the annotation table as `-b`, so a native `-F 1.0` expresses "the annotation is covered by the query" — the `contains` direction (SPEC 8.4) — not `within` (SPEC 8.5). Backend fraction flags must not define an AnnotateR interval relation in either direction.
 - `-s` enforces same-strand intersections.
+- **`closest -d` distance is gap + 1 for separated pairs (bedtools 2.31.1, observed):** for `[15,25)` vs `[100,200)` it reports 76 (the canonical half-open gap is 75 = 100 − 25), and for a touching pair (`a_start == q_end`) it reports 1. This native value is NON-NORMATIVE for AnnotateR: since Task 6E, `mode="closest"` never calls bedtools `closest` and recomputes the canonical distance `max(0, a_start - q_end, q_start - a_end)` (SPEC 8.6). Also note `closest` requires genomically sorted input and, by default, returns only ONE feature per query (`-t` selects which tie) — neither behavior is reproducible as-is in the AnnotateR contract (all ties are returned, SPEC 8.6).
 
 ### pybedtools
 
@@ -43,6 +44,7 @@ Important current-API observations:
 - `overlap_output="join"` returns joined overlapping pairs.
 - `overlap_output="left"` returns df1 rows that overlap at least one df2 row; it is not, by itself, equivalent to bedtools `-loj` because non-overlapping df1 rows are absent.
 - The pinned 0.35.1 package exposes no containment primitive in either direction (its interval operations are `overlap`, `nearest`, `count_overlaps`, `coverage`, `depth`, `merge`, `cluster`, `complement`, `subtract`); AnnotateR therefore derives `contains` and `within` from ordinary `overlap` candidates plus a shared canonical predicate (SPEC 8.4 / 8.5).
+- **`nearest` distance is the raw gap (0 for overlapping AND touching pairs), and `k` selects ONE row per query:** unlike bedtools `closest -d` (gap + 1 for separated pairs, 1 for touching), polars-bio `nearest.distance` reports 75 for `[15,25)` vs `[100,200)` and 0 for a touching pair, and its one-row-per-query selection is a backend-defined tie break. All of this is NON-NORMATIVE for AnnotateR: since Task 6E, `mode="closest"` never calls `nearest` and uses the shared canonical selection and distance (SPEC 8.6).
 - coordinate metadata can be used by Polars-Bio I/O paths, but AnnotateR must still own and test its canonical application coordinate semantics.
 
 The repository currently also contains `docs/polars-bio_manual.pdf`. Treat that PDF as a historical/local convenience copy. For version-sensitive implementation, the current official online documentation above takes precedence unless the project deliberately pins a version whose bundled manual is authoritative.
