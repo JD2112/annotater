@@ -3,241 +3,249 @@
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.64-red.svg)](https://streamlit.io/)
+[![Tests](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml/badge.svg)](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml)
 
-A web-based tool for annotating genomic coordinates with support for multiple file formats, automatic chromosome ID standardization, and coordinate system conversion.
+A web-based tool for annotating genomic coordinates against a feature set,
+with automatic chromosome ID standardization and coordinate system
+conversion, a Streamlit interface, and two interchangeable execution
+backends (Bedtools and Polars-Bio) that produce identical canonical
+results.
 
 ## Features
 
 ✨ **Key Capabilities:**
 
-- 📁 **Multiple Format Support**: BED, GFF, GTF, VCF, BioMart, UCSC Table Browser, custom CSV/TSV
-- 🧩 **Chromosome ID Standardization**: Auto-detect and convert between UCSC (chr1), Ensembl (1), and NCBI styles
-- 📐 **Coordinate System Handling**: Automatic conversion between 0-based and 1-based systems
-- 🎯 **Multiple Annotation Modes**: Overlap, contains, within, closest feature
-- ⚡ **Interchangeable Execution Backends**: Bedtools and Polars-Bio are both available; the engine is a user-selectable execution choice that changes performance characteristics only — the same input and options produce the same canonical result and exports on either backend
-- 🔍 **SNP Support**: Handle both single positions and genomic intervals
-- 📊 **Interactive UI**: Modern Streamlit interface with real-time previews
-- 🐳 **Docker Ready**: Containerized for easy deployment
+- 📁 **Multiple Format Support**: BED, GFF3, GTF, VCF, and custom
+  CSV/TSV (including tab-separated exports such as BioMart or UCSC Table
+  Browser downloads)
+- 🧩 **Chromosome ID Standardization**: auto-detect and convert between
+  UCSC (`chr1`), Ensembl (`1`), and NCBI styles
+- 📐 **Canonical Coordinates**: all results are computed and reported in
+  a single canonical model (0-based half-open intervals); 1-based formats
+  (GFF3/GTF/VCF) are converted explicitly at parse time
+- 🎯 **Annotation Modes**: overlap (with optional minimum overlap
+  fraction), contains, within, closest — all with identical semantics on
+  both backends
+- ⚡ **Interchangeable Execution Backends**: Bedtools (reference, external
+  binary) and Polars-Bio (in-process) are a user-selectable execution
+  choice. The same input and options produce the **same canonical result
+  and exports** on either backend (parity is test-enforced, not assumed)
+- 🔍 **SNP Support**: handle both single positions (VCF) and genomic
+  intervals
+- 🧪 **Strand-aware matching**: optional, explicit same-strand filtering
+- 📊 **Interactive UI**: modern Streamlit interface with real-time
+  previews and CSV/TSV/Excel export
+- 🐳 **Docker Ready**: containerized for local use and SciLifeLab Serve
+  deployment
 
-## Quick Start
+## Operations and backends
 
-### Using Docker (Recommended)
+All operations are provided by AnnotateR (shared canonical logic) and are
+guaranteed equivalent on both backends; the backend is an implementation
+detail the user can switch freely:
+
+| Operation | Bedtools | Polars-Bio | Canonical semantics |
+|---|---|---|---|
+| Overlap | ✓ | ✓ | positive half-open overlap |
+| Minimum query overlap (`min_overlap`) | ✓ | ✓ | query-relative fraction |
+| Strand-aware matching | ✓ | ✓ | same explicit strand (missing strand is never a wildcard) |
+| Contains | ✓ | ✓ | query contains annotation |
+| Within | ✓ | ✓ | query within annotation |
+| Closest | ✓ | ✓ | canonical gap distance; all tied-nearest annotations returned |
+
+The backend may change *where* the computation runs (bedtools binary vs
+in-process Polars-Bio), never *what* it returns. See
+[docs/engine-contract.md](docs/engine-contract.md) for the normative
+definition of each operation.
+
+## Quick start
+
+### Using Docker (recommended)
 
 ```bash
-# Clone repository
-git clone https://github.com/your-org/annotater.git
+git clone https://github.com/pyrevo/annotater.git
+cd annotater
+docker-compose up --build
+# -> http://localhost:8501
+```
+
+### Local installation
+
+```bash
+git clone https://github.com/pyrevo/annotater.git
 cd annotater
 
-# Build and run with Docker Compose
-docker-compose up
+# bedtools system binary — required only for the Bedtools backend
+# (the Polars-Bio backend is fully in-process)
+brew install bedtools          # macOS
+# sudo apt-get install bedtools  # Debian/Ubuntu
 
-# Access at http://localhost:8501
-```
-
-### Local Installation
-
-```bash
-# Install system dependencies — required only for the Bedtools backend
-# (macOS)
-brew install bedtools
-
-# Or on Linux
-sudo apt-get install bedtools
-
-# Install Python dependencies
-# (the Polars-Bio backend ships inside the Python package and needs no
-# external binary; bedtools is only needed for the Bedtools backend)
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# Run application
 streamlit run streamlit_app/streamlit_app.py
+# -> http://localhost:8501
 ```
+
+Then follow [QUICKSTART.md](QUICKSTART.md) to upload files, run an
+annotation, and download results.
 
 ## Usage
 
-1. **Upload Files**
-   - Upload your coordinate file (BED, VCF, or custom format)
-   - Upload your annotation file (GFF, GTF, or custom format)
-
-2. **Configure Settings** (optional)
-   - Annotation engine: Bedtools (reference, external binary) or Polars-Bio (in-process, no external binary required) — interchangeable execution backends with identical semantics
-   - Coordinate system (auto-detected by default)
-   - Chromosome ID handling (auto-converted by default)
-   - Annotation mode (overlap, contains, within, closest)
-   - Strand matching (off by default: strand is not required; when on, both intervals must carry an explicit, equal strand)
-   - Minimum overlap fraction (overlap mode only; 0 = any positive overlap)
-   - Feature type filter for GFF/GTF annotations
-
-3. **Run Annotation**
-   - Click "Run Annotation"
-   - View results in interactive table
-   - Download as CSV, TSV, or Excel
+1. **Upload files** — a coordinate file (BED/VCF/CSV/TSV) and an
+   annotation file (GFF3/GTF/BED/CSV/TSV).
+2. **Configure** (all have safe defaults):
+   - **Engine**: Bedtools or Polars-Bio (interchangeable backends)
+   - **Coordinate system**: auto-detected by default
+   - **Chromosome IDs**: auto-converted by default
+   - **Mode**: overlap / contains / within / closest
+   - **Strand matching**: off by default; when on, both intervals must
+     carry an explicit, equal strand
+   - **Minimum overlap fraction**: overlap mode only (0 = any positive
+     overlap)
+   - **Feature type filter**: GFF3/GTF annotations
+3. **Run annotation** — view the canonical result table, inspect metrics,
+   and download as CSV, TSV, or Excel.
 
 ### Example
 
-```python
-# Coordinate file (BED format):
+```text
+# Coordinate file (BED, 0-based half-open):
 chr1    100000  100500  region1
 chr2    200000  200300  region2
 
-# Annotation file (GFF format):
+# Annotation file (GFF3, 1-based inclusive — converted at parse time):
 chr1    RefSeq  gene    50000   150000  .   +   .   gene_id "GENE1"
 chr1    RefSeq  exon    99000   101000  .   +   .   gene_id "GENE1"
 
-# Result: Coordinates annotated with overlapping genes/features
+# Result: region1 annotated with GENE1 (the gene and its exon overlap
+# [100000, 100500)); region2 has no overlap in this example.
 ```
 
-## Supported File Formats
+## Coordinate model
 
-### Input Coordinates
-- **BED**: BED3, BED6, BED12
-- **VCF**: Variant call format
-- **Custom**: Any TSV/CSV with chr, start, end columns
+| System | Formats | Interval type | Example |
+|--------|---------|---------------|---------|
+| 0-based | BED | Half-open `[start, end)` | `[100, 200)` = positions 100–199 |
+| 1-based | GFF3, GTF, VCF | Closed `[start, end]` | `[101, 200]` = positions 101–200 |
 
-### Annotations
-- **GFF/GTF**: GFF2, GFF3, GTF
-- **BED**: BED format as annotation source
-- **BioMart**: Exports from Ensembl BioMart
-- **UCSC**: Table Browser downloads
-- **Custom**: Any delimited file with genomic coordinates
+AnnotateR converts at the parser boundary; every downstream operation and
+every exported result uses the canonical 0-based half-open model. VCF
+variants are expanded to intervals using the standard REF/END rules.
 
-## Chromosome ID Handling
+## Testing status
 
-AnnotateR automatically detects and converts between different naming conventions:
+The full test suite (unit, integration, and the Bedtools↔Polars-Bio parity
+harness) is documented in
+[QUICKSTART.md](QUICKSTART.md#-development-environment-and-tests); the
+single documented command is:
 
-| Convention | Example | Description |
-|------------|---------|-------------|
-| UCSC | chr1, chr2, chrX, chrY, chrM | UCSC Genome Browser style |
-| Ensembl | 1, 2, X, Y, MT | Ensembl/GENCODE style |
-| NCBI | NC_000001.11 | RefSeq accessions |
+```bash
+pytest
+```
 
-**Automatic conversion** ensures your files are compatible even if they use different styles!
+CI runs the full suite on Ubuntu and macOS (Python 3.12), builds the
+production image, and runs the in-container smoke test plus a
+deterministic, parity-gated benchmark smoke
+([.github/workflows/python-tests.yml](.github/workflows/python-tests.yml)).
 
-## Coordinate Systems
+## Performance
 
-| System | Format | Interval Type | Example |
-|--------|--------|---------------|---------|
-| 0-based | BED, BAM | Half-open [start, end) | [100, 200) = positions 100-199 |
-| 1-based | GFF, GTF, VCF, SAM | Closed [start, end] | [101, 200] = positions 101-200 |
+Backend performance is workload-dependent; the benchmark characterizes
+both backends under controlled synthetic workloads (sizes, densities,
+operations) with parity verified before any number is accepted:
 
-AnnotateR automatically converts coordinates based on file format detection.
+- **[docs/benchmark.md](docs/benchmark.md)** — methodology, environment,
+  results, interpretation, and how to reproduce
+- `benchmarks/benchmark_engines.py` — the deterministic benchmark script
 
-## Annotation Modes
+## Deployment
 
-1. **Overlap** (default): Find annotations with any overlap
-2. **Contains**: Return annotations fully contained within each query interval (query contains annotation)
-3. **Within**: Return annotations that fully contain each query interval (query is contained within annotation)
-4. **Closest**: Return the nearest annotation interval(s) (even without overlap); tied nearest annotations are all returned, and the result carries a canonical `distance` column (0 for overlapping/touching intervals, otherwise the number of bases in the gap)
+- **SciLifeLab Serve** (and general container deployment):
+  **[docs/deployment.md](docs/deployment.md)** — image build, local
+  container test, Serve setup step-by-step, configuration, verification,
+  common failure modes.
+- **docker-compose** is provided for local container use.
 
 ## Architecture
 
 ```
-annotator/
+annotater/
+├── app.py                     # SciLifeLab Serve entry-point shim
 ├── streamlit_app/
 │   ├── streamlit_app.py       # Main Streamlit application
-│   ├── core/                   # Core logic modules
-│   │   ├── parsers.py          # File format parsers
-│   │   ├── chromosome.py       # Chromosome ID handling
-│   │   ├── coordinates.py      # Coordinate system conversion
-│   │   └── annotator.py        # Annotation engine
-│   ├── utils/                  # Utility functions
-│   │   ├── validators.py       # Input validation
-│   │   └── helpers.py          # Helper functions
-│   └── config/
-│       └── settings.py         # Configuration
-├── app/                        # legacy Shiny app
-├── tests/                      # Unit tests
-├── data/examples/              # example files
+│   ├── core/                   # Parsers, normalization, engines, schema
+│   ├── utils/                  # Validation, helpers
+│   └── config/                 # Settings
+├── benchmarks/                 # Deterministic backend benchmark
+├── scripts/                    # In-container smoke test
+├── tests/                      # Unit/integration/parity test suites
+├── docs/                       # Architecture, engine contract, deployment,
+│                               # benchmark, references, implementation notes
+├── data/examples/              # Bundled example inputs
+├── app/                        # Legacy Shiny app (superseded, not part of the product)
 ├── Dockerfile
 ├── docker-compose.yml
-└── requirements.txt
+└── requirements.txt / requirements-dev.txt
 ```
+
+See [docs/architecture.md](docs/architecture.md) for the module layout and
+[docs/engine-contract.md](docs/engine-contract.md) for the backend
+contract.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [SPEC.md](SPEC.md) | Normative product/scientific contract |
+| [QUICKSTART.md](QUICKSTART.md) | Install, run, configure, test |
+| [docs/architecture.md](docs/architecture.md) | Module architecture |
+| [docs/engine-contract.md](docs/engine-contract.md) | Engine semantics and backend contract |
+| [docs/deployment.md](docs/deployment.md) | Docker and SciLifeLab Serve deployment |
+| [docs/benchmark.md](docs/benchmark.md) | Backend benchmark methodology and results |
+| [docs/references.md](docs/references.md) | External manuals for version-sensitive decisions |
+| [docs/implementation-notes.md](docs/implementation-notes.md) | Per-task implementation record |
+
+## Limitations
+
+- **Input formats**: BED, GFF3, GTF, VCF, and custom delimited tables
+  (chr/start/end). Other formats (e.g., BAM, BEDPE) are not supported.
+- **Coordinates**: canonical results are 0-based half-open. The Bedtools
+  backend (via pybedtools) cannot process coordinates ≥ 2³¹
+  (2,147,483,647); all natural chromosomes are far below this bound, so
+  real genomic data is unaffected (see
+  [docs/benchmark.md](docs/benchmark.md)).
+- **Runtime**: Python ≥ 3.12, < 3.15 is install-compatible; 3.12 is the
+  tested and supported runtime. The production Docker image is
+  `linux/amd64` only (Polars-Bio wheel availability; see
+  [docs/deployment.md](docs/deployment.md)).
+- **Memory**: inputs and canonical results are held in memory; very large
+  files (hundreds of MB) require proportionally large RAM. There is no
+  streaming/lazy execution yet.
+- **Closest mode**: returns all tied-nearest annotations with a canonical
+  `distance`; there is no `k > 1` ranked nearest list and no signed
+  upstream/downstream nearest mode.
+- **UI**: single-user interactive tool; no account system, no saved
+  projects, no server-side persistence (uploads are processed in memory).
+- **Deployment**: on SciLifeLab Serve the platform caps uploads at
+  100 MB per file.
 
 ## Development
 
-### Running Tests
-
 ```bash
-pytest tests/ -v --cov=streamlit_app
-```
+# Full test suite (from the repository root)
+pytest
 
-### Code Formatting
-
-```bash
+# Formatting / lint (as configured in CI)
 black streamlit_app/
 ruff check streamlit_app/
 ```
 
-### Adding New File Parsers
-
-1. Create parser class in `streamlit_app/core/parsers.py`
-2. Implement `parse()` method returning pandas DataFrame
-3. Add to `FormatDetector.detect()` method
-4. Update documentation
-
-## Deployment
-
-### SciLifeLab Serve
-
-```bash
-# Build image
-docker build -t annotator:latest .
-
-# Tag for SciLifeLab registry
-docker tag annotator:latest registry.serve.scilifelab.se/annotator:latest
-
-# Push to registry
-docker push registry.serve.scilifelab.se/annotator:latest
-
-# Deploy (follow SciLifeLab serve guidelines)
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MAX_FILE_SIZE_MB` | 500 | Maximum upload file size |
-| `CHUNK_SIZE` | 100000 | Rows per chunk for large files |
-| `LOG_LEVEL` | INFO | Logging verbosity |
-| `TEMP_DIR` | /tmp/annotator | Temporary file directory |
-
-## Performance
-
-Benchmarks on typical genomics files (MacBook Pro M1):
-
-| Operation | File Size | Time |
-|-----------|-----------|------|
-| Load BED | 100K lines | 0.5s |
-| Load GFF | 50K features | 1.2s |
-| Intersect | 100K × 50K | 1.8s |
-| Export TSV | 150K results | 0.4s |
-
-**Memory usage**: ~5x file size (e.g., 100MB file → ~500MB RAM)
-
-## Troubleshooting
-
-### "No overlaps found"
-- Check chromosome ID mismatch (e.g., "chr1" vs "1")
-- Enable auto-convert in settings
-- Verify coordinate systems (0-based vs 1-based)
-
-### "File too large"
-- Increase `MAX_FILE_SIZE_MB` environment variable
-- Use GFF feature filtering to reduce annotation size
-- Process in chunks for very large files
-
-### Docker issues
-- Ensure Docker daemon is running
-- Check port 8501 is not in use: `lsof -i :8501`
-- View logs: `docker-compose logs streamlit`
-
 ## Citation
 
-If you use AnnotateR in your research, please cite:
-
-```
-Das, J. & Volpe, M. (2025). AnnotateR: A web-based tool for genomic coordinate annotation.
-```
+Citation metadata is maintained in
+[CITATION.cff](CITATION.cff).
 
 ## License
 
@@ -260,7 +268,3 @@ For questions, bug reports, or feature requests:
 - bedtools team for the fast intersection engine
 - Streamlit team for the amazing web framework
 - The bioinformatics community for feedback and testing
-
----
-
-**Built with ❤️ for the bioinformatics community**

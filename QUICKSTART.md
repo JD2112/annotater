@@ -5,8 +5,8 @@
 ### Option 1: Docker (Recommended)
 
 ```bash
-# 1. Navigate to project directory
-cd /Users/masvo/Documents/repo/annotater
+# 1. Navigate to the repository root
+cd /path/to/annotater
 
 # 2. Build and start the application
 docker-compose up --build
@@ -18,15 +18,20 @@ docker-compose up --build
 # Press Ctrl+C
 ```
 
+Note: `docker-compose.yml` mounts your local `streamlit_app/` and `data/`
+directories into the container, so local edits are picked up without
+rebuilding. (For an exact production-like run, build and run the image
+instead — see [docs/deployment.md](docs/deployment.md).)
+
 ### Option 2: Local Installation
 
 ```bash
-# 1. Install bedtools (macOS)
+# 1. Install bedtools (only if you want the Bedtools backend)
 brew install bedtools
 
 # 2. Create virtual environment (recommended)
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 
 # 3. Install Python dependencies
 pip install -r requirements.txt
@@ -74,8 +79,11 @@ The project includes example files in `data/examples/`:
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 2. Install Python dependencies (includes pytest and pytest-cov)
+# 2. Install Python dependencies (runtime only)
 pip install -r requirements.txt
+
+# For development (adds pytest, pytest-cov, black, ruff — as used by CI):
+pip install -r requirements-dev.txt
 ```
 
 ### Run the test suite (single documented command, from the repository root)
@@ -149,13 +157,13 @@ streamlit run streamlit_app/streamlit_app.py --server.port=8502
 
 ### Import Errors
 ```bash
-# Make sure you're in the project directory
-cd /Users/masvo/Documents/repo/annotater
+# Make sure you're in the repository root
+# (the directory that contains requirements.txt)
 
 # Install dependencies again
 pip install -r requirements.txt
 
-# Run from project root
+# Run from the repository root
 streamlit run streamlit_app/streamlit_app.py
 ```
 
@@ -176,9 +184,10 @@ docker-compose up --build
 
 ## 📚 Next Steps
 
-1. **Read the Full Documentation**: See [README.md](README.md)
-2. **Review the Roadmap**: See [development_roadmap.md](.gemini/antigravity/brain/*/development_roadmap.md)
-3. **Understand the Architecture**: Check the walkthrough
+1. **Read the Specification**: See [SPEC.md](SPEC.md) (normative product/scientific contract)
+2. **Understand the Architecture**: See [docs/architecture.md](docs/architecture.md) and [docs/engine-contract.md](docs/engine-contract.md)
+3. **Deploy it**: See [docs/deployment.md](docs/deployment.md)
+4. **Compare the backends**: See [docs/benchmark.md](docs/benchmark.md)
 
 ---
 
