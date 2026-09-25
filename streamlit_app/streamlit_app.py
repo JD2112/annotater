@@ -275,8 +275,9 @@ def render_sidebar() -> dict:
             ),
         )
         st.caption(
-            "**Bedtools** — reference implementation. "
-            "**Polars-Bio** — high-performance implementation."
+            "**Bedtools** — reference implementation (external binary). "
+            "**Polars-Bio** — in-process implementation "
+            "(no external binary required)."
         )
         engine_key = _ENGINE_LABEL_TO_KEY[engine_label_sel]
         if not engine_available(engine_key):

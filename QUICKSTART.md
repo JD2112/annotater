@@ -111,7 +111,7 @@ Upload one of:
 
 ### Annotation Engine
 - **Bedtools** (default): the reference implementation; requires the `bedtools` system binary
-- **Polars-Bio**: the high-performance implementation; ships inside the Python package (no external binary)
+- **Polars-Bio**: the in-process implementation; ships inside the Python package (no external binary)
 
 Both engines are interchangeable execution backends: the same input and options produce the same canonical result, schema, and exports on either. Selecting an unavailable backend shows a clear error instead of silently falling back to the other.
 

@@ -58,7 +58,7 @@ ENGINE_LABELS = dict(ENGINE_OPTIONS)
 #: benchmark evidence.
 ENGINE_DESCRIPTIONS = {
     "bedtools": "Reference implementation",
-    "polars-bio": "High-performance implementation",
+    "polars-bio": "In-process implementation",
 }
 
 #: Historical default backend, preserved (Task 7 section 13).

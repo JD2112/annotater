@@ -60,7 +60,7 @@ streamlit run streamlit_app/streamlit_app.py
    - Upload your annotation file (GFF, GTF, or custom format)
 
 2. **Configure Settings** (optional)
-   - Annotation engine: Bedtools (reference) or Polars-Bio (high-performance) — interchangeable execution backends with identical semantics
+   - Annotation engine: Bedtools (reference, external binary) or Polars-Bio (in-process, no external binary required) — interchangeable execution backends with identical semantics
    - Coordinate system (auto-detected by default)
    - Chromosome ID handling (auto-converted by default)
    - Annotation mode (overlap, contains, within, closest)
