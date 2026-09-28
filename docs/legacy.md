@@ -27,3 +27,12 @@ Disposition decisions (release-prep-0.1.0 pass):
   `.dockerignore` additionally excludes `app/`, `renv.lock`, and `renv/`.
 - **Final decision** (delete vs. move to `legacy/`) happens after manual
   GUI acceptance, as a separate, reference-safe cleanup.
+
+Historical license headers: the legacy R files retain their original
+author-header license statements (e.g. "License: GNU GPLv3" in
+`app/app.R`) unchanged, as part of the historical record. Those headers
+do not describe the current product: the current AnnotateR
+Python/Streamlit release is licensed under **BSD-3-Clause** (root
+`LICENSE`; license provenance and the maintainer decision are recorded in
+[implementation-notes.md](implementation-notes.md)). No claim is made
+about retroactive relicensing of the historical implementation.

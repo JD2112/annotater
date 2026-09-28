@@ -1651,10 +1651,11 @@ or Streamlit layout changes.
 - `docs/development_roadmap.md.resolved` historically *suggested*
   1.0.0; it is a resolved historical record and was not altered.
 
-### License provenance audit — MAINTAINER DECISION REQUIRED
+### License provenance audit — RESOLVED: maintainers selected BSD-3-Clause
 
-License normalization was STOPPED per the resolution policy: provenance
-is ambiguous/conflicting. Evidence:
+License normalization was STOPPED in the first pass per the resolution
+policy: provenance is ambiguous/conflicting. Evidence (historical
+record, kept intact for transparency):
 
 | Artifact | First relevant commit | License shown | Notes |
 |---|---|---|---|
@@ -1682,8 +1683,36 @@ Consequently, in this pass:
   License section, app footer, `pyproject.toml`, `CITATION.cff` all
   untouched in their license content);
 - `CITATION.cff`'s omission note was updated to point at this audit;
-- the README badge and footer retain GPLv3 wording until the maintainers
-  decide; the Task 8 "release audit" recommendation stands.
+- the README badge and footer retained GPLv3 wording until the
+  maintainers decide; the Task 8 "release audit" recommendation stood.
+
+#### License decision (maintainers, recorded 2026-09-28)
+
+**RESOLVED — the maintainers selected BSD-3-Clause as the canonical
+license for the current AnnotateR project/release**, after reviewing the
+conflicting historical metadata in the table above. Both project
+maintainers/contributors authorized the decision. The audit findings
+above are historical: they explain why the decision was required, not
+what the current license is.
+
+Follow-up edits made under this decision (commit "docs: resolve
+AnnotateR license as BSD-3-Clause"):
+
+- root `LICENSE` kept (standard BSD-3-Clause text); copyright
+  attribution updated to name both confirmed project authors
+  ("Copyright (c) 2025, Jyotirmoy Das & Massimiliano Volpe") —
+  conservative attribution, no ownership percentages or institutional
+  ownership claimed;
+- README license badge and License section: GPLv3 → BSD-3-Clause;
+- Streamlit footer: "License: GNU GPLv3" → "License: BSD-3-Clause";
+- `pyproject.toml`: added `license = { text = "BSD-3-Clause" }` (PEP 621);
+- `CITATION.cff`: `license: BSD-3-Clause` added; `version` /
+  `date-released` / DOI / publication still absent (no formal release
+  exists yet; added during the v0.1.0 release step);
+- historical GPL statements in the legacy R files (`app/annotater.R`,
+  `app/app.R`) are retained unchanged as historical header text (see
+  docs/legacy.md); the legacy implementation remains excluded from the
+  production image.
 
 ### Legacy R implementation (retain / document / exclude / defer)
 

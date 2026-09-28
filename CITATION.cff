@@ -22,18 +22,14 @@ keywords:
   - bedtools
   - polars-bio
   - streamlit
-# NOTE: the `license` field is intentionally omitted pending a MAINTAINER
-# DECISION. Provenance audit (release-prep-0.1.0 pass): the initial
-# LICENSE was GPLv3 (initial commit 2fc8261, 2024-05-09); it was replaced
-# by BSD-3-Clause in a5fc572 (2025-06-27, "first devel version") — a
-# bulk template-import commit that also added a CITATION.cff belonging to
-# an unrelated project — with no recorded license-change decision. The
-# project's own R code headers (app/annotater.R, app/app.R) say GPLv3, and
-# the README badge and app footer have said GPLv3 since 2025-12-05.
-# Neither declaration is clearly the deliberate project license; see
-# docs/implementation-notes.md (release-prep housekeeping record) and
-# docs/legacy.md. Do not add a value here without resolving that.
-#
+# License: RESOLVED. The maintainers selected BSD-3-Clause as the
+# canonical license for the current AnnotateR project/release, after
+# reviewing the conflicting historical metadata documented in the
+# provenance audit (this file's original notes; see
+# docs/implementation-notes.md, "Release-prep 0.1.0 housekeeping").
+# No DOI, publication, or release date is claimed.
+license: BSD-3-Clause
+
 # NOTE: `version` and `date-released` are intentionally absent. No git tag
 # or GitHub Release exists yet; per CFF best practice they will be added
 # during the v0.1.0 release step after manual GUI acceptance (see
