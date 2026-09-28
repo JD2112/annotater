@@ -22,7 +22,19 @@ keywords:
   - bedtools
   - polars-bio
   - streamlit
-# NOTE: the `license` field is intentionally omitted until the repository
-# license is settled: LICENSE is BSD-3-Clause while README.md and the app
-# footer state GPLv3 (see docs/implementation-notes.md, Task 8 release
-# audit). Do not add a value here without resolving that discrepancy.
+# NOTE: the `license` field is intentionally omitted pending a MAINTAINER
+# DECISION. Provenance audit (release-prep-0.1.0 pass): the initial
+# LICENSE was GPLv3 (initial commit 2fc8261, 2024-05-09); it was replaced
+# by BSD-3-Clause in a5fc572 (2025-06-27, "first devel version") — a
+# bulk template-import commit that also added a CITATION.cff belonging to
+# an unrelated project — with no recorded license-change decision. The
+# project's own R code headers (app/annotater.R, app/app.R) say GPLv3, and
+# the README badge and app footer have said GPLv3 since 2025-12-05.
+# Neither declaration is clearly the deliberate project license; see
+# docs/implementation-notes.md (release-prep housekeeping record) and
+# docs/legacy.md. Do not add a value here without resolving that.
+#
+# NOTE: `version` and `date-released` are intentionally absent. No git tag
+# or GitHub Release exists yet; per CFF best practice they will be added
+# during the v0.1.0 release step after manual GUI acceptance (see
+# docs/release-plan-0.1.0.md). No DOI or publication is claimed.

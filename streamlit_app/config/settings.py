@@ -11,7 +11,11 @@ class Settings:
     
     # Application metadata
     APP_NAME = "AnnotateR"
-    VERSION = "1.0.0"
+    # Single source of truth for the application version; the footer and
+    # streamlit_app.__version__ both derive from this value. Aligned with
+    # pyproject.toml for the 0.1.0 pre-release housekeeping pass; the
+    # actual v0.1.0 tag happens only after manual GUI acceptance.
+    VERSION = "0.1.0"
     DESCRIPTION = "Genomic Coordinate Annotation Tool"
     
     # File handling

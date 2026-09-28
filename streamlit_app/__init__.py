@@ -8,6 +8,10 @@ A web-based tool for annotating genomic coordinates with support for:
 - Fast intersection using bedtools
 """
 
-__version__ = "1.0.0"
+from .config.settings import Settings as _Settings
+
+# Derived from the single version source of truth (Settings.VERSION);
+# keep pyproject.toml aligned when bumping.
+__version__ = _Settings.VERSION
 __author__ = "Jyotirmoy Das, Ph.D. & Massimiliano Volpe, Ph.D."
 __email__ = "jyotirmoy.das@liu.se, massimiliano.volpe@scilifelab.se"

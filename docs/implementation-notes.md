@@ -1626,3 +1626,95 @@ Docker verification (local, Apple M1 Pro, QEMU-emulated linux/amd64):
 - `docker run --rm --entrypoint python annotater:dev
   /app/benchmarks/benchmark_engines.py --quick` → **exit 0**, both
   engines parity `verified` (this is CI's benchmark smoke step).
+
+## Release-prep 0.1.0 housekeeping (post-Task 8, pre-GUI-acceptance)
+
+Non-scientific pre-release pass on branch `release-prep-0.1.0`. No
+genomic semantics, engine behavior, parsing, normalization, benchmark,
+or Streamlit layout changes.
+
+### Version alignment (done)
+
+- Before: `pyproject.toml` = `0.1.0`; `streamlit_app/__init__.py`
+  `__version__` = `1.0.0`; `streamlit_app/config/settings.py`
+  `Settings.VERSION` = `1.0.0` (shown in the app footer).
+- After: `Settings.VERSION` = `0.1.0` is the single source of truth;
+  `streamlit_app.__version__` now derives from `Settings.VERSION`.
+  Aligned with `pyproject.toml` (`0.1.0`).
+- No git tag, no GitHub Release (created only after manual GUI
+  acceptance, per `docs/release-plan-0.1.0.md`).
+- `CITATION.cff` keeps no `version` / `date-released` / DOI /
+  publication: none exist to claim; they are added during the release
+  step (noted in the file).
+- The legacy R app footer (`app/app.R`) already says "Version 0.1.0";
+  it is historical and untouched.
+- `docs/development_roadmap.md.resolved` historically *suggested*
+  1.0.0; it is a resolved historical record and was not altered.
+
+### License provenance audit — MAINTAINER DECISION REQUIRED
+
+License normalization was STOPPED per the resolution policy: provenance
+is ambiguous/conflicting. Evidence:
+
+| Artifact | First relevant commit | License shown | Notes |
+|---|---|---|---|
+| Root `LICENSE` | `2fc8261` (2024-05-09, "Initial commit") | GPLv3 (full text) | Initial commit is only `.gitignore` (R template), 2-line README ("# annotator"), and the GPL text; no project code existed |
+| Root `LICENSE` (replacement) | `a5fc572` (2025-06-27, "first devel version") | BSD-3-Clause (Copyright (c) 2025, Jyotirmoy Das) | GPL text replaced by BSD-3-Clause inside a bulk template-import commit that also added `CITATION.cff` titled "Image-Processing-MATLAB" with an external Zenodo DOI (10.5281/zenodo.11104350, date-released 2024-05-02), `CODEOWNERS.md`, `CODE_OF_CONDUCT.md`, `Dockerfile`. No commit message or other record mentions a license decision |
+| `CITATION.cff` (original) | `a5fc572` (2025-06-27) | (no license field) | Belonged to an unrelated project (MATLAB image processing); rewritten in `867164e` (Task 8) for AnnotateR, license field omitted pending this decision |
+| `app/annotater.R` | `d0aca6b` (2025-06-27, "Updated and launched on serve") | "GNU3 open license" (author header) | License statement in the project's own original R code |
+| `app/app.R` | `d0aca6b` (2025-06-27) | "License: GNU GPLv3" (author header) | License statement in the project's own original R code; its footer also claims GPLv3 ("Version 0.1.0") |
+| `README.md` (badge + License section) | `524c493` (2025-12-05, Streamlit app PR) | GPLv3 | Added after `LICENSE` was already BSD; badge/section link to the BSD `LICENSE` file, i.e. internally inconsistent from the start |
+| Streamlit footer (`streamlit_app/streamlit_app.py`) | `524c493` (2025-12-05) | "License: GNU GPLv3" | Copied from the legacy R app footer |
+
+Interpretation: no commit message, issue, or document records a
+deliberate license (re-)decision. The oldest GPLv3 LICENSE predates any
+project code and plausibly comes from the same pyrevo template that
+later supplied the unrelated "Image-Processing-MATLAB" CITATION.cff; the
+BSD-3-Clause LICENSE likewise arrived in a template-import commit with
+no stated decision. The only license statements attached to the
+project's own code (the R app, 2025-06-27) say GPLv3. Both readings
+("stale template GPL" vs "stale template BSD, deliberate code headers")
+remain possible — the decision is made to the maintainers.
+
+Consequently, in this pass:
+
+- no license declaration was changed (root `LICENSE`, README badge and
+  License section, app footer, `pyproject.toml`, `CITATION.cff` all
+  untouched in their license content);
+- `CITATION.cff`'s omission note was updated to point at this audit;
+- the README badge and footer retain GPLv3 wording until the maintainers
+  decide; the Task 8 "release audit" recommendation stands.
+
+### Legacy R implementation (retain / document / exclude / defer)
+
+Audited `.Rprofile`, `app/annotater.R`, `app/app.R`, `app/www/*`,
+`renv.lock`, `docs/polars-bio_manual.pdf`: all are historical/reference
+artifacts, none is a runtime dependency of the current product, none is
+referenced by current code except `docs/references.md` describing the
+PDF. Inventory + disposition recorded in the new
+[docs/legacy.md](legacy.md); a short note added at `app/README.md`.
+Nothing deleted or moved. Production image exclusion re-verified:
+`Dockerfile` white-lists app code only; `.dockerignore` excludes
+`app/`, `renv.lock`, `renv/`.
+
+`docs/polars-bio_manual.pdf`: downloaded copy of upstream Polars-Bio
+docs; `docs/references.md` already states the online documentation takes
+preference. It IS referenced (by references.md), so per the pass rules
+it is retained for now and flagged as a removal candidate after GUI
+acceptance.
+
+### Changelog
+
+The repository maintains no changelog (per-task records live in
+`docs/implementation-notes.md` and `PLAN.md`). No changelog system was
+created; the first-release summary belongs in the GitHub Release
+(see `docs/release-plan-0.1.0.md` step 6).
+
+### Hygiene
+
+Tracked-artifact check: no `.pi/`, `__pycache__/`, `.DS_Store`,
+`.pytest_cache/`, or `benchmarks/results/` files are tracked; all are
+git-ignored. Untracked local-only items left untouched (reported):
+`annotater-review_PR.zip` (review export, `*.zip` ignored), `.venv/`,
+`__pycache__/`, `.pytest_cache/`, `.DS_Store`. No secrets/credentials
+found in tracked content. No obsolete tracked ZIPs or test outputs.
