@@ -1,6 +1,6 @@
 # External References and Manuals
 
-**Last checked:** 2026-09-21
+**Last checked:** 2026-09-25
 
 This file is the reference index for version-sensitive implementation decisions. Prefer primary project documentation and specifications. Agents changing interval semantics MUST consult the relevant reference rather than relying on memory or inferred backend behavior.
 
@@ -28,6 +28,8 @@ Implementation notes relevant to AnnotateR:
 
 pybedtools is a Python wrapper around bedtools behavior. The external bedtools executable remains a system dependency and should be documented separately from Python requirements.
 
+Empirical observation (Task 8): pybedtools' Cython iterator packs record positions into a 32-bit `CHRPOS` field, so result iteration raises `OverflowError: value too large to convert to CHRPOS` for coordinates >= 2**31 (2,147,483,647). This is a hard input limit of AnnotateR's Bedtools backend as implemented (see `docs/benchmark.md`, Limitations); every natural chromosome is far below this bound.
+
 ### Polars-Bio
 
 - **Documentation home:** https://biodatageeks.org/polars-bio/
@@ -36,6 +38,8 @@ pybedtools is a Python wrapper around bedtools behavior. The external bedtools e
 - **Genomic operations guide:** https://biodatageeks.org/polars-bio/features/operations/
 - **DataFrame support:** https://biodatageeks.org/polars-bio/features/dataframes/
 - **GitHub:** https://github.com/biodatageeks/polars-bio
+- **PyPI (pinned release):** https://pypi.org/project/polars-bio/0.35.1/
+- **PyPI JSON (wheel metadata, machine-readable):** https://pypi.org/pypi/polars-bio/0.35.1/json
 
 Important current-API observations:
 
@@ -46,6 +50,7 @@ Important current-API observations:
 - The pinned 0.35.1 package exposes no containment primitive in either direction (its interval operations are `overlap`, `nearest`, `count_overlaps`, `coverage`, `depth`, `merge`, `cluster`, `complement`, `subtract`); AnnotateR therefore derives `contains` and `within` from ordinary `overlap` candidates plus a shared canonical predicate (SPEC 8.4 / 8.5).
 - **`nearest` distance is the raw gap (0 for overlapping AND touching pairs), and `k` selects ONE row per query:** unlike bedtools `closest -d` (gap + 1 for separated pairs, 1 for touching), polars-bio `nearest.distance` reports 75 for `[15,25)` vs `[100,200)` and 0 for a touching pair, and its one-row-per-query selection is a backend-defined tie break. All of this is NON-NORMATIVE for AnnotateR: since Task 6E, `mode="closest"` never calls `nearest` and uses the shared canonical selection and distance (SPEC 8.6).
 - coordinate metadata can be used by Polars-Bio I/O paths, but AnnotateR must still own and test its canonical application coordinate semantics.
+- **Wheel availability (re-verified 2026-09-25 from the PyPI JSON above):** the pinned 0.35.1 release publishes a `manylinux_2_17_x86_64` wheel and macOS/Windows wheels, but **no `linux/aarch64` wheel**. This is why the production Docker image is pinned to `linux/amd64` (see `docs/deployment.md`); an arm64-native build cannot resolve the pinned dependency set.
 
 The repository currently also contains `docs/polars-bio_manual.pdf`. Treat that PDF as a historical/local convenience copy. For version-sensitive implementation, the current official online documentation above takes precedence unless the project deliberately pins a version whose bundled manual is authoritative.
 
@@ -113,10 +118,27 @@ Shared engine-contract tests should prefer parametrization where the same semant
 
 ### SciLifeLab Serve
 
-- **Serve documentation:** https://serve.scilifelab.se/docs/
-- Navigate from the documentation index to **Application hosting → Streamlit app hosting** for the current deployment procedure.
+Re-checked against the current official documentation on **2026-09-25** (Task 8). Exact pages:
 
-SciLifeLab Serve documentation identifies the service as beta and notes that functionality changes rapidly. Re-check deployment instructions during Task 8 rather than freezing today's assumptions into engine code.
+- **Streamlit app hosting (step-by-step guide, resource defaults, image/tag rules, upload limit, FAQ):** https://serve.scilifelab.se/docs/application-hosting/streamlit/
+- **Application hosting overview (port range 3000-9999, public code/data requirement, no databases):** https://serve.scilifelab.se/docs/application-hosting/
+- **Other framework / custom apps:** https://serve.scilifelab.se/docs/application-hosting/other/
+- **DOI for public apps:** https://serve.scilifelab.se/docs/doi/
+- **Example Streamlit image + repo (GHCR publishing workflow template):** https://github.com/ScilifelabDataCentre/streamlit-image-to-smiles
+
+Verified requirements that drive the AnnotateR deployment (details and the
+build/test procedure are in [deployment.md](deployment.md)):
+
+- Streamlit apps must be packaged as Docker images; the main application file must be named **`app.py`** in the image working directory.
+- The app runs on **port 8501** (Serve asks for the port when creating the app; the overall platform range is 3000-9999).
+- Build guidance uses `docker build --platform linux/amd64 -t <name>:<tag> .`.
+- Default resources: **2 vCPU / 4 GB RAM** (requestable up to 12 vCPU / 48 GB with a motivated example).
+- Images are pulled from a public registry (Docker Hub or GHCR) **at regular intervals** and must remain available; **each app version needs a unique image tag**.
+- Upload size limit for Streamlit apps: **100 MB**.
+- No sensitive data; code must be public; permissions (Private/Project/Link are temporary — apps must become Public eventually); public URL `*.serve.scilifelab.se`.
+- Optional project **mount paths** for persistent storage (AnnotateR does not use them).
+
+The service is beta and changes rapidly; re-check before each actual (re)deployment rather than relying on the summary above.
 
 ## Repository hosting
 

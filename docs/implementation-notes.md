@@ -1454,3 +1454,175 @@ NONE left in the Task 6 mode backlog: overlap + `min_overlap` (6A),
 strand (6B), contains (6C), within (6D), and closest (6E) are all
 normative and parity-protected, including closest in the differential
 layer.
+
+## Task 8 — Deployment, documentation, and benchmark (2026-09-25)
+
+### What was built
+
+- **Docker / SciLifeLab Serve readiness** (`Dockerfile`, `app.py`,
+  `.dockerignore`, `scripts/docker_smoke.sh`, `docker-compose.yml`):
+  - `app.py` at the repository root is a thin Serve entry-point shim
+    (imports `streamlit_app.streamlit_app` and calls `main()`);
+    `streamlit_app/streamlit_app.py` remains the single source of truth.
+    Serve requires the main file to be named `app.py` in the image
+    working directory.
+  - The `Dockerfile` pins `FROM --platform=linux/amd64 python:3.12-slim`
+    (the pinned polars-bio 0.35.1 has no linux/aarch64 wheel — re-verified
+    against the PyPI JSON on 2026-09-25; see references.md), installs
+    bedtools (Debian bookworm: 2.31.1) + curl, drops the former
+    `build-essential` toolchain (every pinned dependency has an official
+    manylinux wheel — verified by a clean build), and sets
+    `ENTRYPOINT ["python", "-m", "streamlit", "run", "app.py", ...]`.
+  - `.dockerignore` is now tracked (it was previously git-ignored) and
+    keeps the image to app + examples + benchmark + smoke script.
+  - `scripts/docker_smoke.sh` verifies inside the built image: bedtools
+    on PATH at 2.31.x; core imports; a canonical smoke annotation on the
+    bundled examples with BOTH engines (overlap + closest) passing the
+    strict comparator; Streamlit startup from `app.py`;
+    `/_stcore/health` green; UI HTTP 200.
+- **Strict comparator moved into the package**
+  (`streamlit_app/core/comparison.py`): `assert_canonical_equal` and its
+  helpers now live in the application package so the production image can
+  run the same parity gate inside the container without shipping
+  `tests/`. `tests/parity/comparator.py` re-exports everything; all test
+  imports are unchanged. The move is verbatim (no semantic change).
+- **Backend benchmark** (`benchmarks/benchmark_engines.py`,
+  `docs/benchmark.md`): deterministic synthetic workloads
+  (sparse/dense/mixed/duplicates/stranded × overlap/contains/within/closest
+  × small/medium/large) measuring the real AnnotateR execution path
+  (`engine.intersect` + `canonicalize_annotation_result`). Every scenario
+  passes the strict comparator BEFORE its timings are accepted; a parity
+  failure aborts the benchmark with a non-zero exit. `closest` is measured
+  like the others but is known to be the shared canonical path (Tasks
+  6A–6E) — the numbers are reported as such, not hidden. Peak-RSS probes
+  run in isolated subprocesses (`--measure-memory` / `--memory-only`).
+- **CI** (`.github/workflows/python-tests.yml`): new `docker-smoke` job
+  (ubuntu-latest, native amd64 build): `docker build --platform
+  linux/amd64`, `scripts/docker_smoke.sh`, and `benchmark_engines.py
+  --quick` in the container. The full benchmark is deliberately NOT a CI
+  gate (performance numbers are reporting data, not pass/fail criteria).
+- **Documentation**: new `docs/deployment.md` (Serve setup, build/test,
+  configuration, verification, failure modes), new `docs/benchmark.md`
+  (methodology + results + interpretation), refreshed README/QUICKSTART,
+  `docs/references.md` updated with the exact current Serve pages and the
+  PyPI wheel-availability evidence; `CITATION.cff` rewritten (the previous
+  one contained an unrelated project's title and a Zenodo DOI that does
+  not point to AnnotateR — removed).
+
+### Key decisions
+
+- **Synthetic coordinate cap (2³¹−1).** The bedtools backend goes through
+  pybedtools, whose Cython iterator packs positions into a 32-bit CHRPOS
+  field; coordinates >= 2³¹ raise `OverflowError`. This is a hard input
+  limit of the BedtoolsEngine as implemented (discovered empirically when
+  the first benchmark run generated a 5 Gb synthetic chromosome).
+  Benchmark geometry adapts its packing gap to stay under the cap
+  (`_fit_gap`); every natural chromosome is far below it. Documented in
+  benchmark docs, references.md, and Limitations.
+- **Benchmark scope.** Timings cover engine call + canonicalization only;
+  parsing is backend-independent (SPEC 4.1) and is recorded separately as
+  reference data, never inside per-backend timings. No Streamlit
+  rendering is included.
+- **UI wording stays neutral.** The benchmark measures workload-dependent
+  differences; it does not support a blanket "high-performance" label for
+  either backend, so the Task 7 neutral wording is kept.
+
+### Release / versioning audit (current state, 2026-09-25)
+
+- No git tags and no GitHub Releases exist.
+- Versions are inconsistent: `pyproject.toml` = 0.1.0,
+  `streamlit_app/config/settings.py` `Settings.VERSION` = 1.0.0,
+  `CITATION.cff` previously 0.1.1 (now omits `version` — no formal
+  release exists to cite).
+- **License discrepancy (NEEDS A DECISION before release):** `LICENSE`
+  is BSD-3-Clause (Copyright (c) 2025, Jyotirmoy Das) while `README.md`
+  (badge + text) and the app footer say "GNU GPLv3". `CITATION.cff`
+  omits the license field until this is resolved. This is a legal
+  decision outside agent authority; flag to the maintainers.
+- Recommended release step AFTER manual GUI acceptance: choose one
+  license and make LICENSE/README/footer agree; pick a semantic version
+  (suggest 1.0.0 once accepted); tag it; create the GitHub Release;
+  publish the Docker image with that tag; then add the version/DOI to
+  `CITATION.cff` and `Settings.VERSION`.
+
+### Dependency-definition audit (Task 8)
+
+The dependency definitions agree everywhere (checked 2026-09-25):
+
+- `pyproject.toml` dependencies == `requirements.txt` (8 exact pins);
+- `pyproject.toml` `[project.optional-dependencies].dev` ==
+  `requirements-dev.txt` extra pins (pytest, pytest-cov, black, ruff);
+- `uv lock --check` passes (uv.lock is in sync with pyproject.toml);
+- CI installs `requirements-dev.txt`; the Docker image installs
+  `requirements.txt`; README/QUICKSTART use the same files.
+- No dependency changes in Task 8.
+
+### Repository hygiene notes (Task 8 inspection)
+
+- Legacy artifacts still tracked in git: `app/` (legacy Shiny app),
+  `renv.lock`, `.Rprofile`, `docs/polars-bio_manual.pdf`. They are
+  excluded from the Docker image via `.dockerignore`, but removal is a
+  separate decision (out of Task 8 scope: no unrelated cleanup). The
+  QUICKSTART previously linked a non-existent
+  `.gemini/.../development_roadmap.md`; the link was replaced with the
+  actual docs.
+- `.pi/` agent artifacts and `benchmarks/results/` are git-ignored.
+
+### Test command and baseline (Task 8)
+
+Documented command (from repository root):
+
+```bash
+.venv/bin/python -m pytest
+```
+
+Baseline at task start (clean main, commit aec841d):
+**853 passed, 0 failed, 0 skipped** (28.34 s).
+
+Task-8 focused re-runs (comparator move):
+`tests/parity tests/test_streamlit_app_ui.py` → **623 passed**.
+
+Full suite at task end: `.venv/bin/python -m pytest -q` → **853 passed in
+24.51s** (0 failed, 0 skipped) — identical to the pre-task baseline
+(853).
+
+Full benchmark (local arm64, M1 Pro, 32 GB; commit aec841d; wall ≈ 115
+min): 51/51 scenario-op cells (102 engine rows) parity-verified; results
+in `docs/benchmark.md`. Notable honest findings: (a) polars-bio is faster
+on all pair-producing operations at every tier (~3–10× small, ~8–15×
+medium/large); (b) `closest` tracks within ~10% on both engines
+(confirms the shared canonical path, Tasks 6A–6E) and is the dominant
+cost at large scale (~2–4 min per engine at 100k×1M — shared-path
+scale limitation); (c) bedtools cells show higher variance
+(subprocess effects).
+
+Docker verification (local, Apple M1 Pro, QEMU-emulated linux/amd64):
+
+- `docker build --platform linux/amd64 -t annotater:dev .` → success
+  (BuildKit lint warning about a constant `FROM --platform` worked
+  around with `ARG PLATFORM=linux/amd64`).
+- `docker run --rm --entrypoint bash annotater:dev
+  /app/scripts/docker_smoke.sh` → **SMOKE PASS (exit 0)**:
+  bedtools v2.31.1 on PATH; all core imports; canonical smoke
+  annotation with both engines (6 rows each) strictly equal
+  (`assert_canonical_equal`); `closest` smoke strictly equal;
+  Streamlit started from the Serve entry point `app.py`;
+  `/_stcore/health` OK; UI HTTP 200.
+- Smoke fixes made during verification (documented here because they
+  are easy to reintroduce): (a) `bedtools --version` prints
+  "bedtools v2.31.1", so the script now extracts the numeric version
+  instead of pattern-matching the raw string; (b) GFF3 example files
+  parse with `fmt="gff"` (the GFF/GFF3 parser key; `"gff3"` is the
+  custom-file branch and raises by design); (c) the Streamlit health
+  window is 180s to cover QEMU-emulated first-import latency (native
+  startup is ~10s);
+- **Entry-point gotcha (CI + docs fixed):** the image ENTRYPOINT is
+  the Streamlit server (Serve requirement), so bare
+  `docker run image bash /app/scripts/docker_smoke.sh` appends the
+  args to the entry point and starts the web server instead of the
+  smoke (it then runs forever). Smoke and benchmark invocations use
+  `--entrypoint bash` / `--entrypoint python`; CI workflow and
+  docs/deployment.md carry this with a comment.
+- `docker run --rm --entrypoint python annotater:dev
+  /app/benchmarks/benchmark_engines.py --quick` → **exit 0**, both
+  engines parity `verified` (this is CI's benchmark smoke step).

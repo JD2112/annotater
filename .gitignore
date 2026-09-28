@@ -53,13 +53,16 @@ htmlcov/
 !/data/examples/
 .DS_Store
 
+# Benchmark outputs (generated on demand; never commit local runs)
+benchmarks/results/
+
 # Environment
 .env
 .env.local
 .pi
 
 # Docker
-.dockerignore
+# (the .dockerignore file itself IS tracked; do not ignore it)
 
 # Renv (for legacy Shiny app)
 renv/library/
