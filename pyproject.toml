@@ -3,6 +3,7 @@ name = "annotater"
 version = "0.1.0"
 description = "AnnotateR: genomic coordinate annotation tool with interchangeable Bedtools and Polars-Bio backends"
 readme = "README.md"
+license = { text = "BSD-3-Clause" }
 # Python 3.12 is the currently tested and supported runtime (CI and
 # Docker). 3.13/3.14 satisfy this range (the exact pins install there,
 # verified for 3.14) but are NOT part of the tested CI matrix. 3.10/3.11

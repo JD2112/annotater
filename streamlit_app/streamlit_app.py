@@ -1159,7 +1159,7 @@ def main():
         "Contact: "
         "<a href='mailto:jyotirmoy.das@liu.se'>jyotirmoy.das@liu.se</a> | "
         "<a href='mailto:massimiliano.volpe@scilifelab.se'>massimiliano.volpe@scilifelab.se</a><br/>"
-        f"Version {Settings.VERSION} | License: GNU GPLv3 | "
+        f"Version {Settings.VERSION} | License: BSD-3-Clause | "
         "Powered by Streamlit, with Bedtools and Polars-Bio backends"
         "</div>",
         unsafe_allow_html=True,

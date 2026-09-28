@@ -1,6 +1,6 @@
 # AnnotateR - Genomic Coordinate Annotation Tool
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](https://opensource.org/license/bsd-3-clause)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.64-red.svg)](https://streamlit.io/)
 [![Tests](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml/badge.svg)](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml)
@@ -184,7 +184,8 @@ annotater/
 ├── docs/                       # Architecture, engine contract, deployment,
 │                               # benchmark, references, implementation notes
 ├── data/examples/              # Bundled example inputs
-├── app/                        # Legacy Shiny app (superseded, not part of the product)
+├── app/                        # Legacy Shiny app (superseded, not part of the product;
+│                               # retained temporarily — see docs/legacy.md)
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt / requirements-dev.txt
@@ -206,6 +207,8 @@ contract.
 | [docs/benchmark.md](docs/benchmark.md) | Backend benchmark methodology and results |
 | [docs/references.md](docs/references.md) | External manuals for version-sensitive decisions |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | Per-task implementation record |
+| [docs/legacy.md](docs/legacy.md) | Legacy R files: inventory and temporary-retention status |
+| [docs/release-plan-0.1.0.md](docs/release-plan-0.1.0.md) | Post-acceptance v0.1.0 release steps |
 
 ## Limitations
 
@@ -249,7 +252,8 @@ Citation metadata is maintained in
 
 ## License
 
-GNU General Public License v3.0 - see [LICENSE](LICENSE)
+AnnotateR is licensed under the BSD 3-Clause License - see
+[LICENSE](LICENSE).
 
 ## Authors
 
