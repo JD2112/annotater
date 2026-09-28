@@ -81,5 +81,6 @@ jobs:
         run: docker run --rm --entrypoint bash annotater:ci /app/scripts/docker_smoke.sh
 
       - name: Benchmark smoke (deterministic, parity-gated)
-        run: docker run --rm --entrypoint python annotater:ci \
-            /app/benchmarks/benchmark_engines.py --quick
+        # Single line: in a folded `run` scalar a trailing backslash is not a
+        # shell line-continuation and would leave a literal space in the path.
+        run: docker run --rm --entrypoint python annotater:ci /app/benchmarks/benchmark_engines.py --quick
