@@ -1,0 +1,4 @@
+##gff-version 3
+chr1	example	gene	1000	1500	.	+	.	ID=GA;gene_id=GENE_A
+chr1	example	gene	3001	3500	.	+	.	ID=GB;gene_id=GENE_B
+chr1	example	gene	4002	4501	.	+	.	ID=GC;gene_id=GENE_C

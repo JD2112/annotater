@@ -74,3 +74,6 @@ benchmarks/results/
 # Build artifacts
 *.tar.gz
 *.zip
+
+# MkDocs build output
+site/

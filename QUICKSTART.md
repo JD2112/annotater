@@ -1,5 +1,13 @@
 # Quick Start Guide - AnnotateR
 
+> This guide is for **developers** who install and run the code.
+> If you have a running app (locally or deployed) and want to use it —
+> upload files, choose an operation, read and export results — follow
+> the **user manual** instead:
+> [docs/getting-started/quick-start.md](docs/getting-started/quick-start.md)
+> (or `https://pyrevo.github.io/annotater/` once the v0.1.0
+> documentation site is published).
+
 ## 🚀 Get Started in 5 Minutes
 
 ### Option 1: Docker (Recommended)

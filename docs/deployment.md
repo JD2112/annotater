@@ -4,17 +4,17 @@ How to build, test, and deploy AnnotateR — locally, in a container, and on
 [SciLifeLab Serve](https://serve.scilifelab.se/).
 
 This document is for maintainers. End users who just want to run the app
-locally should read [QUICKSTART.md](../QUICKSTART.md).
+locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/main/QUICKSTART.md).
 
 ## Contents
 
 - [Prerequisites](#prerequisites)
-- [Architecture / platform](#architecture--platform)
+- [Architecture / platform](#architecture-platform)
 - [Building the container image](#building-the-container-image)
 - [Local container test](#local-container-test)
 - [Port and health check](#port-and-health-check)
 - [SciLifeLab Serve setup](#scilifelab-serve-setup)
-- [Environment / configuration](#environment--configuration)
+- [Environment / configuration](#environment-configuration)
 - [Expected startup and resources](#expected-startup-and-resources)
 - [Deployment verification](#deployment-verification)
 - [Common failure modes](#common-failure-modes)
@@ -190,7 +190,7 @@ the platform requirements this deployment satisfies:
 
 No secrets or credentials are used by AnnotateR at runtime; there is
 nothing to configure in Serve's environment-variable settings beyond the
-defaults in [Environment / configuration](#environment--configuration).
+defaults in [Environment / configuration](#environment-configuration).
 
 ## Environment / configuration
 
@@ -235,7 +235,7 @@ ergonomics (including the local Rerun control) are unchanged.
   use with files below the 100 MB platform upload cap; the in-container
   smoke test passes within these limits. Very large inputs (hundreds of
   MB) need headroom for canonical frames held in memory — see
-  [Limitations in the README](../README.md#limitations).
+  [Limitations in the README](https://github.com/pyrevo/annotater/blob/main/README.md#limitations).
 - The filesystem is ephemeral except for the project *Mount path* (not
   used). Uploaded files are parsed in memory; intermediate bedtools files
   live in the container's scratch directory.

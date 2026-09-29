@@ -1,0 +1,50 @@
+name: docs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install docs dependencies
+        run: python -m pip install -r docs/requirements-docs.txt
+      # --strict: warnings (broken links, dead references) fail the build.
+      - name: Build the documentation site
+        run: mkdocs build --strict
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  # Publication is gated on the repository variable DOCS_PUBLISH being
+  # exactly "true": the workflow ships with the manual, but the site is
+  # only activated (per the release decision) when the maintainer sets
+  # that variable on pyrevo/annotater.
+  deploy:
+    if: github.event_name == 'push' && vars.DOCS_PUBLISH == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

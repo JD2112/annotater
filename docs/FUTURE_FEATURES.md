@@ -1,5 +1,11 @@
 # Future Features Roadmap
 
+> **Status: pre-release draft (not user documentation).** This roadmap
+> predates the v0.1.0 release; several items listed below (VCF support,
+> Polars-Bio engine, charts and gene list) have since been implemented
+> and are part of the released product (see the user manual and
+> `SPEC.md`). Items here are not commitments and are not normative.
+
 This document outlines planned features and improvements for AnnotateR. Features are organized by priority and complexity.
 
 ---

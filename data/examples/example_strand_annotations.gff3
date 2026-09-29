@@ -1,0 +1,4 @@
+##gff-version 3
+chr1	example	gene	1	100	.	+	.	ID=gene_same;gene_id=G1
+chr1	example	gene	201	300	.	+	.	ID=gene_opp;gene_id=G2
+chr1	example	gene	401	500	.	.	.	ID=gene_miss;gene_id=G3
