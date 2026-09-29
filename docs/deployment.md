@@ -11,6 +11,7 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 - [Prerequisites](#prerequisites)
 - [Architecture / platform](#architecture-platform)
 - [Building the container image](#building-the-container-image)
+- [Published images (GHCR)](#published-images-ghcr)
 - [Local container test](#local-container-test)
 - [Port and health check](#port-and-health-check)
 - [SciLifeLab Serve setup](#scilifelab-serve-setup)
@@ -72,6 +73,51 @@ The image contains only what the app needs:
 ├── data/examples/                # bundled example inputs (no user data)
 ├── benchmarks/benchmark_engines.py
 └── scripts/docker_smoke.sh
+```
+
+## Published images (GHCR)
+
+Release images are published to GitHub Container Registry by the
+`release-ghcr` GitHub Actions workflow
+(`.github/workflows/release-ghcr.yml`). It runs **only on explicit
+`workflow_dispatch`** (maintainer action, from `main`) with an explicit
+`image_tag` input — it never publishes on every push, and it rejects
+`latest`. Each publication is gated by the full in-container smoke
+(`scripts/docker_smoke.sh`) before the image is pushed.
+
+Every published image is immutable and is tagged twice with the **same
+digest**:
+
+```text
+ghcr.io/pyrevo/annotater:0.1.0-rc1     # release-candidate tag (pre-publication testing)
+ghcr.io/pyrevo/annotater:sha-<sha>     # per-commit tag of the exact published commit
+```
+
+Conventions:
+
+- **RC tags** (`X.Y.Z-rcN`) are for pre-publication testing, e.g. on
+  SciLifeLab Serve before the final release.
+- **Final semantic-version tags** (e.g. `0.1.0`) are published later, in
+  the same workflow, from the approved final release commit.
+- **`latest` is never used** as a deployment reference; Serve image
+  fields and any pull commands must use an explicit tag (or a digest).
+- **Digest pinning** is available where useful: `docker pull
+  ghcr.io/pyrevo/annotater@sha256:<digest>` always resolves the exact
+  published image (the published digest is recorded in
+  [release-plan-0.1.0.md](release-plan-0.1.0.md)).
+- **Package visibility:** Serve pulls the image anonymously, so the GHCR
+  *package* must be set to **public** under the repository's Package
+  settings. Package visibility is independent of the future Serve
+  application visibility (which is configured separately in Serve as
+  *Project* during the private testing phase).
+- All images are `linux/amd64` (platform pin, see
+  [Architecture / platform](#architecture-platform)).
+
+Example publication (GitHub → Actions → `release-ghcr` → Run workflow):
+
+```text
+branch: main
+image_tag: 0.1.0-rc1
 ```
 
 ### Why `app.py`
@@ -155,10 +201,11 @@ the platform requirements this deployment satisfies:
      docker push <your-dockerhub-username>/annotater:<tag>
      ```
 
-   - **GHCR (automated):** publish from GitHub Actions (Serve's example
-     repo provides a workflow template). The package must be set to
-     *public* under Package settings, since Serve must be able to pull
-     it.
+   - **GHCR (automated):** the `release-ghcr` workflow publishes from
+     GitHub Actions on explicit request (see
+     [Published images (GHCR)](#published-images-ghcr)). The package must
+     be set to *public* under Package settings, since Serve must be able
+     to pull it.
 
    Rules to keep in mind:
    - **Each version needs a unique tag** (e.g. `annotater:v2`,
