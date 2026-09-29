@@ -55,7 +55,15 @@ Immutable GHCR images published before the final `v0.1.0` release
 
 | RC | Source commit | Image tags (same digest) | Digest | Published |
 |---|---|---|---|---|
-| 0.1.0-rc1 | (recorded after publication) | `ghcr.io/pyrevo/annotater:0.1.0-rc1`, `ghcr.io/pyrevo/annotater:sha-<sha>` | — | — |
+| 0.1.0-rc1 | `7269b47cdade3511cd317634c304ebadf3d10345` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc1`, `ghcr.io/pyrevo/annotater:sha-7269b47` | `sha256:76b5574bb506abfa2d9a0fdeea51f0d5bca941e155d8e26e62cb1fcd73f10d91` (both tags, verified from the GHCR push receipts) | 2026-09-29 (release-ghcr workflow run #1: [actions/runs/36564727227](https://github.com/pyrevo/annotater/actions/runs/36564727227), platform `linux/amd64`) |
+
+Package visibility note (2026-09-29): the `annotater` container package was
+created by the workflow as **private** (default for a private repository)
+and the automated token could not change it (no `packages` scope). The
+maintainer must set it to **public** under the repository's Package
+settings (or make the repository public) before Serve can pull it
+anonymously — the agent token of this session only has
+`gist, read:org, repo, workflow`.
 
 Final-release images (`0.1.0`) are published only after step 5/6/7 above
 have been approved.
