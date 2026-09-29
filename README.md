@@ -184,8 +184,6 @@ annotater/
 ├── docs/                       # Architecture, engine contract, deployment,
 │                               # benchmark, references, implementation notes
 ├── data/examples/              # Bundled example inputs
-├── app/                        # Legacy Shiny app (superseded, not part of the product;
-│                               # retained temporarily — see docs/legacy.md)
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt / requirements-dev.txt
@@ -207,7 +205,7 @@ contract.
 | [docs/benchmark.md](docs/benchmark.md) | Backend benchmark methodology and results |
 | [docs/references.md](docs/references.md) | External manuals for version-sensitive decisions |
 | [docs/implementation-notes.md](docs/implementation-notes.md) | Per-task implementation record |
-| [docs/legacy.md](docs/legacy.md) | Legacy R files: inventory and temporary-retention status |
+| [docs/legacy.md](docs/legacy.md) | Legacy R files: deletion record and license provenance |
 | [docs/release-plan-0.1.0.md](docs/release-plan-0.1.0.md) | Post-acceptance v0.1.0 release steps |
 
 ## Limitations

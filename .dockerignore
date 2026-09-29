@@ -25,11 +25,6 @@ benchmarks/results/
 *.log
 .DS_Store
 
-# Legacy Shiny app (not part of the Streamlit product)
-app/
-renv.lock
-renv/
-
 # Documentation / specs (read the repo for these, not the image)
 docs/
 tests/

@@ -40,3 +40,5 @@ Remaining release gate (in order):
 
 Follow-up cleanup (not part of the release gate): final disposition of
 the legacy R files per `docs/legacy.md` (delete vs. move to `legacy/`).
+**Resolved:** the legacy files were deleted from the repository in
+preparation for publication; see `docs/legacy.md`.
