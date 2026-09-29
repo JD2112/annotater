@@ -65,6 +65,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Developer chrome (Rerun / Deploy / Clear cache, top-right toolbar): use
+# the official Streamlit `client.toolbarMode` setting. "auto" (the default
+# since Streamlit 1.64) shows those developer options only when the app is
+# accessed through localhost, so a deployed (SciLifeLab Serve) audience sees
+# a clean toolbar while local development ergonomics are preserved. Setting
+# it explicitly here documents that choice and pins it against upstream
+# default changes.
+st.set_option("client.toolbarMode", "auto")
+
 #: UI option labels in display order (user-facing, no internal class names).
 ENGINE_UI_OPTIONS = [label for _, label in ENGINE_OPTIONS]
 _ENGINE_LABEL_TO_KEY = {label: key for key, label in ENGINE_OPTIONS}
@@ -262,31 +271,57 @@ def render_sidebar() -> dict:
     with st.sidebar:
         st.header("Configure")
 
-        # --- Engine ------------------------------------------------
+        # --- Annotation: engine, operation, join --------------------
+        st.subheader("Annotation")
+
         engine_label_sel = st.radio(
             "Annotation engine",
             ENGINE_UI_OPTIONS,
             index=ENGINE_UI_OPTIONS.index(engine_label(DEFAULT_ENGINE)),
             key="engine",
             help=(
-                "Execution backend for the interval operation. Both engines "
-                "produce contractually equivalent results; only the "
-                "backend changes."
+                "Execution backend for the interval operation. Both backends "
+                "implement the same AnnotateR annotation semantics."
             ),
         )
         st.caption(
-            "**Bedtools** — reference implementation (external binary). "
-            "**Polars-Bio** — in-process implementation "
-            "(no external binary required)."
+            "**Bedtools** — established command-line backend. "
+            "**Polars-Bio** — dataframe-based backend."
         )
         engine_key = _ENGINE_LABEL_TO_KEY[engine_label_sel]
         if not engine_available(engine_key):
             st.warning(unavailable_message(engine_key))
 
-        st.divider()
+        mode = st.selectbox(
+            "Operation",
+            list(Settings.ANNOTATION_MODES.keys()),
+            format_func=lambda m: m.title(),
+            key="mode",
+            help="Interval relation between query and annotation",
+        )
+        st.caption(Settings.ANNOTATION_MODES[mode]["description"])
+        if mode == "closest":
+            st.caption(
+                "Distance is the number of bases between intervals; "
+                "overlapping or touching intervals have distance 0, and "
+                "if several annotations tie for the nearest, all of them "
+                "are returned."
+            )
+
+        join = st.radio(
+            "Join behavior",
+            ["Keep all query rows (left join)", "Matched rows only (inner join)"],
+            key="join",
+            help=(
+                "Left keeps every query row (unmatched rows carry canonical "
+                "missing annotation values); inner keeps only rows with a "
+                "qualifying annotation."
+            ),
+        )
+        join = "left" if join.startswith("Keep all") else "inner"
 
         # --- Input interpretation -----------------------------------
-        st.subheader("Input coordinates")
+        st.subheader("Input options")
         coord_system = st.selectbox(
             "Query coordinates",
             _COORD_SYSTEM_OPTIONS,
@@ -325,67 +360,38 @@ def render_sidebar() -> dict:
                 help="Convert both files' chromosome IDs to this style",
             )
 
-        st.divider()
-
-        # --- Operation ---------------------------------------------
-        st.subheader("Operation")
-        mode = st.selectbox(
-            "Mode",
-            list(Settings.ANNOTATION_MODES.keys()),
-            format_func=lambda m: m.title(),
-            key="mode",
-            help="Interval relation between query and annotation",
-        )
-        st.caption(Settings.ANNOTATION_MODES[mode]["description"])
-        if mode == "closest":
-            st.caption(
-                "Distance is the number of bases between intervals; "
-                "overlapping or touching intervals have distance 0, and "
-                "if several annotations tie for the nearest, all of them "
-                "are returned."
-            )
-
-        join = st.radio(
-            "Join behavior",
-            ["Keep all query rows (left join)", "Matched rows only (inner join)"],
-            key="join",
-            help=(
-                "Left keeps every query row (unmatched rows carry canonical "
-                "missing annotation values); inner keeps only rows with a "
-                "qualifying annotation."
-            ),
-        )
-        join = "left" if join.startswith("Keep all") else "inner"
-
-        use_strand = st.checkbox(
-            "Require query and annotation to have the same explicit strand",
-            key="use_strand",
-            help=(
-                "Only pairs where both rows carry an explicit strand (+ or -) "
-                "and the strands are equal qualify. Missing strand values do "
-                "not act as wildcards. Applies to all operation modes."
-            ),
-        )
-
-        if mode == "overlap":
-            min_overlap = st.slider(
-                "Minimum overlap fraction",
-                0.0,
-                1.0,
-                0.0,
-                0.1,
-                key="min_overlap",
+        # --- Advanced options (collapsed by default) -----------------
+        with st.expander("Advanced options"):
+            use_strand = st.checkbox(
+                "Require query and annotation to have the same explicit strand",
+                key="use_strand",
                 help=(
-                    "Minimum fraction of each query interval that must "
-                    "overlap a single annotation interval. 0 = any positive "
-                    "overlap. Applies to the overlap mode only."
+                    "Only pairs where both rows carry an explicit strand "
+                    "(+ or -) and the strands are equal qualify. Missing "
+                    "strand values do not act as wildcards. Applies to all "
+                    "operation modes."
                 ),
             )
-        else:
-            min_overlap = None
-            st.caption("Minimum overlap fraction applies to the overlap mode only.")
 
-        st.divider()
+            if mode == "overlap":
+                min_overlap = st.slider(
+                    "Minimum overlap fraction",
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.1,
+                    key="min_overlap",
+                    help=(
+                        "Minimum fraction of each query interval that must "
+                        "overlap a single annotation interval. 0 = any "
+                        "positive overlap. Applies to the overlap mode only."
+                    ),
+                )
+            else:
+                min_overlap = None
+                st.caption(
+                    "Minimum overlap fraction applies to the overlap mode only."
+                )
 
         # --- Feature filter (GFF/GTF) -------------------------------
         st.subheader("Feature filter")
@@ -749,7 +755,8 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
             "and options."
         )
 
-    _render_summary_metrics(result_df, coord_df, engine_name, mode)
+    _render_summary_metrics(result_df, coord_df, engine_name, mode,
+                            st.session_state.get("result_join", "left"))
 
     # Display filter (cosmetic only; canonical data is never mutated).
     if "has_overlap" in result_df.columns:
@@ -777,9 +784,18 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
         _render_charts_and_gene_list(display_df)
 
 
-def _render_summary_metrics(result_df, coord_df, engine_name, mode):
+def _render_summary_metrics(result_df, coord_df, engine_name, mode, join):
     matched = int(result_df["has_overlap"].sum())
     unmatched = len(result_df) - matched
+
+    # Provenance as compact secondary metadata (not metric typography);
+    # the quantitative metrics stay prominent below.
+    meta = f"{engine_name} · {mode.title()} · {join.title()} join"
+    if mode == "closest":
+        meta += (" · distance column included"
+                 if "distance" in result_df.columns
+                 else " · distance column missing")
+    st.caption(meta)
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Query rows", f"{len(coord_df):,}")
@@ -795,35 +811,25 @@ def _render_summary_metrics(result_df, coord_df, engine_name, mode):
         help="Query rows kept by the left join without a qualifying annotation",
     )
 
-    e1, e2, e3 = st.columns(3)
-    e1.metric("Engine", engine_name)
-    e2.metric("Operation", mode)
-    if mode == "closest":
-        e3.metric(
-            "Distance column present",
-            "Yes" if "distance" in result_df.columns else "No",
-            help="closest mode adds the canonical distance column",
-        )
-
 
 def _render_downloads(display_df, coord_format):
-    st.subheader("Download")
+    st.subheader("Download results")
     st.caption(
         "Exports the rows currently shown above (use the display filter to "
         "narrow the export)."
     )
 
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, _d4 = st.columns([1, 1, 1, 2])
     with d1:
         st.download_button(
-            "Download CSV",
+            "CSV",
             data=display_df.to_csv(index=False),
             file_name="annotated_coordinates.csv",
             mime="text/csv",
         )
     with d2:
         st.download_button(
-            "Download TSV",
+            "TSV",
             data=display_df.to_csv(index=False, sep="\t"),
             file_name="annotated_coordinates.tsv",
             mime="text/tab-separated-values",
@@ -836,7 +842,7 @@ def _render_downloads(display_df, coord_format):
             with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
                 display_df.to_excel(writer, index=False, sheet_name="Annotations")
             st.download_button(
-                "Download Excel",
+                "Excel",
                 data=buffer.getvalue(),
                 file_name="annotated_coordinates.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -924,13 +930,13 @@ def _render_charts_and_gene_list(df):
         )
         if chr_col:
             chr_counts = df[chr_col].value_counts().head(15)
+            # Count is encoded by bar length only — a redundant continuous
+            # color scale/colorbar would add noise without new information.
             fig = px.bar(
                 x=chr_counts.index,
                 y=chr_counts.values,
                 title="Annotations per chromosome (top 15)",
                 labels={"x": "Chromosome", "y": "Count"},
-                color=chr_counts.values,
-                color_continuous_scale="Blues",
             )
             fig.update_layout(showlegend=False, height=350)
             st.plotly_chart(fig)
@@ -955,14 +961,13 @@ def _render_charts_and_gene_list(df):
     gene_col1, gene_col2 = st.columns(2)
     with gene_col1:
         top = df[gene_col].value_counts().head(10)
+        # Count is encoded by bar length only (no redundant color scale).
         fig = px.bar(
             x=top.values,
             y=top.index,
             orientation="h",
             title="Top 10 genes (by annotation count)",
             labels={"x": "Count", "y": "Gene/feature"},
-            color=top.values,
-            color_continuous_scale="Viridis",
         )
         fig.update_layout(
             showlegend=False,
@@ -972,23 +977,26 @@ def _render_charts_and_gene_list(df):
         st.plotly_chart(fig)
 
     with gene_col2:
-        st.markdown("**Gene list actions**")
+        st.markdown("**Gene list**")
         gene_text = "\n".join(sorted(gene_list))
         gene_csv = ", ".join(sorted(gene_list))
-        st.download_button(
-            "Download gene list (.txt)",
-            data=gene_text,
-            file_name="gene_list.txt",
-            mime="text/plain",
-            key="gene_txt",
-        )
-        st.download_button(
-            "Download gene list (comma-separated)",
-            data=gene_csv,
-            file_name="gene_list.csv",
-            mime="text/csv",
-            key="gene_csv",
-        )
+        g1, g2 = st.columns(2)
+        with g1:
+            st.download_button(
+                "Gene list (.txt)",
+                data=gene_text,
+                file_name="gene_list.txt",
+                mime="text/plain",
+                key="gene_txt",
+            )
+        with g2:
+            st.download_button(
+                "Gene list (comma-separated)",
+                data=gene_csv,
+                file_name="gene_list.csv",
+                mime="text/csv",
+                key="gene_csv",
+            )
         with st.expander("Copy to clipboard"):
             st.caption("One gene per line:")
             st.code(gene_text, language="text")
@@ -1145,8 +1153,27 @@ def main():
     )
 
     st.header("2. Run annotation")
-    if st.button("Run annotation", type="primary", key="run_button"):
+    # The primary action is enabled only when both required inputs are
+    # actually usable: both files uploaded, and for custom-format query
+    # files, the explicit column mapping applied. Existing validation in
+    # run_annotation() is unchanged and still runs afterwards.
+    run_ready = coord_df is not None and annot_info is not None
+    if st.button(
+        "Run annotation",
+        type="primary",
+        key="run_button",
+        disabled=not run_ready,
+        help=(
+            "Enabled once both files are uploaded and, for custom-format "
+            "query files, the column mapping is applied."
+        ),
+    ):
         run_annotation(cfg, coord_df, annot_info, signature)
+    if not run_ready:
+        st.caption(
+            "Upload both a query file and an annotation file to enable "
+            "the annotation run."
+        )
 
     render_results_section(cfg, coord_info["identity"] if coord_info else None,
                            annot_info["identity"] if annot_info else None, coord_format)
