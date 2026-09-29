@@ -52,7 +52,6 @@ Important current-API observations:
 - coordinate metadata can be used by Polars-Bio I/O paths, but AnnotateR must still own and test its canonical application coordinate semantics.
 - **Wheel availability (re-verified 2026-09-25 from the PyPI JSON above):** the pinned 0.35.1 release publishes a `manylinux_2_17_x86_64` wheel and macOS/Windows wheels, but **no `linux/aarch64` wheel**. This is why the production Docker image is pinned to `linux/amd64` (see `docs/deployment.md`); an arm64-native build cannot resolve the pinned dependency set.
 
-The repository currently also contains `docs/polars-bio_manual.pdf`. Treat that PDF as a historical/local convenience copy. For version-sensitive implementation, the current official online documentation above takes precedence unless the project deliberately pins a version whose bundled manual is authoritative.
 
 ## File-format semantics
 

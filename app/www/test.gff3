@@ -1,4 +1,0 @@
-##gff-version 3
-chr1	.	gene	900	1100	.	+	.	ID=gene1;Name=GeneA
-chr1	.	gene	1950	2200	.	+	.	ID=gene2;Name=GeneB
-chr2	.	gene	2900	3100	.	-	.	ID=gene3;Name=GeneC

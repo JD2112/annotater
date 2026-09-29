@@ -29,6 +29,11 @@ wheels/
 
 # Testing
 .pytest_cache/
+.ruff_cache/
+
+# Agent tooling (skill installs are per-machine; AGENTS.md stays tracked)
+.agents/
+.claude/
 .coverage
 htmlcov/
 *.coveragerc
@@ -47,6 +52,7 @@ htmlcov/
 /tmp/
 *.tmp
 *.temp
+nohup.out
 
 # Data (keep examples)
 /data/*
@@ -64,10 +70,6 @@ benchmarks/results/
 # Docker
 # (the .dockerignore file itself IS tracked; do not ignore it)
 
-# Renv (for legacy Shiny app)
-renv/library/
-renv/local/
-renv/staging/
 
 # Build artifacts
 *.tar.gz
