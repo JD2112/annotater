@@ -9,12 +9,12 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 ## Contents
 
 - [Prerequisites](#prerequisites)
-- [Architecture / platform](#architecture--platform)
+- [Architecture / platform](#architecture-platform)
 - [Building the container image](#building-the-container-image)
 - [Local container test](#local-container-test)
 - [Port and health check](#port-and-health-check)
 - [SciLifeLab Serve setup](#scilifelab-serve-setup)
-- [Environment / configuration](#environment--configuration)
+- [Environment / configuration](#environment-configuration)
 - [Expected startup and resources](#expected-startup-and-resources)
 - [Deployment verification](#deployment-verification)
 - [Common failure modes](#common-failure-modes)
@@ -190,7 +190,7 @@ the platform requirements this deployment satisfies:
 
 No secrets or credentials are used by AnnotateR at runtime; there is
 nothing to configure in Serve's environment-variable settings beyond the
-defaults in [Environment / configuration](#environment--configuration).
+defaults in [Environment / configuration](#environment-configuration).
 
 ## Environment / configuration
 

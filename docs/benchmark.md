@@ -266,7 +266,7 @@ wall time, original geometry generation):
   different duplicate/strand/multi-chromosome structure; the scenario
   matrix approximates but does not reproduce production data shapes.
 - No end-to-end (parse→annotate→export) timing; see
-  [What this benchmark shows](#what-this-benchmark-shows--and-does-not).
+  [What this benchmark shows](#what-this-benchmark-shows-and-does-not).
 - No concurrent-load or memory-pressure behavior is characterized beyond
   peak RSS.
 
