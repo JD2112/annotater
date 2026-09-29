@@ -1,0 +1,55 @@
+# Feature filtering
+
+The **Filter by feature type** multiselect (subheader "Feature filter")
+limits which features of a **GFF/GTF annotation file** participate in
+the annotation run.
+
+## What it does — and when
+
+- Applies **only to GFF3/GTF annotation files**, because only they
+  carry a feature type column.
+- **Applies at parse time, before matching** — the filtered file is
+  what the preview shows and what the engine receives.
+- **Default: `gene` only.** A first run therefore annotates against
+  genes only, even if your annotation file contains exons, transcripts,
+  and more.
+- **Empty selection = all features.** Selecting no feature types shows
+  the caption "No feature types selected — all features will be
+  included" and the full annotation is used.
+
+## Available feature types
+
+`gene`, `transcript`, `exon`, `CDS`, `5UTR`, `3UTR`, `start_codon`,
+`stop_codon`.
+
+The filter matches the annotation file's `feature` column value
+**exactly, case-sensitively**: a GFF3 file containing `gene` and `exon`
+records, filtered to `gene`, keeps only the gene records. A file that
+uses unusual type names (e.g. `mrna`, `match`) will have nothing
+selected by the default filter — in that case, either unselect all
+types (all features) or make sure the file uses the listed type names.
+
+## How to read the effect
+
+With the default `gene`-only filter, exons in your annotation are
+simply not part of the run — queries overlapping only an exon (not the
+gene record) will not match. Adding `exon` to the selection can
+*increase* matches because more annotation intervals exist
+([Example 1, Part B](../examples/bed-vs-gff3.md) shows the row-count
+effect concretely).
+
+If the filter leaves **no** annotation features at all, the run stops
+with a warning: "No annotations match the selected feature types
+(filtered N features). Adjust the feature filter and run again."
+
+Feature filtering composes with everything downstream by simple
+reduction: the operation, strand rule, and join all see only the
+surviving features.
+
+## Notes
+
+- Filtering the *query* file is not a thing — the filter belongs to the
+  annotation role. (There is no query-side type column in any supported
+  format.)
+- The filter does not rename, translate, or map feature types; it is a
+  membership test on the exact string.

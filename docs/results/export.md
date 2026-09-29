@@ -1,0 +1,67 @@
+# Downloading and exporting results
+
+The **"Download results"** section exports **exactly the rows
+currently shown** above it: if you use the Show filter to narrow the
+table, the download is narrowed to the same rows ("Exports the rows
+currently shown above (use the display filter to narrow the export)").
+The canonical result itself is never mutated by filtering.
+
+## The four export buttons
+
+| Button | Format | File name |
+|---|---|---|
+| **CSV** | comma-separated | `annotated_coordinates.csv` |
+| **TSV** | tab-separated | `annotated_coordinates.tsv` |
+| **Excel** | XLSX, sheet "Annotations" (requires openpyxl) | `annotated_coordinates.xlsx` |
+| **Annotated VCF** | reconstructed VCF with annotations added to the INFO field | `annotated_variants.vcf` — **shown only when the query input was VCF** |
+
+The file names are fixed by the app.
+
+## What coordinates are in the exports
+
+All exports carry the **canonical 0-based half-open** values
+(`coord_start/coord_end`, `annot_start/annot_end`) — the same numbers
+you saw in the table. If you are putting these next to numbers from a
+GFF3 file, remember the GFF3 numbers are 1-based inclusive and the
+export is *not*; see
+[Coordinate systems](../preparing-your-data/coordinate-systems.md).
+
+Missing values (unmatched `annot_*` columns, absent optional fields)
+export as empty cells.
+
+## The Annotated VCF export
+
+When the **query** file is VCF, a fifth button appears:
+"Reconstructed VCF with annotations added to the INFO field. Shown only
+when the coordinate input is VCF."
+
+It reconstructs a VCF from the *displayed* rows:
+
+- `CHROM` and `POS` use VCF conventions — `POS = coord_start + 1`
+  (1-based, the first base of the query interval);
+- the original variant fields are carried over from the preserved
+  `coord_*` metadata;
+- matched rows gain annotation information in the **INFO** field;
+- unmatched rows are written without annotation INFO;
+- rows are in the original query record order, with ties in
+  annotation input order.
+
+This is the one place where a format convention is deliberately
+reconstructed for the output format.
+
+## Excel export
+
+The Excel button requires `openpyxl` in the app's environment. If it is
+not installed you will see the caption "Excel export requires openpyxl"
+and should use CSV/TSV instead — all columns are identical across
+formats.
+
+## Practical tips
+
+- Use **CSV** for spreadsheet work and **TSV** for tabular text
+  pipelines; use **TSV** if any of your metadata columns contain commas.
+- To export *all* rows (not just the filtered view), set the Show
+  filter to **All** first.
+- Download both engines' outputs for the same configuration and diff
+  them if you want to sanity-check a run — they are contractually
+  identical ([Choosing an annotation engine](../using/engines.md)).

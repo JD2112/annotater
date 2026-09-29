@@ -93,46 +93,29 @@ annotation, and download results.
 
 ## Usage
 
-1. **Upload files** — a coordinate file (BED/VCF/CSV/TSV) and an
-   annotation file (GFF3/GTF/BED/CSV/TSV).
-2. **Configure** (all have safe defaults):
-   - **Engine**: Bedtools or Polars-Bio (interchangeable backends)
-   - **Coordinate system**: auto-detected by default
-   - **Chromosome IDs**: auto-converted by default
-   - **Mode**: overlap / contains / within / closest
-   - **Strand matching**: off by default; when on, both intervals must
-     carry an explicit, equal strand
-   - **Minimum overlap fraction**: overlap mode only (0 = any positive
-     overlap)
-   - **Feature type filter**: GFF3/GTF annotations
-3. **Run annotation** — view the canonical result table, inspect metrics,
-   and download as CSV, TSV, or Excel.
+The complete usage guide — uploading, configuration, operations, result
+semantics, exports, and five worked examples — is the **user manual**:
 
-### Example
+- [User manual (Home)](docs/index.md) — read in the repository, or at
+  `https://pyrevo.github.io/annotater/` once the v0.1.0 documentation
+  site is published
+- [Quick start (user)](docs/getting-started/quick-start.md) — files to
+  results in five minutes
+- [Choosing an operation](docs/operations/choosing-an-operation.md),
+  [Coordinate systems](docs/preparing-your-data/coordinate-systems.md),
+  [Result columns](docs/results/result-columns.md)
 
-```text
-# Coordinate file (BED, 0-based half-open):
-chr1    100000  100500  region1
-chr2    200000  200300  region2
-
-# Annotation file (GFF3, 1-based inclusive — converted at parse time):
-chr1    RefSeq  gene    50000   150000  .   +   .   gene_id "GENE1"
-chr1    RefSeq  exon    99000   101000  .   +   .   gene_id "GENE1"
-
-# Result: region1 annotated with GENE1 (the gene and its exon overlap
-# [100000, 100500)); region2 has no overlap in this example.
-```
+In short: upload a query file and an annotation file, choose an engine,
+operation, and join (safe defaults), run the annotation, and download
+CSV/TSV/Excel (or an annotated VCF for VCF queries).
 
 ## Coordinate model
 
-| System | Formats | Interval type | Example |
-|--------|---------|---------------|---------|
-| 0-based | BED | Half-open `[start, end)` | `[100, 200)` = positions 100–199 |
-| 1-based | GFF3, GTF, VCF | Closed `[start, end]` | `[101, 200]` = positions 101–200 |
-
-AnnotateR converts at the parser boundary; every downstream operation and
-every exported result uses the canonical 0-based half-open model. VCF
-variants are expanded to intervals using the standard REF/END rules.
+AnnotateR converts at the parser boundary; every downstream operation
+and every exported result uses the single canonical model (0-based
+half-open `[start, end)`). The per-format conventions and the one-base
+worked examples are documented in the manual:
+[Coordinate systems](docs/preparing-your-data/coordinate-systems.md).
 
 ## Testing status
 
@@ -197,8 +180,10 @@ contract.
 
 | Document | Contents |
 |---|---|
+| [User manual (Home)](docs/index.md) | The complete user manual (this table's other docs are its Technical Reference section); published at `https://pyrevo.github.io/annotater/` at the v0.1.0 release |
 | [SPEC.md](SPEC.md) | Normative product/scientific contract |
-| [QUICKSTART.md](QUICKSTART.md) | Install, run, configure, test |
+| [QUICKSTART.md](QUICKSTART.md) | Developer install, run, configure, test |
+| [docs/manual-plan.md](docs/manual-plan.md) | Documentation architecture plan and review record (process document) |
 | [docs/architecture.md](docs/architecture.md) | Module architecture |
 | [docs/engine-contract.md](docs/engine-contract.md) | Engine semantics and backend contract |
 | [docs/deployment.md](docs/deployment.md) | Docker and SciLifeLab Serve deployment |
@@ -210,27 +195,20 @@ contract.
 
 ## Limitations
 
-- **Input formats**: BED, GFF3, GTF, VCF, and custom delimited tables
-  (chr/start/end). Other formats (e.g., BAM, BEDPE) are not supported.
-- **Coordinates**: canonical results are 0-based half-open. The Bedtools
-  backend (via pybedtools) cannot process coordinates ≥ 2³¹
-  (2,147,483,647); all natural chromosomes are far below this bound, so
-  real genomic data is unaffected (see
-  [docs/benchmark.md](docs/benchmark.md)).
+The current, complete limitations list for the v0.1.0 release is in the
+user manual: [Limitations](docs/limitations.md). The most relevant
+repository-level constraints:
+
 - **Runtime**: Python ≥ 3.12, < 3.15 is install-compatible; 3.12 is the
   tested and supported runtime. The production Docker image is
   `linux/amd64` only (Polars-Bio wheel availability; see
   [docs/deployment.md](docs/deployment.md)).
-- **Memory**: inputs and canonical results are held in memory; very large
-  files (hundreds of MB) require proportionally large RAM. There is no
-  streaming/lazy execution yet.
-- **Closest mode**: returns all tied-nearest annotations with a canonical
-  `distance`; there is no `k > 1` ranked nearest list and no signed
-  upstream/downstream nearest mode.
-- **UI**: single-user interactive tool; no account system, no saved
-  projects, no server-side persistence (uploads are processed in memory).
+- **Bedtools backend bound**: coordinates ≥ 2³¹ (2,147,483,647)
+  cannot be processed by the Bedtools backend; natural chromosomes are
+  far below this bound (see
+  [docs/benchmark.md](docs/benchmark.md)).
 - **Deployment**: on SciLifeLab Serve the platform caps uploads at
-  100 MB per file.
+  100 MB per file (the app itself limits to 200 MB).
 
 ## Development
 

@@ -1,0 +1,91 @@
+site_name: AnnotateR
+site_description: Genomic Coordinate Annotation Tool
+docs_dir: docs
+site_url: https://pyrevo.github.io/annotater/
+repo_url: https://github.com/pyrevo/annotater
+repo_name: pyrevo/annotater
+edit_uri: edit/main/docs/
+copyright: AnnotateR is released under the BSD-3-Clause License.
+
+# The developer/process documents stay authoritative in the repo (and on
+# GitHub) and are excluded from the site; the technical wrapper page
+# technical/scientific-contract.md links to them.
+exclude_docs: |
+  manual-plan.md
+  release-plan-0.1.0.md
+  FUTURE_FEATURES.md
+  *.resolved
+  agents/*
+
+theme:
+  name: material
+  primary: "#006DAE"  # = streamlit_app/config/settings.py THEME.primaryColor
+  scheme: default  # light by default, dark toggle available
+  icon:
+    favicon: material/dna
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - What is AnnotateR?: getting-started/what-is-annotater.md
+      - Quick start: getting-started/quick-start.md
+      - The AnnotateR workflow: getting-started/workflow.md
+  - Preparing Your Data:
+      - Query coordinates vs annotation features: preparing-your-data/query-vs-annotation.md
+      - "Supported file formats (BED, GFF3, GTF, VCF, CSV/TSV)": preparing-your-data/supported-formats.md
+      - "Coordinate systems (0-based / 1-based)": preparing-your-data/coordinate-systems.md
+      - "Chromosome identifiers (chr1 vs 1)": preparing-your-data/chromosome-identifiers.md
+      - "Strand information": preparing-your-data/strand-information.md
+  - Annotation Operations:
+      - Choosing an operation: operations/choosing-an-operation.md
+      - "Overlap": operations/overlap.md
+      - "Minimum overlap (min_overlap)": operations/min-overlap.md
+      - "Contains": operations/contains.md
+      - "Within": operations/within.md
+      - "Closest (nearest)": operations/closest.md
+      - "Strand-aware annotation": operations/strand-aware.md
+      - "Join behavior: left vs inner": operations/join-behavior.md
+  - Using AnnotateR:
+      - "Uploading files": using/uploading-files.md
+      - "Choosing an annotation engine (Bedtools vs Polars-Bio)": using/engines.md
+      - "Configuring the analysis": using/configuring.md
+      - "Feature filtering": using/feature-filtering.md
+      - "Running the annotation": using/running.md
+  - Results and Export:
+      - "Understanding the results page": results/results-page.md
+      - "Result columns and provenance": results/result-columns.md
+      - "Matched vs unmatched rows": results/matched-unmatched.md
+      - "Downloading and exporting results": results/export.md
+      - "Charts and gene list": results/charts-gene-list.md
+  - Examples:
+      - "BED query against GFF3 annotations": examples/bed-vs-gff3.md
+      - "Minimum-overlap filtering": examples/min-overlap.md
+      - "Strand-aware annotation": examples/strand.md
+      - "Contains vs within": examples/contains-within.md
+      - "Finding the closest feature": examples/closest.md
+  - Troubleshooting: troubleshooting.md
+  - FAQ: faq.md
+  - Limitations: limitations.md
+  - Technical Reference:
+      - "Scientific semantics and engine contract": technical/scientific-contract.md
+      - "Backend parity and benchmark": benchmark.md
+      - "Architecture": architecture.md
+      - "Engine contract (detailed design)": engine-contract.md
+      - "Deployment": deployment.md
+      - "Implementation notes": implementation-notes.md
+      - "External references": references.md
+      - "Legacy implementation": legacy.md

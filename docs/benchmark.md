@@ -4,7 +4,7 @@ Deterministic, reproducible benchmark of AnnotateR's two interchangeable
 execution backends (Bedtools via pybedtools, and Polars-Bio), with
 **scientific parity verified before any timing is accepted**.
 
-Script: [`benchmarks/benchmark_engines.py`](../benchmarks/benchmark_engines.py).
+Script: [`benchmarks/benchmark_engines.py`](https://github.com/pyrevo/annotater/blob/main/benchmarks/benchmark_engines.py).
 Results of the most recent full run are in [§ Results](#results).
 
 ## What this benchmark shows — and does not
@@ -291,4 +291,4 @@ Geometry and result tables are fully deterministic under the default
 seed; **timings are not** (machine load, thermals). Results are written
 to `benchmarks/results/` (git-ignored). The full run is deliberately
 **not** a CI gate — see
-[.github/workflows/python-tests.yml](../.github/workflows/python-tests.yml).
+[.github/workflows/python-tests.yml](https://github.com/pyrevo/annotater/blob/main/.github/workflows/python-tests.yml).
