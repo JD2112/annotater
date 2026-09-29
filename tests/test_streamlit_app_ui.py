@@ -15,7 +15,10 @@ Covers, through the real Streamlit app entrypoint (AppTest):
 - valid zero-match state shown as information, not an error;
 - explicit invalidation of stale results when configuration changes;
 - unavailable backend: explicit user-visible error, no fallback;
-- preview/parse independence from the engine choice.
+- preview/parse independence from the engine choice;
+- release polish: Run button disabled until both inputs are present and
+  usable, user-facing backend descriptions, secondary engine/operation
+  metadata (prominent metrics unchanged), compact download controls.
 """
 
 from __future__ import annotations
@@ -139,6 +142,15 @@ def _result(at: AppTest) -> pd.DataFrame:
     return at.session_state["result_df"]
 
 
+def _result_meta(at: AppTest) -> str:
+    """The compact provenance caption above the metrics, e.g.
+    'Bedtools · Overlap · Left join'."""
+    for cap in at.caption:
+        if "\u00b7" in cap.value and " join" in cap.value:
+            return cap.value
+    raise AssertionError("no result metadata caption found")
+
+
 def _reference_result(coord_df: pd.DataFrame, annot_df: pd.DataFrame,
                       mode: str, use_strand: bool = False,
                       min_overlap=None) -> pd.DataFrame:
@@ -186,9 +198,10 @@ class TestBackendSelector:
     def test_selected_engine_reaches_the_engine(self):
         at = _run_flow(_app())
         at = _configure_and_run(at, {"radio": {"engine": "Polars-Bio"}})
+        meta = _result_meta(at)
+        assert "Polars-Bio" in meta
+        assert "Overlap" in meta
         metrics = {m.label: m.value for m in at.get("metric")}
-        assert metrics["Engine"] == "Polars-Bio"
-        assert metrics["Operation"] == "overlap"
         assert int(metrics["Matched rows"].replace(",", "")) == 3
 
     def test_unavailable_backend_shows_warning_and_blocks_without_fallback(
@@ -293,15 +306,14 @@ class TestOperationModes:
         at = _run_flow(_app())
         at = _configure_and_run(at, {"selectbox": {"mode": mode}})
         result = _result(at)
-        metrics = {m.label: m.value for m in at.get("metric")}
-        assert metrics["Operation"] == mode
+        assert mode.title() in _result_meta(at)
         coord_df, annot_df = _parse_pair("coords.bed", COORD_BED,
                                          "annot.gff", ANNOT_GFF)
         expected = _reference_result(coord_df, annot_df, mode)
         assert_frame_equal(result, expected)
         if mode == "closest":
             assert "distance" in result.columns
-            assert {m.label for m in at.get("metric")} >= {"Distance column present"}
+            assert "distance column included" in _result_meta(at)
 
     def test_closest_distance_values_and_ties(self):
         at = _run_flow(_app(), coord_name="coords.bed", coord_content=COORD_TIE,
@@ -478,8 +490,8 @@ class TestStateInvalidation:
         _widget(at, "button", "run_button").set_value(True)
         at.run()
         _assert_no_exception(at)
+        assert "Polars-Bio" in _result_meta(at)
         metrics = {m.label: m.value for m in at.get("metric")}
-        assert metrics["Engine"] == "Polars-Bio"
         assert int(metrics["Matched rows"].replace(",", "")) == 3
 
     def test_mode_change_also_invalidates_stored_results(self):
@@ -490,3 +502,92 @@ class TestStateInvalidation:
         at.run()
         _assert_no_exception(at)
         assert "result_df" not in at.session_state
+
+
+# ---------------------------------------------------------------------------
+# Release UI polish
+# ---------------------------------------------------------------------------
+
+class TestReleasePolish:
+    def test_run_button_disabled_until_both_inputs_present(self):
+        at = _app()
+        at.run()
+        _assert_no_exception(at)
+        # No files at all: disabled.
+        assert _widget(at, "button", "run_button").proto.disabled
+
+        # Only the query file: still disabled.
+        _widget(at, "file_uploader", "coord_file").set_value(
+            ("coords.bed", COORD_BED, "application/octet-stream")
+        )
+        at.run()
+        _assert_no_exception(at)
+        assert _widget(at, "button", "run_button").proto.disabled
+
+        # Only the annotation file: still disabled (fresh app state).
+        at2 = _app()
+        at2.run()
+        _widget(at2, "file_uploader", "annot_file").set_value(
+            ("annot.gff", ANNOT_GFF, "application/octet-stream")
+        )
+        at2.run()
+        _assert_no_exception(at2)
+        assert _widget(at2, "button", "run_button").proto.disabled
+
+        # Both files: enabled.
+        at = _run_flow(_app())
+        assert not _widget(at, "button", "run_button").proto.disabled
+
+    def test_backend_descriptions_are_user_facing_and_neutral(self):
+        at = _app()
+        at.run()
+        _assert_no_exception(at)
+        captions = "\n".join(c.value for c in at.caption)
+        assert "established command-line backend" in captions
+        assert "dataframe-based backend" in captions
+        # No developer-oriented implementation detail or performance claim.
+        lowered = captions.lower()
+        assert "in-process" not in lowered
+        assert "external binary" not in lowered
+        assert "reference implementation" not in lowered
+        assert "faster" not in lowered
+
+    def test_result_metrics_stay_prominent_and_meta_is_secondary(self):
+        at = _run_flow(_app())
+        at = _configure_and_run(at, {})
+        labels = {m.label for m in at.get("metric")}
+        assert labels == {
+            "Query rows", "Result rows", "Matched rows", "Unmatched rows",
+        }
+        meta = _result_meta(at)
+        assert "Bedtools" in meta
+        assert "Overlap" in meta
+        assert "Left join" in meta
+
+    def test_download_controls_present_and_compact(self):
+        at = _run_flow(_app())
+        at = _configure_and_run(at, {})
+        labels = {b.label for b in at.get("download_button")}
+        assert {"CSV", "TSV", "Excel"} <= labels
+        # Gene-list actions are preserved in the charts expander.
+        assert {"Gene list (.txt)", "Gene list (comma-separated)"} <= labels
+
+    def test_advanced_options_expander_keeps_mode_gating(self):
+        at = _run_flow(_app())
+        at.run()
+        # Strand checkbox and overlap slider are reachable while the
+        # 'Advanced options' expander is collapsed by default.
+        assert any(
+            e.label == "Advanced options" and not e.proto.expanded
+            for e in at.get("expander")
+        )
+        assert _has_widget(at, "checkbox", "use_strand")
+        assert _has_widget(at, "slider", "min_overlap")
+
+        # Switching away from overlap hides the slider (engine kwargs are
+        # unchanged: _min_overlap_for never passes it through).
+        _widget(at, "selectbox", "mode").set_value("closest")
+        at.run()
+        _assert_no_exception(at)
+        assert not _has_widget(at, "slider", "min_overlap")
+        assert _has_widget(at, "checkbox", "use_strand")
