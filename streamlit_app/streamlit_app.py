@@ -66,12 +66,11 @@ st.set_page_config(
 )
 
 # Developer chrome (Rerun / Deploy / Clear cache, top-right toolbar): use
-# the official Streamlit `client.toolbarMode` setting. "auto" (the default
-# since Streamlit 1.64) shows those developer options only when the app is
-# accessed through localhost, so a deployed (SciLifeLab Serve) audience sees
-# a clean toolbar while local development ergonomics are preserved. Setting
-# it explicitly here documents that choice and pins it against upstream
-# default changes.
+# the official Streamlit `client.toolbarMode` setting. "auto" shows the
+# developer options only for local (localhost / community-cloud developer)
+# access, so a deployed (SciLifeLab Serve) audience sees a clean toolbar
+# while local development ergonomics are preserved. Setting it explicitly
+# here documents that choice and pins it against upstream default changes.
 st.set_option("client.toolbarMode", "auto")
 
 #: UI option labels in display order (user-facing, no internal class names).
@@ -361,7 +360,14 @@ def render_sidebar() -> dict:
             )
 
         # --- Advanced options (collapsed by default) -----------------
-        with st.expander("Advanced options"):
+        # The strand checkbox applies to all operation modes and a nonzero
+        # min_overlap changes semantics, so an active non-default state is
+        # reflected in the group label and stays visible even while the
+        # expander is collapsed.
+        advanced_label = "Advanced options"
+        if st.session_state.get("use_strand") is True:
+            advanced_label += " (strand required)"
+        with st.expander(advanced_label):
             use_strand = st.checkbox(
                 "Require query and annotation to have the same explicit strand",
                 key="use_strand",
@@ -389,9 +395,6 @@ def render_sidebar() -> dict:
                 )
             else:
                 min_overlap = None
-                st.caption(
-                    "Minimum overlap fraction applies to the overlap mode only."
-                )
 
         # --- Feature filter (GFF/GTF) -------------------------------
         st.subheader("Feature filter")
@@ -819,7 +822,7 @@ def _render_downloads(display_df, coord_format):
         "narrow the export)."
     )
 
-    d1, d2, d3, _d4 = st.columns([1, 1, 1, 2])
+    d1, d2, d3, _d4 = st.columns([1, 1, 1, 2])  # trailing spacer keeps the row compact
     with d1:
         st.download_button(
             "CSV",
@@ -856,7 +859,7 @@ def _render_downloads(display_df, coord_format):
             "Shown only when the coordinate input is VCF."
         )
         st.download_button(
-            "Download annotated VCF",
+            "Annotated VCF",
             data=convert_df_to_vcf(display_df),
             file_name="annotated_variants.vcf",
             mime="application/octet-stream",
@@ -1144,6 +1147,11 @@ def main():
     cfg = render_sidebar()
 
     coord_info, annot_info, coord_df = render_upload_section(cfg)
+    # Re-resolve the canonical query frame for the run section: the column
+    # mapping click handler in the upload section may have stored a fresh
+    # mapped frame during this very run, and the Run button must reflect
+    # that without waiting for another rerun.
+    coord_df = _resolve_coord_frame(coord_info, cfg)
     coord_format = coord_info["format"] if coord_info else None
     signature = _config_signature(
         cfg,
@@ -1170,10 +1178,23 @@ def main():
     ):
         run_annotation(cfg, coord_df, annot_info, signature)
     if not run_ready:
-        st.caption(
-            "Upload both a query file and an annotation file to enable "
-            "the annotation run."
-        )
+        if (
+            coord_df is None
+            and coord_info is not None
+            and coord_info["format"] == "custom"
+            and annot_info is not None
+        ):
+            # Both files are uploaded; the missing piece is the explicit
+            # column mapping for the custom-format query file.
+            st.caption(
+                "Apply the column mapping for the custom coordinate file "
+                "to enable the annotation run."
+            )
+        else:
+            st.caption(
+                "Upload both a query file and an annotation file to enable "
+                "the annotation run."
+            )
 
     render_results_section(cfg, coord_info["identity"] if coord_info else None,
                            annot_info["identity"] if annot_info else None, coord_format)

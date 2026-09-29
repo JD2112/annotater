@@ -538,6 +538,35 @@ class TestReleasePolish:
         at = _run_flow(_app())
         assert not _widget(at, "button", "run_button").proto.disabled
 
+    def test_custom_unmapped_query_disables_run_until_mapping(self):
+        custom_csv = b"chromosome,startpos,endpos,var_id\nchr1,100,200,v1\n"
+        at = _app()
+        at.run()
+        _widget(at, "file_uploader", "coord_file").set_value(
+            ("custom.csv", custom_csv, "application/octet-stream")
+        )
+        _widget(at, "file_uploader", "annot_file").set_value(
+            ("annot.gff", ANNOT_GFF, "application/octet-stream")
+        )
+        at.run()
+        _assert_no_exception(at)
+        # Both files uploaded, but the custom query is unmapped: disabled,
+        # and the guidance names the mapping, not the upload.
+        assert _widget(at, "button", "run_button").proto.disabled
+        assert any(
+            "column mapping" in c.value for c in at.caption
+        )
+
+        # Apply the column mapping: the run becomes possible.
+        columns = ["chromosome", "startpos", "endpos", "var_id"]
+        _widget(at, "selectbox", "map_chr_col").set_value("chromosome")
+        _widget(at, "selectbox", "map_start_col").set_value("startpos")
+        _widget(at, "selectbox", "map_end_col").set_value("endpos")
+        _widget(at, "button", "apply_mapping").set_value(True)
+        at.run()
+        _assert_no_exception(at)
+        assert not _widget(at, "button", "run_button").proto.disabled
+
     def test_backend_descriptions_are_user_facing_and_neutral(self):
         at = _app()
         at.run()
