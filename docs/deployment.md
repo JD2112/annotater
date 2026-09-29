@@ -213,6 +213,19 @@ variables use their defaults unless overridden (e.g. in
 | `STREAMLIT_SERVER_ENABLE_CORS` | `false` (image) | Disables CORS. |
 | `STREAMLIT_BROWSER_GATHER_USAGE_STATS` | `false` (image) | No usage stats. |
 
+### Developer toolbar controls
+
+The Streamlit toolbar in the top-right corner (Rerun, Deploy, Clear
+cache, developer menu) is controlled with the officially supported
+`client.toolbarMode` configuration. The app pins it explicitly in
+`streamlit_app/streamlit_app.py` via
+`st.set_option("client.toolbarMode", "auto")`. With `auto` (the default
+in Streamlit 1.64.0) the developer options are shown only when the app is
+accessed through localhost, i.e. by a developer running it locally; a
+deployed (Serve) audience connecting from outside localhost gets the clean
+viewer toolbar. No CSS/DOM-based hiding is used, and local development
+ergonomics (including the local Rerun control) are unchanged.
+
 ## Expected startup and resources
 
 - Cold start (interpreter + imports + Streamlit) takes roughly 10–20 s
