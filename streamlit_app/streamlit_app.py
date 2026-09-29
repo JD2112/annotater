@@ -65,6 +65,20 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+#: Typography polish (v0.1.0 maintainer browser review): raise the small
+#: supporting text 1-2 px toward the readable 16 px body/footer size while
+#: preserving the hierarchy (supporting text < widget labels < headings).
+#: Streamlit's theme configuration exposes no font-size controls, so a
+#: minimal, testid-scoped, typography-only CSS block is injected once. It
+#: only sets font-size on the stable data-testid hooks for widget labels
+#: (14 -> 16 px), captions (14 -> 15 px), and help-text tooltip bodies
+#: (14 -> 15 px); no layout, colors, headings, controls, or metrics change.
+_TYPOGRAPHY_CSS = """<style>
+[data-testid="stWidgetLabel"] { font-size: 1rem; }
+[data-testid="stCaptionContainer"] { font-size: 0.9375rem; }
+[data-testid="stTooltipContent"] { font-size: 0.9375rem; }
+</style>"""
+
 # Developer chrome (Rerun / Deploy / Clear cache, top-right toolbar): use
 # the official Streamlit `client.toolbarMode` setting. "auto" shows the
 # developer options only for local (localhost / community-cloud developer)
@@ -1137,6 +1151,7 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
 # ---------------------------------------------------------------------------
 
 def main():
+    st.markdown(_TYPOGRAPHY_CSS, unsafe_allow_html=True)
     st.title(Settings.APP_NAME)
     st.caption(
         "Annotate genomic coordinates against a feature set. Bedtools and "
