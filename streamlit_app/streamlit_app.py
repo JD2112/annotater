@@ -203,33 +203,59 @@ def _min_overlap_for(cfg: dict):
 # ---------------------------------------------------------------------------
 
 def _get_parsed_frame(state_key: str, uploaded, declared_system,
-                      invalidate_mapping: bool = False):
+                      invalidate_mapping: bool = False, role: str = "coord"):
     """
     Parse an uploaded file to its (pre-mapping) DataFrame, caching by
     file identity so unchanged files are not re-parsed on every rerun.
 
-    Returns {"identity", "format", "df"} or None (nothing uploaded, or a
-    parse failure already surfaced as a user-visible error).
+    Custom *annotation* tables already use the canonical column names
+    (chr/start/end), so the user's declared coordinate system is applied
+    exactly once here, at the canonical boundary; the stored frame is
+    then system-dependent and a changed declaration invalidates it.
+
+    Returns {"identity", "format", "df", "system"} or None (nothing
+    uploaded, or a parse failure already surfaced as a user-visible
+    error). ``system`` is the coordinate system the stored frame
+    represents, or None when the parse is system-independent.
     """
     if uploaded is None:
         st.session_state.pop(state_key, None)
         return None
 
     identity = _file_identity(uploaded)
+    current_system = declared_system or "0-based"
     cached = st.session_state.get(state_key)
     if isinstance(cached, dict) and cached["identity"] == identity:
-        return cached
+        # A stored frame that depends on the declared coordinate system
+        # is only valid for the declaration it was normalized with;
+        # system-independent parses are valid for any declaration.
+        if cached.get("system") is None or cached["system"] == current_system:
+            return cached
 
     path = save_uploaded_file(uploaded)
     fmt = FormatDetector.detect(str(path))
+    applied_system = None
     if fmt == "custom":
         # No fixed coordinate columns yet; canonical normalization for
-        # custom files happens only after explicit column mapping.
+        # custom files happens only after explicit column mapping —
+        # except custom *annotation* tables, which already carry the
+        # canonical chr/start/end column names: their declared
+        # coordinate system is applied once, at this boundary.
         try:
             df = CustomParser.parse(str(path))
         except Exception as exc:
             st.error(f"Could not parse the uploaded file `{uploaded.name}`: {exc}")
             return None
+        if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
+            applied_system = current_system
+            try:
+                df = normalize_intervals(df, coordinate_system=applied_system)
+            except Exception as exc:
+                st.error(
+                    f"Could not normalize custom annotation coordinates "
+                    f"(declared {applied_system}): {exc}"
+                )
+                return None
     else:
         # Known formats have a specification-fixed coordinate system;
         # this path is independent of the engine choice.
@@ -243,7 +269,7 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
             st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
             return None
 
-    info = {"identity": identity, "format": fmt, "df": df}
+    info = {"identity": identity, "format": fmt, "df": df, "system": applied_system}
     st.session_state[state_key] = info
     if invalidate_mapping:
         # A new coordinate file invalidates any previously applied
@@ -477,6 +503,7 @@ def render_upload_section(cfg: dict):
     annot_info = _get_parsed_frame(
         "annot_parse", annot_file,
         _declared_coordinate_system(cfg["annot_system"]),
+        role="annot",
     )
 
     # Previews (backend-independent by construction).
@@ -502,9 +529,14 @@ def render_upload_section(cfg: dict):
             if annot_info:
                 st.dataframe(annot_info["df"].head(10), height=220)
                 if annot_info["format"] == "custom":
+                    annot_system = (
+                        _declared_coordinate_system(cfg["annot_system"])
+                        or "0-based"
+                    )
                     st.caption(
                         "Custom format — the file must contain `chr`/`start`/`end` "
-                        "columns (0-based half-open) to be usable."
+                        f"columns; the declared coordinate system ({annot_system}) "
+                        "is applied to it."
                     )
                 else:
                     st.caption(
