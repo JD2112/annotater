@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional
@@ -79,10 +80,22 @@ def cleanup_temp_files(temp_dir: Optional[Path] = None, max_age_hours: Optional[
 
 def save_uploaded_file(uploaded_file, destination_dir: Optional[Path] = None) -> Path:
     """
-    Save uploaded file to temporary directory
+    Write an uploaded file to a safe, unique temporary path and return it.
+    
+    The path is a random token under the configured temp dir, suffixed with
+    ONLY the extension of the uploaded name (kept because format detection
+    reads it). The user-supplied filename itself never appears in the
+    filesystem path and cannot influence it: path separators and other
+    components are discarded, and the random token makes two same-named
+    uploads distinct instead of colliding on one path.
+    
+    The caller owns the lifecycle: the returned path MUST be deleted as
+    soon as the file no longer needs to exist on disk (the app deletes it
+    immediately after parsing, whether parsing succeeds or fails).
     
     Args:
-        uploaded_file: Streamlit uploaded file object
+        uploaded_file: Streamlit uploaded file object (anything with
+            .name and .getvalue())
         destination_dir: Directory to save to (uses Settings TEMP_DIR if None)
         
     Returns:
@@ -91,16 +104,15 @@ def save_uploaded_file(uploaded_file, destination_dir: Optional[Path] = None) ->
     if destination_dir is None:
         destination_dir = Settings.ensure_temp_dir()
     
-    # Create unique filename with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{uploaded_file.name}"
-    filepath = destination_dir / filename
+    suffix = Path(uploaded_file.name).suffix
+    fd, filepath = tempfile.mkstemp(
+        prefix="upload_", suffix=suffix, dir=destination_dir
+    )
     
-    # Save file
-    with open(filepath, 'wb') as f:
+    with os.fdopen(fd, "wb") as f:
         f.write(uploaded_file.getvalue())
     
-    return filepath
+    return Path(filepath)
 
 
 def get_example_data_path(filename: str) -> Path:

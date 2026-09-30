@@ -246,52 +246,62 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
             return cached
 
     path = save_uploaded_file(uploaded)
-    fmt = FormatDetector.detect(str(path))
-    applied_system = None
-    if fmt == "custom":
-        # No fixed coordinate columns yet; canonical normalization for
-        # custom files happens only after explicit column mapping —
-        # except custom *annotation* tables, which already carry the
-        # canonical chr/start/end column names: their declared
-        # coordinate system is applied once, at this boundary.
-        try:
-            df = CustomParser.parse(str(path))
-        except Exception as exc:
-            st.error(f"Could not parse the uploaded file `{uploaded.name}`: {exc}")
-            return None
-        if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
-            applied_system = current_system
+    try:
+        fmt = FormatDetector.detect(str(path))
+        applied_system = None
+        if fmt == "custom":
+            # No fixed coordinate columns yet; canonical normalization
+            # for custom files happens only after explicit column
+            # mapping — except custom *annotation* tables, which already
+            # carry the canonical chr/start/end column names: their
+            # declared coordinate system is applied once, at this
+            # boundary.
             try:
-                df = normalize_intervals(df, coordinate_system=applied_system)
+                df = CustomParser.parse(str(path))
             except Exception as exc:
                 st.error(
-                    f"Could not normalize custom annotation coordinates "
-                    f"(declared {applied_system}): {exc}"
+                    f"Could not parse the uploaded file `{uploaded.name}`: {exc}"
                 )
                 return None
-    else:
-        # Known formats by authoritative extension (.bed, .gff/.gff3,
-        # .gtf, .vcf) have a specification-fixed coordinate system:
-        # the parse is system-independent. A known format *sniffed from
-        # extension-neutral content* (.tsv/.txt/.csv/no extension) is
-        # not authoritative: an explicit coordinate declaration takes
-        # precedence over content sniffing, so the stored frame depends
-        # on the declaration and is invalidated when it changes
-        # (Auto-detect keeps the sniffed semantics). This path is
-        # independent of the engine choice.
-        if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
-            applied_system = coordinate_system_for(
-                fmt, declared_system, extension=Path(path).suffix.lower()
-            )
-        try:
-            df = parse_and_normalize(
-                str(path),
-                fmt=fmt,
-                declared_system=declared_system,
-            )
-        except Exception as exc:
-            st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
-            return None
+            if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
+                applied_system = current_system
+                try:
+                    df = normalize_intervals(df, coordinate_system=applied_system)
+                except Exception as exc:
+                    st.error(
+                        f"Could not normalize custom annotation coordinates "
+                        f"(declared {applied_system}): {exc}"
+                    )
+                    return None
+        else:
+            # Known formats by authoritative extension (.bed, .gff/.gff3,
+            # .gtf, .vcf) have a specification-fixed coordinate system:
+            # the parse is system-independent. A known format *sniffed
+            # from extension-neutral content* (.tsv/.txt/.csv/no
+            # extension) is not authoritative: an explicit coordinate
+            # declaration takes precedence over content sniffing, so the
+            # stored frame depends on the declaration and is invalidated
+            # when it changes (Auto-detect keeps the sniffed semantics).
+            # This path is independent of the engine choice.
+            if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
+                applied_system = coordinate_system_for(
+                    fmt, declared_system, extension=Path(path).suffix.lower()
+                )
+            try:
+                df = parse_and_normalize(
+                    str(path),
+                    fmt=fmt,
+                    declared_system=declared_system,
+                )
+            except Exception as exc:
+                st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
+                return None
+    finally:
+        # The parsed frame is fully in memory at this point (or the
+        # parse failed and there is nothing to keep): delete the
+        # transient upload copy immediately, on success and on failure,
+        # so uploads never accumulate for the lifetime of the session.
+        path.unlink(missing_ok=True)
 
     info = {"identity": identity, "format": fmt, "df": df, "system": applied_system}
     st.session_state[state_key] = info
