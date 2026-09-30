@@ -16,6 +16,7 @@ interval engine differs.
 
 import hashlib
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -985,8 +986,10 @@ def _render_downloads(display_df, coord_format):
 
     if coord_format == "vcf":
         st.info(
-            "Reconstructed VCF with annotations added to the INFO field. "
-            "Shown only when the coordinate input is VCF."
+            "Reconstructed VCF: original record fields (ID/REF/ALT/QUAL/FILTER, "
+            "INFO, FORMAT and samples) are preserved, and annotations are "
+            "appended to INFO as declared ANNOT_* entries. One record per "
+            "query-annotation pair. Shown only when the coordinate input is VCF."
         )
         st.download_button(
             "Annotated VCF",
@@ -1147,6 +1150,22 @@ def _render_charts_and_gene_list(df):
 # VCF export (unchanged canonical semantics; kept at module level)
 # ---------------------------------------------------------------------------
 
+#: ``coord_*`` metadata columns that map to fixed VCF fields (or the
+#: canonical interval keys) rather than to sample columns: every other
+#: ``coord_*`` column in a VCF query result is an original sample column.
+_VCF_FIXED_COORD_COLUMNS = frozenset({
+    "coord_chr", "coord_start", "coord_end", "coord_id", "coord_ref",
+    "coord_alt", "coord_qual", "coord_filter", "coord_info",
+    "coord_format", "coord_strand",
+})
+
+#: ``annot_*`` columns carrying interval/derived values rather than
+#: annotation metadata: never serialized into VCF INFO.
+_VCF_NONINFO_ANNOT_COLUMNS = frozenset({
+    "annot_chr", "annot_start", "annot_end", "has_overlap",
+})
+
+
 def _vcf_field(value) -> str:
     """
     Render a value as a VCF field: canonical missing (``pd.NA``/``NaN``/``None``)
@@ -1158,17 +1177,109 @@ def _vcf_field(value) -> str:
     return str(value)
 
 
+def _vcf_qual(value) -> str:
+    """
+    Render a QUAL value. Missing becomes the VCF MISSING value ``.``.
+
+    The parser stores QUAL as a float (source ``50`` becomes ``50.0``);
+    integer-valued numbers are written back without a fractional part so
+    an integer source QUAL round-trips verbatim, while genuinely
+    fractional values and non-numeric text are written as stored.
+    """
+    if pd.api.types.is_scalar(value) and pd.isna(value):
+        return "."
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return str(value)
+
+
+def _vcf_info_key(annotation_column: str) -> str:
+    """
+    ANNOT_*-namespaced INFO identifier for an annotation column.
+
+    The namespace is what keeps emitted keys from colliding with original
+    VCF INFO IDs; a suffix that is not a valid VCF INFO ID (must match
+    ``[A-Za-z_][A-Za-z0-9_]*``) is deterministically prefixed with
+    ``x_``.
+    """
+    suffix = annotation_column[len("annot_"):]
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", suffix):
+        suffix = f"x_{suffix}"
+    return f"ANNOT_{suffix}"
+
+
+def _escape_vcf_info_value(value: str) -> str:
+    """
+    Encode an annotation value for VCF INFO. VCF INFO values may not
+    contain ``;`` (field separator), ``=`` (key/value separator), or
+    whitespace, so the repository's established mapping applies:
+    ``;`` -> ``|``, `` `` -> ``_``, ``=`` -> ``:``. Commas are valid in
+    String values and pass through. This is a documented lossy encoding:
+    re-importing the exported file yields the escaped form, not the
+    original value text.
+    """
+    return value.replace(";", "|").replace(" ", "_").replace("=", ":")
+
+
+def _info_contains_key(info_text: str, key: str) -> bool:
+    """True if an original INFO field already carries ``key`` (as a flag
+    or a ``key=value`` token)."""
+    for token in info_text.split(";"):
+        if token == key or token.startswith(f"{key}="):
+            return True
+    return False
+
+
+def _vcf_sample_name(coord_column: str) -> str:
+    """
+    Original #CHROM header name for a ``coord_*`` sample column.
+
+    Reverses the parser's deterministic collision rename: a sample whose
+    name collides with a parser/core column is stored as
+    ``sample_<name>`` (e.g. a sample literally named ``start``).
+    Pathological sample names that already start with ``sample_`` cannot
+    be distinguished from renamed columns; the renamed form wins.
+    """
+    name = coord_column[len("coord_"):]
+    if name.startswith("sample_"):
+        name = name[len("sample_"):]
+    return name
+
+
 def convert_df_to_vcf(df: pd.DataFrame) -> str:
     """
     Convert results DataFrame back to VCF format.
-    Reconstructs standard columns and adds annotations to INFO.
+
+    Export fidelity contract (Task C / F8):
+
+    - original record fields the parse/result path retained are exported
+      verbatim: ID, REF, ALT, FILTER, the raw INFO field (including
+      END), and, when present, the FORMAT column and per-sample columns
+      in #CHROM order;
+    - annotation metadata is APPENDED to INFO under the ANNOT_*
+      namespace; every emitted key is declared by a generated ##INFO
+      line (conservative ``Number=.,Type=String``; no unsupported type
+      claims) and never overwrites or duplicates an original INFO key;
+    - the original ``##`` metadata lines are NOT retained by the parser,
+      so they are not re-emitted: the header declares only what the
+      exporter itself writes (the ANNOT_* keys) plus the source line;
+    - one output record per canonical result row: a source variant
+      matching N annotations appears N times with different ANNOT_*
+      payloads and identical original fields;
+    - unmatched rows keep the original record fields and carry no
+      ANNOT_* entries (INFO is the original INFO, or ``.`` when that was
+      missing too). POS = coord_start + 1 (canonical 0-based start ->
+      1-based VCF POS); REF/ALT/END are never rewritten from annotation
+      coordinates.
     """
     lines = [
         "##fileformat=VCFv4.2",
-        "##source=AnnotatorApp",
+        f"##source=AnnotateR {Settings.VERSION}",
         f"##date={pd.Timestamp.now().strftime('%Y%m%d')}",
-        "##INFO=<ID=ANNOT,Number=.,Type=String,Description=\"Annotations added by AnnotatorApp formatted as Key=Value\">",
-        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO",
     ]
 
     # Map internal columns to VCF standard columns
@@ -1204,8 +1315,34 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
     annot_cols = [
         c
         for c in df.columns
-        if c.startswith("annot_") and c not in ["annot_chr", "annot_start", "annot_end", "has_overlap"]
+        if c.startswith("annot_") and c not in _VCF_NONINFO_ANNOT_COLUMNS
     ]
+
+    # Declare every ANNOT_* key the exporter can emit, in frame column
+    # order (deterministic; de-duplicated after ID sanitization).
+    info_keys: dict = {}
+    for col in annot_cols:
+        key = _vcf_info_key(col)
+        if key not in info_keys:
+            info_keys[key] = col
+    lines += [
+        f"##INFO=<ID={key},Number=.,Type=String,"
+        f'Description="AnnotateR annotation (source column: {col})">'
+        for key, col in info_keys.items()
+    ]
+
+    # Original FORMAT/sample columns: any coord_* column beyond the fixed
+    # ones, in frame order (= the original #CHROM sample order).
+    has_format = "coord_format" in df.columns
+    sample_columns = [
+        c for c in df.columns
+        if c.startswith("coord_") and c not in _VCF_FIXED_COORD_COLUMNS
+    ]
+    chrom_header = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
+    if has_format:
+        chrom_header.append("FORMAT")
+    chrom_header.extend(_vcf_sample_name(c) for c in sample_columns)
+    lines.append("\t".join(chrom_header))
 
     vcf_rows = []
 
@@ -1226,18 +1363,29 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         fields.append(_vcf_field(row.get("coord_id", row.get("id", "."))))
         fields.append(_vcf_field(row.get("coord_ref", row.get("ref", "."))))
         fields.append(_vcf_field(row.get("coord_alt", row.get("alt", "."))))
-        # QUAL/FILTER: canonical missing (e.g. VCF FILTER "." = filters not
-        # applied) must be exported as the VCF MISSING value, not as a
-        # rendered "<NA>"/"nan" token.
-        fields.append(_vcf_field(row.get("coord_qual", row.get("qual", "."))))
+        # QUAL: canonical missing -> '.', integer-valued floats written
+        # back as integers (see _vcf_qual); FILTER: canonical missing
+        # (e.g. VCF FILTER "." = filters not applied) exports as '.',
+        # never as a rendered "<NA>"/"nan" token.
+        fields.append(_vcf_qual(row.get("coord_qual", row.get("qual", "."))))
         fields.append(_vcf_field(row.get("coord_filter", row.get("filter", "."))))
 
-        # Build INFO field
-        info_parts = []
-
-        # Add annotations
-        annot_parts = []
+        # Build INFO field: the original field is preserved VERBATIM
+        # (including END for symbolic variants); ANNOT_* entries are
+        # appended, never replacing or duplicating original keys.
+        original_info = _vcf_field(row.get("coord_info", pd.NA))
+        info_parts = [original_info] if original_info != "." else []
+        emitted_keys = set()
         for col in annot_cols:
+            key = _vcf_info_key(col)
+            if key in emitted_keys:
+                # Two columns sanitizing to the same INFO ID: the first
+                # in frame order wins, deterministically.
+                continue
+            if _info_contains_key(original_info, key):
+                # The source INFO already carries this key: the original
+                # value wins and is never silently overwritten.
+                continue
             raw_val = row[col]
             # Canonical missing (unmatched rows after canonicalization)
             # must not leak into INFO as 'Key=<NA>'.
@@ -1245,17 +1393,17 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
                 continue
             val = str(raw_val)
             if val and val not in [".", "nan", "-1", "None", "<NA>"]:
-                key = col.replace("annot_", "")
-                # Clean value for VCF compatibility
-                clean_val = val.replace(";", "|").replace(" ", "_").replace("=", ":")
-                annot_parts.append(f"{key}={clean_val}")
+                info_parts.append(f"{key}={_escape_vcf_info_value(val)}")
+                emitted_keys.add(key)
 
-        if annot_parts:
-            info_parts.append(";".join(annot_parts))
-        else:
-            info_parts.append(".")
+        fields.append(";".join(info_parts) if info_parts else ".")
 
-        fields.append(";".join(info_parts))
+        # Original FORMAT and sample columns, preserved verbatim (VCF '.'
+        # is already canonical missing and renders back to '.').
+        if has_format:
+            fields.append(_vcf_field(row.get("coord_format", pd.NA)))
+        for c in sample_columns:
+            fields.append(_vcf_field(row[c]))
 
         vcf_rows.append("\t".join(fields))
 
