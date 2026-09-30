@@ -204,6 +204,7 @@ class GFFParser:
             header=None,
             comment='#',
             names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
+            dtype={'chr': str},
         )
         if feature_types:
             df = df[df['feature'].isin(feature_types)]
@@ -507,6 +508,13 @@ class CustomParser:
         if delimiter is None:
             delimiter = CustomParser._detect_delimiter(filepath)
         
+        # Read every column as text: chromosome identifiers and other
+        # metadata are lexical, never numeric (an all-numeric chr column
+        # must keep "1" and "01" distinct). Numeric conversion of the
+        # coordinate columns happens exactly once, in
+        # normalize_intervals, at the canonical boundary.
+        kwargs.setdefault("dtype", str)
+        
         # Read file
         df = pd.read_csv(
             filepath,
@@ -616,6 +624,24 @@ class CustomParser:
         
         if end_col:
             rename_map[end_col] = 'end'
+        
+        # Collision safety: mapping the same source column to two
+        # canonical roles, or leaving an unmapped column that is
+        # literally named like a canonical column, would silently
+        # overwrite data — fail with a clear mapping error instead.
+        mapped_sources = [chr_col, start_col] + ([end_col] if end_col else [])
+        if len(set(mapped_sources)) != len(mapped_sources):
+            raise ValueError(
+                "The same column cannot be mapped to multiple canonical "
+                "roles (chr/start/end); pick a different column."
+            )
+        for extra in additional_cols or []:
+            if extra in rename_map.values():
+                raise ValueError(
+                    f"Unmapped column {extra!r} collides with a canonical "
+                    "column name (chr/start/end); rename it or map it "
+                    "explicitly instead of leaving it unmapped."
+                )
         
         # Select columns
         cols_to_keep = [chr_col, start_col]

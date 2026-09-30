@@ -41,15 +41,27 @@ The one-base case is the one that catches people: a GFF3 line
 The "Query coordinates" and "Annotation coordinates" selectors offer
 Auto-detect, `0-based (BED)`, and `1-based (GFF/GTF/VCF)`:
 
-- **For known formats (BED, GFF3, GTF, VCF) the coordinate system is
-  fixed by the format specification.** Auto-detect (and any explicit
-  choice) does not reinterpret them: a GFF3 file is always read as
-  1-based inclusive, a BED file always as 0-based half-open.
-- **For custom tables, the selector *declares* the coordinate system**,
-  because there is no format to ask. The default declaration is
-  **0-based half-open** — if your custom file is 1-based (for example a
-  BED-like export from a browser), select `1-based (GFF/GTF/VCF)` so
-  the shift is applied.
+- **Known format by extension** (`.bed`, `.gff`, `.gff3`, `.gtf`,
+  `.vcf`): the coordinate system is **fixed by the format
+  specification**, and Auto-detect (and any explicit choice) does not
+  reinterpret the file: a GFF3 file is always read as 1-based
+  inclusive, a BED file always as 0-based half-open.
+- **Extension-neutral tables** (`.tsv`, `.txt`, `.csv`, and other
+  custom tabular inputs): Auto-detect may infer a known format from the
+  content (a BED-like `.tsv` may be read as BED, 0-based). An **explicit
+  coordinate declaration takes precedence over that content sniffing**:
+  a BED-like `.tsv` declared `1-based (GFF/GTF/VCF)` is shifted as a
+  1-based table.
+- **Custom tables after column mapping:** the selector *declares* the
+  coordinate system, because there is no format to ask. The default
+  declaration is **0-based half-open** — if your custom file is 1-based
+  (for example a BED-like export from a browser), select
+  `1-based (GFF/GTF/VCF)` so the shift is applied.
+
+In short: for ambiguous/custom files, **explicit user intent > heuristic
+content detection**; for known format extensions, **format
+specification > user coordinate override**. No explicit user
+declaration is silently ignored.
 
 ## Why touching intervals are not overlaps
 

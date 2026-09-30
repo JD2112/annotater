@@ -119,8 +119,10 @@ The implemented boundary is `streamlit_app/core/normalization.py`.
 backend's source files enter canonical space, and it takes **no
 backend/engine argument by design**. Per-format coordinate systems are
 fixed by `FORMAT_COORDINATE_SYSTEMS` (BED: 0-based; GFF/GTF: 1-based;
-VCF: 1-based); a user-declared system applies only to custom tables
-after explicit column mapping (default 0-based, the historical
+VCF: 1-based); a user-declared system applies only to custom tables, exactly
+once at the canonical boundary — to query tables after explicit column
+mapping, and to annotation tables that already use the canonical
+`chr`/`start`/`end` column names (default 0-based, the historical
 effective behavior). `normalize_intervals` enforces the invariants in
 `core/schema.py` and returns deterministic column order:
 `chr, start, end, [strand], <metadata in source order>`.
