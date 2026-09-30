@@ -137,13 +137,15 @@ def normalize_intervals(df: pd.DataFrame, *, coordinate_system: str) -> pd.DataF
             )
         out[column] = numeric.astype("int64")
 
-    # chr: must be present on every row.
+    # chr: must be present on every row, and it is a lexical identifier,
+    # never a number (SPEC 5): an all-numeric source column must not
+    # reach the engine as integers, and "01" must not become "1".
     if out["chr"].isna().any():
         rows = out.index[out["chr"].isna()].tolist()
         raise InvalidIntervalError(
             f"chromosome values must be present on every row; missing at row(s) {rows[:5]}"
         )
-    out["chr"] = out["chr"].astype(object)
+    out["chr"] = out["chr"].map(lambda v: v if isinstance(v, str) else str(v))
 
     if (out["start"] < 0).any():
         rows = out.index[out["start"] < 0].tolist()

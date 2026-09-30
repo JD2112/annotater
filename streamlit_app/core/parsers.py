@@ -204,6 +204,7 @@ class GFFParser:
             header=None,
             comment='#',
             names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
+            dtype={'chr': str},
         )
         if feature_types:
             df = df[df['feature'].isin(feature_types)]
@@ -506,6 +507,13 @@ class CustomParser:
         # Auto-detect delimiter
         if delimiter is None:
             delimiter = CustomParser._detect_delimiter(filepath)
+        
+        # Read every column as text: chromosome identifiers and other
+        # metadata are lexical, never numeric (an all-numeric chr column
+        # must keep "1" and "01" distinct). Numeric conversion of the
+        # coordinate columns happens exactly once, in
+        # normalize_intervals, at the canonical boundary.
+        kwargs.setdefault("dtype", str)
         
         # Read file
         df = pd.read_csv(
