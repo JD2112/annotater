@@ -2,7 +2,7 @@
 
 [![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD--3--Clause-blue.svg)](https://opensource.org/license/bsd-3-clause)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml/badge.svg)](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml)
+[![Tests](https://github.com/JD2112/annotater/actions/workflows/python-tests.yml/badge.svg)](https://github.com/JD2112/annotater/actions/workflows/python-tests.yml)
 
 AnnotateR is a web application for reproducible annotation of genomic
 intervals. It maps a set of input coordinates (BED, GFF3, GTF, VCF, or
@@ -103,7 +103,7 @@ deployment are documented in [docs/deployment.md](docs/deployment.md)).
 ### From source (development)
 
 ```bash
-git clone https://github.com/pyrevo/annotater.git
+git clone https://github.com/JD2112/annotater.git
 cd annotater
 python3 -m venv .venv
 source .venv/bin/activate
@@ -117,12 +117,12 @@ system binary, the Polars-Bio backend does not. A clone-based container
 workflow (`docker-compose up --build`) is also provided. Then upload a
 query file and an annotation file, choose an operation and options, run
 the annotation, and export the result. Full local-installation and
-container instructions: [QUICKSTART.md](QUICKSTART.md) (developers) and
+container instructions: [QUICKSTART.md](assets/QUICKSTART.md) (developers) and
 the manual ([quick start](docs/getting-started/quick-start.md)).
 
 ## Documentation
 
-The user manual is published at <https://pyrevo.github.io/annotater/>
+The user manual is published at <https://JD2112.github.io/annotater/>
 (also in this repository, rooted at [docs/index.md](docs/index.md)).
 Notable pages:
 
@@ -133,10 +133,11 @@ Notable pages:
 - [Result columns](docs/results/result-columns.md)
 - [Limitations](docs/limitations.md)
 
-Technical reference: [SPEC](SPEC.md) (normative contract),
+Technical reference: [SPEC](assets/SPEC.md) (normative contract),
 [architecture](docs/architecture.md),
 [engine contract](docs/engine-contract.md),
-[deployment](docs/deployment.md) (Docker and SciLifeLab Serve).
+[deployment](docs/deployment.md) (Docker and SciLifeLab Serve),
+and [CHANGELOG](CHANGELOG.md).
 
 ## Reproducibility and testing
 
@@ -179,4 +180,4 @@ AnnotateR is licensed under the BSD 3-Clause License — see
 - Jyotirmoy Das, Ph.D. — [jyotirmoy.das@liu.se](mailto:jyotirmoy.das@liu.se)
 - Massimiliano Volpe, Ph.D. — [massimiliano.volpe@scilifelab.se](mailto:massimiliano.volpe@scilifelab.se)
 
-Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/pyrevo/annotater/issues).
+Questions, bug reports, and feature requests: [GitHub Issues](https://github.com/JD2112/annotater/issues).

@@ -6,7 +6,7 @@ Run this first to see how matched and unmatched rows look.
 
 ## Input
 
-Query: [`data/examples/example_coordinates.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_coordinates.bed)
+Query: [`data/examples/example_coordinates.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_coordinates.bed)
 — 6 regions (BED, 0-based half-open):
 
 ```text
@@ -18,7 +18,7 @@ chrX    50000     52000     regionX    250    +
 chrY    75000     75500     regionY    120    +
 ```
 
-Annotation: [`data/examples/example_annotations.gff3`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_annotations.gff3)
+Annotation: [`data/examples/example_annotations.gff3`](https://github.com/JD2112/annotater/blob/main/data/examples/example_annotations.gff3)
 — 3 genes plus 5 exons on chr1/chr2/chrX (GFF3, 1-based inclusive).
 
 ## Settings (all defaults)

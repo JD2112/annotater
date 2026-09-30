@@ -6,21 +6,19 @@ gene annotation files, gaining insights into genomic regions of interest
 directly in the browser.
 
 - **File formats:** BED · GFF3 · GTF · VCF · CSV/TSV (custom tables)
-- **Relation modes:** overlap, contains, within, closest —
-  with optional minimum query-overlap fraction and strand-aware
-  matching
+- **Operations:** overlap, minimum overlap, contains, within, closest —
+  with optional strand-aware matching
 - **Backends:** Bedtools (command-line) and Polars-Bio (dataframe),
   interchangeable and producing the same canonical result
-- **Runs locally or as a deployed service** — uploaded files are
-  processed within the running AnnotateR session and are not persisted
-  by the application
+- **Runs locally or as a deployed service** — your files never leave the
+  app; nothing is stored on any server
 
 ## Where to start
 
 - **New here?** Read [What is AnnotateR?](getting-started/what-is-annotater.md)
   and then the [Quick start](getting-started/quick-start.md).
 - **Running it locally?** Developers should follow
-  [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/main/QUICKSTART.md)
+  [QUICKSTART.md](https://github.com/JD2112/annotater/blob/main/assets/QUICKSTART.md)
   in the repository.
 
 ## The three topics users land on most
@@ -35,9 +33,9 @@ directly in the browser.
 
 The repository ships tiny example files you can use to try the app:
 
-- [`data/examples/example_coordinates.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_coordinates.bed)
+- [`data/examples/example_coordinates.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_coordinates.bed)
   (query regions) and
-  [`data/examples/example_annotations.gff3`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_annotations.gff3)
+  [`data/examples/example_annotations.gff3`](https://github.com/JD2112/annotater/blob/main/data/examples/example_annotations.gff3)
   (gene/exon annotations).
 
 See the [Examples](examples/bed-vs-gff3.md) section for five complete,
@@ -45,9 +43,8 @@ deterministic walkthroughs.
 
 ## Documentation
 
-This site is the user manual for the upcoming AnnotateR v0.1.0 release
-(currently in `0.1.0-rc1` beta testing).
+This site is the complete user manual for the AnnotateR v0.1.0 release.
 Technical and developer material (architecture, engine contract,
 benchmark, deployment) lives in the
 [Technical Reference](technical/scientific-contract.md) section and in
-the [repository](https://github.com/pyrevo/annotater).
+the [repository](https://github.com/JD2112/annotater).

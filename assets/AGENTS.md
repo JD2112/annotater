@@ -4,7 +4,7 @@
 
 ### Issue tracker
 
-Issues and specs live in GitHub Issues for `pyrevo/annotater` (use the `gh` CLI). See `docs/agents/issue-tracker.md`.
+Issues and specs live in GitHub Issues for `JD2112/annotater` (use the `gh` CLI). See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

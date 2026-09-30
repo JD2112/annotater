@@ -7,7 +7,7 @@ strand `+`, `+`, and *missing* — and the queries carrying `+`, `-`,
 
 ## Input
 
-Query: [`data/examples/example_strand_coordinates.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_strand_coordinates.bed)
+Query: [`data/examples/example_strand_coordinates.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_strand_coordinates.bed)
 
 ```text
 chr1    0     100    q_plus     0    +
@@ -15,7 +15,7 @@ chr1    200   300    q_minus    0    -
 chr1    400   500    q_plus2    0    +
 ```
 
-Annotation: [`data/examples/example_strand_annotations.gff3`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_strand_annotations.gff3)
+Annotation: [`data/examples/example_strand_annotations.gff3`](https://github.com/JD2112/annotater/blob/main/data/examples/example_strand_annotations.gff3)
 (GFF3 1-based; the third gene's strand column is `.`):
 
 | gene | 0-based interval | strand |

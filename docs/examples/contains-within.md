@@ -6,7 +6,7 @@ directional inverses, not aliases.
 
 ## Input
 
-[`data/examples/example_contains_within.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_contains_within.bed) — upload it **twice** (once into each uploader):
+[`data/examples/example_contains_within.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_contains_within.bed) — upload it **twice** (once into each uploader):
 
 ```text
 chr1    0     100    A    0    +

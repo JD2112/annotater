@@ -3,7 +3,7 @@
 This page is the **user-facing entry point** to the binding technical
 documentation. For developers, scientists reviewing semantics, and CI
 maintainers, the authoritative documents live in the
-[repository](https://github.com/pyrevo/annotater) — they are linked
+[repository](https://github.com/JD2112/annotater) — they are linked
 here, deliberately *not* republished on this site, so there is exactly
 one copy of the truth.
 
@@ -11,13 +11,13 @@ one copy of the truth.
 
 | Document | What it fixes |
 |---|---|
-| [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md) | The normative scientific contract: §5 canonical data model (0-based half-open, canonical columns, missing-value semantics), §6 format parsing/normalization, §7 engine contract and **backend parity**, §8 the four relation modes (overlap, contains, within, closest) and their modifiers (the min_overlap fraction rule, the contains/within directional predicates, and the canonical closest distance `max(0, a_start − q_end, q_start − a_end)`), §9 result and export semantics |
-| [`docs/engine-contract.md`](https://github.com/pyrevo/annotater/blob/main/docs/engine-contract.md) | The detailed engine-level contract both backends must satisfy, and the allowed/forbidden backend-specific behavior |
-| [`docs/architecture.md`](https://github.com/pyrevo/annotater/blob/main/docs/architecture.md) | The result-adapter boundary: why no backend column names leak into the canonical result |
+| [`SPEC.md`](https://github.com/JD2112/annotater/blob/main/assets/SPEC.md) | The normative scientific contract: §5 canonical data model (0-based half-open, canonical columns, missing-value semantics), §6 format parsing/normalization, §7 engine contract and **backend parity**, §8 the five operations (including the min_overlap fraction rule, the contains/within directional predicates, and the canonical closest distance `max(0, a_start − q_end, q_start − a_end)`), §9 result and export semantics |
+| [`docs/engine-contract.md`](https://github.com/JD2112/annotater/blob/main/docs/engine-contract.md) | The detailed engine-level contract both backends must satisfy, and the allowed/forbidden backend-specific behavior |
+| [`docs/architecture.md`](https://github.com/JD2112/annotater/blob/main/docs/architecture.md) | The result-adapter boundary: why no backend column names leak into the canonical result |
 
 The user-facing pages of this site paraphrase these documents; where
 they ever seem to disagree, **the SPEC wins** (see
-[AGENTS.md](https://github.com/pyrevo/annotater/blob/main/AGENTS.md)
+[AGENTS.md](https://github.com/JD2112/annotater/blob/main/assets/AGENTS.md)
 for the repository's source-of-truth priority order).
 
 ## The invariants, in one paragraph
@@ -55,7 +55,7 @@ the test suite, not by hope
 ## Documentation governance
 
 - The plan that shaped this site (audiences, sitemap, review record) is
-  [`docs/manual-plan.md`](https://github.com/pyrevo/annotater/blob/main/docs/manual-plan.md)
+  [`docs/manual-plan.md`](https://github.com/JD2112/annotater/blob/main/docs/manual-plan.md)
   in the repo — a process document, intentionally excluded from the
   site.
 - Semantic changes to any of the linked documents must change the

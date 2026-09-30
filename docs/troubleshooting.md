@@ -76,10 +76,8 @@ image without `bedtools` on PATH, or a restricted temporary directory.
 - Dense annotations × left join produce large result tables; the
   in-table rendering and exports scale with result size, not just input
   size.
-- On the measured workloads, the **Polars-Bio** engine was faster for
-  pair-producing operations (`overlap`, `contains`, `within`);
-  `closest` runs the shared canonical implementation on both backends
-  ([Backend parity and benchmark](benchmark.md)).
+- For very large files, the **Polars-Bio** engine is the in-process
+  option ([Limitations](limitations.md)).
 - There is no job queue: the run executes in your session. If a
   deployment imposes timeouts, reduce input size or change operation.
 

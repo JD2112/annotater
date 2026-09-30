@@ -5,7 +5,8 @@
 > upload files, choose an operation, read and export results — follow
 > the **user manual** instead:
 > [docs/getting-started/quick-start.md](docs/getting-started/quick-start.md)
-> (or online at `https://pyrevo.github.io/annotater/`).
+> (or `https://pyrevo.github.io/annotater/` once the v0.1.0
+> documentation site is published).
 
 ## 🚀 Get Started in 5 Minutes
 

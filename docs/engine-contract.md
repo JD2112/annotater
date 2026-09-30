@@ -1,7 +1,7 @@
 # Annotation Engine Contract
 
 **Applies to:** `BedtoolsEngine`, `PolarsBioEngine`, and future interval backends  
-**Normative parent:** [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md)
+**Normative parent:** [`SPEC.md`](https://github.com/JD2112/annotater/blob/main/assets/SPEC.md)
 
 ## 1. Interface
 

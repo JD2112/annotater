@@ -4,7 +4,7 @@ How to build, test, and deploy AnnotateR — locally, in a container, and on
 [SciLifeLab Serve](https://serve.scilifelab.se/).
 
 This document is for maintainers. End users who just want to run the app
-locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/main/QUICKSTART.md).
+locally should read [QUICKSTART.md](https://github.com/JD2112/annotater/blob/main/assets/QUICKSTART.md).
 
 ## Contents
 
@@ -230,7 +230,7 @@ the platform requirements this deployment satisfies:
    | Title / Description / Keywords | per your project |
    | Permissions | `Private` or `Link` while developing; `Public` at release (Serve requires apps to become public eventually) |
    | Creators | per your project records |
-   | Source code URL | `https://github.com/pyrevo/annotater` |
+   | Source code URL | `https://github.com/JD2112/annotater` |
 
 4. **Update**: publish a new image tag, then in the app *Settings* change
    the Image tag and press *Update*.
@@ -282,7 +282,7 @@ ergonomics (including the local Rerun control) are unchanged.
   use with files below the 100 MB platform upload cap; the in-container
   smoke test passes within these limits. Very large inputs (hundreds of
   MB) need headroom for canonical frames held in memory — see
-  [Limitations in the README](https://github.com/pyrevo/annotater/blob/main/README.md#limitations).
+  [Limitations in the README](https://github.com/JD2112/annotater/blob/main/README.md#limitations).
 - The filesystem is ephemeral except for the project *Mount path* (not
   used). Uploaded files are parsed in memory; intermediate bedtools files
   live in the container's scratch directory.

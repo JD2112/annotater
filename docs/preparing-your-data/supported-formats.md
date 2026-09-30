@@ -47,15 +47,13 @@ can play either role.
 ## GFF3
 
 - **Role:** query or annotation (typically annotation).
-- **Required fields:** `seqid`, `type`, `start`, `end` (columns 1, 3,
-  4, 5); the `type` column becomes the `feature` column.
-- **Standard layout:** nine tab-delimited columns — `seqid`,
-  `source`, `type`, `start`, `end`, `score`, `strand`, `frame`,
-  `attributes`; `source`, `score`, and `frame` (the GFF3 phase
-  column) may be `.`. The attribute keys `ID`, `Name`, `gene_id`,
-  `gene_name`, `transcript_id`, `gene_type`, `gene_biotype`, and
-  `Parent` are extracted from column 9 as dedicated columns; the
-  full raw attribute string is also preserved.
+- **Required fields:** `seqid`, `start`, `end` (columns 1–2–5); the
+  `type` column becomes the `feature` column.
+- **Optional fields:** `source`, `score`, `frame`; **attributes** in
+  column 9. The attribute keys `ID`, `Name`, `gene_id`, `gene_name`,
+  `transcript_id`, `gene_type`, `gene_biotype`, and `Parent` are
+  extracted as dedicated columns; the full raw attribute string is also
+  preserved.
 - **Coordinate convention:** 1-based inclusive — AnnotateR converts at
   parse time: `start := start − 1`, `end` unchanged
   ([Coordinate systems](coordinate-systems.md)).
@@ -76,18 +74,17 @@ can play either role.
 ## GTF
 
 - **Role:** query or annotation (typically annotation).
-- **Required fields:** all nine tab-delimited columns — `seqid`,
-  `source`, `feature` (type), `start`, `end`, `score`, `strand`,
-  `frame`, `attributes`; `score` and `frame` may be `.`. The same
-  keys as GFF3 are extracted from column 9 (`gene_id`, `gene_name`,
-  `transcript_id`, `gene_type`, …), using the GTF quoted
-  `key "value";` syntax.
+- **Required fields:** `seqid`, `source`, `feature` (type), `start`,
+  `end`, `strand`, `frame`.
+- **Optional fields:** the quote-delimited `attributes` field; the same
+  keys as GFF3 are extracted (`gene_id`, `gene_name`, `transcript_id`,
+  `gene_type`, …).
 - **Coordinate convention:** 1-based inclusive — converted like GFF3.
 - **Strand:** column 7.
 - **Tiny valid example:**
 
   ```text
-  chr1    example    gene    1001    2500    .    +    .    gene_id "G1"; gene_name "GENE1";
+  chr1    example    gene    1001    2500    +    .    gene_id "G1"; gene_name "GENE1";
   ```
 
 - **Common errors:** unbalanced quotes in the attribute field;

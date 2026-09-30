@@ -1,9 +1,9 @@
 site_name: AnnotateR
 site_description: Genomic Coordinate Annotation Tool
 docs_dir: docs
-site_url: https://pyrevo.github.io/annotater/
-repo_url: https://github.com/pyrevo/annotater
-repo_name: pyrevo/annotater
+site_url: https://JD2112.github.io/annotater/
+repo_url: https://github.com/JD2112/annotater
+repo_name: JD2112/annotater
 edit_uri: edit/main/docs/
 copyright: AnnotateR is released under the BSD-3-Clause License.
 

@@ -8,7 +8,7 @@ authors:
     orcid: "https://orcid.org/0000-0002-5649-4658"
   - family-names: Volpe
     given-names: Massimiliano
-repository-code: "https://github.com/pyrevo/annotater"
+repository-code: "https://github.com/JD2112/annotater"
 description: >-
   Genomic coordinate annotation tool: annotate query coordinates
   (BED/VCF/tabular) against annotation features (GFF/GTF/BED/tabular)

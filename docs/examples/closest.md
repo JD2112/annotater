@@ -7,7 +7,7 @@ annotations.
 
 ## Input
 
-Query: [`data/examples/example_closest_variants.vcf`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_closest_variants.vcf)
+Query: [`data/examples/example_closest_variants.vcf`](https://github.com/JD2112/annotater/blob/main/data/examples/example_closest_variants.vcf)
 
 ```text
 #CHROM  POS   ID   REF  ALT  QUAL  FILTER  INFO
@@ -19,7 +19,7 @@ chr2    100   v4   T    C    .     .       .
 
 Each is a 1-base substitution: canonical interval `[POS − 1, POS)`.
 
-Annotation: [`data/examples/example_closest_annotations.gff3`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_closest_annotations.gff3)
+Annotation: [`data/examples/example_closest_annotations.gff3`](https://github.com/JD2112/annotater/blob/main/data/examples/example_closest_annotations.gff3)
 (GFF3 1-based, all strand `+`, chr1 only):
 
 | gene | 0-based interval |

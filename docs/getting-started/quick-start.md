@@ -3,7 +3,7 @@
 Get from files to results in about five minutes. This page assumes the
 app is open in your browser (locally or as a deployed service).
 Developers who need to install and run the code should follow
-[QUICKSTART.md](https://github.com/pyrevo/annotater/blob/main/QUICKSTART.md)
+[QUICKSTART.md](https://github.com/JD2112/annotater/blob/main/assets/QUICKSTART.md)
 in the repository instead.
 
 ## Step 1 — Upload two example files
@@ -11,9 +11,9 @@ in the repository instead.
 Download the bundled example files from the repository:
 
 - Query:
-  [example_coordinates.bed](https://github.com/pyrevo/annotater/raw/main/data/examples/example_coordinates.bed)
+  [example_coordinates.bed](https://github.com/JD2112/annotater/raw/main/data/examples/example_coordinates.bed)
 - Annotation:
-  [example_annotations.gff3](https://github.com/pyrevo/annotater/raw/main/data/examples/example_annotations.gff3)
+  [example_annotations.gff3](https://github.com/JD2112/annotater/raw/main/data/examples/example_annotations.gff3)
 
 In the app, use the two uploaders in the **1. Upload** section:
 

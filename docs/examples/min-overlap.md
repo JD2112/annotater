@@ -5,7 +5,7 @@ queries, three annotations covering 100%, 40%, and 60% of them.
 
 ## Input
 
-Query: [`data/examples/example_min_overlap_coordinates.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_min_overlap_coordinates.bed)
+Query: [`data/examples/example_min_overlap_coordinates.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_min_overlap_coordinates.bed)
 
 ```text
 chr1    0      100     q_full
@@ -13,7 +13,7 @@ chr1    200    300     q_part40
 chr1    400    500     q_part60
 ```
 
-Annotation: [`data/examples/example_min_overlap_annotations.bed`](https://github.com/pyrevo/annotater/blob/main/data/examples/example_min_overlap_annotations.bed)
+Annotation: [`data/examples/example_min_overlap_annotations.bed`](https://github.com/JD2112/annotater/blob/main/data/examples/example_min_overlap_annotations.bed)
 
 ```text
 chr1    0      100     a_full
