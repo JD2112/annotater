@@ -10,8 +10,9 @@ directly in the browser.
   with optional strand-aware matching
 - **Backends:** Bedtools (command-line) and Polars-Bio (dataframe),
   interchangeable and producing the same canonical result
-- **Runs locally or as a deployed service** — your files never leave the
-  app; nothing is stored on any server
+- **Runs locally or as a deployed service** — uploaded files are
+  processed within the running AnnotateR session and are not persisted
+  by the application
 
 ## Where to start
 
@@ -43,7 +44,8 @@ deterministic walkthroughs.
 
 ## Documentation
 
-This site is the complete user manual for the AnnotateR v0.1.0 release.
+This site is the user manual for the upcoming AnnotateR v0.1.0 release
+(currently in `0.1.0-rc1` beta testing).
 Technical and developer material (architecture, engine contract,
 benchmark, deployment) lives in the
 [Technical Reference](technical/scientific-contract.md) section and in

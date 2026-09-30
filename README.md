@@ -96,9 +96,8 @@ annotation, and download results.
 The complete usage guide — uploading, configuration, operations, result
 semantics, exports, and five worked examples — is the **user manual**:
 
-- [User manual (Home)](docs/index.md) — read in the repository, or at
-  `https://pyrevo.github.io/annotater/` once the v0.1.0 documentation
-  site is published
+- Full user documentation: <https://pyrevo.github.io/annotater/>
+  (or read in the repository at [docs/index.md](docs/index.md))
 - [Quick start (user)](docs/getting-started/quick-start.md) — files to
   results in five minutes
 - [Choosing an operation](docs/operations/choosing-an-operation.md),
@@ -180,7 +179,7 @@ contract.
 
 | Document | Contents |
 |---|---|
-| [User manual (Home)](docs/index.md) | The complete user manual (this table's other docs are its Technical Reference section); published at `https://pyrevo.github.io/annotater/` at the v0.1.0 release |
+| [User manual (Home)](docs/index.md) | The complete user manual (this table's other docs are its Technical Reference section); available at `https://pyrevo.github.io/annotater/` |
 | [SPEC.md](SPEC.md) | Normative product/scientific contract |
 | [QUICKSTART.md](QUICKSTART.md) | Developer install, run, configure, test |
 | [docs/manual-plan.md](docs/manual-plan.md) | Documentation architecture plan and review record (process document) |

@@ -24,9 +24,11 @@ enforced by the test suite
 - **Bedtools** is the long-established reference for genomic interval
   arithmetic; choosing it makes AnnotateR results line up with what you
   get from a `bedtools` shell pipeline.
-- **Polars-Bio** runs in-process, with no external binary, and is the
-  engine that scales to very large inputs without subprocess overhead
-  ([Limitations](../limitations.md)).
+- **Polars-Bio** runs in-process, with no external binary. In the
+  [AnnotateR benchmark](../benchmark.md), Polars-Bio was faster for
+  pair-producing operations such as `overlap`, `contains`, and `within`
+  on the measured workloads. `closest` uses the shared canonical
+  AnnotateR path, so its runtime is similar across backends.
 
 ## How to choose
 
