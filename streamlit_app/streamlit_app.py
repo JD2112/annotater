@@ -600,8 +600,14 @@ def _render_coord_mapping_ui(coord_info, cfg):
         end_col_name = None if end_col == "None (single positions)" else end_col
         system = _declared_coordinate_system(cfg["coord_system"]) or "0-based"
         try:
+            # Every unmapped user column is preserved as metadata (in
+            # original input order), with collision safety enforced in
+            # CustomParser.map_columns.
+            unmapped_cols = [
+                c for c in columns if c not in (chr_col, start_col, end_col_name)
+            ]
             mapped_df = CustomParser.map_columns(
-                coord_df, chr_col, start_col, end_col_name
+                coord_df, chr_col, start_col, end_col_name, unmapped_cols
             )
             # A single position is exactly one base in the declared
             # source system: a 1-based position P is the 1-base interval
