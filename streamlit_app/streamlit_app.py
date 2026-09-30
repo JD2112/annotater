@@ -14,6 +14,7 @@ schema, and export semantics are identical for both backends; only the
 interval engine differs.
 """
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -135,10 +136,20 @@ def _declared_coordinate_system(option: str):
 
 
 def _file_identity(uploaded):
-    """Identity of an uploaded file for cache/invalidation purposes."""
+    """Identity of an uploaded file for cache/invalidation purposes.
+
+    Content-derived: (name, size, sha256 of the bytes). Filename and
+    size alone are NOT an identity — a replacement upload with the
+    same name and byte length but different coordinates must invalidate
+    the cached parse and any result that depended on it. The content is
+    already fully in memory (UploadedFile), so hashing it creates no
+    persistent copy; modification time and object identity are never
+    used.
+    """
     if uploaded is None:
         return None
-    return (uploaded.name, uploaded.size)
+    digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
+    return (uploaded.name, uploaded.size, digest)
 
 
 def _target_style_key(option: str):
