@@ -29,9 +29,30 @@ Coordinate systems
   After mapping, the user's declared coordinate system applies,
   defaulting to 0-based (the historical effective behavior for custom
   tables: no conversion).
+
+Coordinate-system precedence
+----------------------------
+
+- A known format identified by an **authoritative extension** (``.bed``,
+  ``.gff``, ``.gff3``, ``.gtf``, ``.vcf``): the format specification's
+  coordinate system is authoritative; an explicit user declaration must
+  not reinterpret the file.
+- A known format **sniffed from extension-neutral content** (``.tsv``,
+  ``.txt``, ``.csv``, or no extension): content sniffing is advisory. An
+  explicit user declaration takes precedence (e.g. a BED-like ``.tsv``
+  declared 1-based is shifted); with no declaration (Auto-detect) the
+  sniffed format's semantics are retained.
+- Custom tables (after column mapping): the user's declared system,
+  defaulting to 0-based.
+
+In short: explicit user intent > heuristic content detection for
+ambiguous files; format specification > user override for known format
+extensions. No explicit user declaration is silently ignored.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pandas as pd
 
@@ -60,20 +81,59 @@ CUSTOM_DEFAULT_SYSTEM = "0-based"
 
 _VALID_SYSTEMS = ("0-based", "1-based")
 
+#: File extensions that authoritatively identify a known format. For a
+#: file whose extension is in this set, the format specification's
+#: coordinate system is authoritative: an explicit user coordinate
+#: declaration must NOT reinterpret the file. Every other extension
+#: (``.tsv``, ``.txt``, ``.csv``, unknown, or none) is extension-neutral:
+#: content sniffing is advisory, an explicit declaration takes
+#: precedence, and Auto-detect keeps the sniffed semantics.
+AUTHORITATIVE_FORMAT_EXTENSIONS = {
+    "bed": frozenset({".bed"}),
+    "gff": frozenset({".gff", ".gff3"}),
+    "gtf": frozenset({".gtf"}),
+    "vcf": frozenset({".vcf"}),
+}
+
 #: Strand tokens that mean "unknown" in source formats.
 _STRAND_MISSING_TOKENS = ("", ".")
 
 
-def coordinate_system_for(format_name, declared_system=None) -> str:
+def extension_authoritative_for(format_name, extension) -> bool:
+    """
+    True when ``extension`` authoritatively identifies ``format_name``.
+
+    ``extension`` is the file extension including the leading dot
+    (case-insensitive). A missing extension (empty string) is never
+    authoritative: such files are extension-neutral.
+    """
+    return (extension or "").lower() in AUTHORITATIVE_FORMAT_EXTENSIONS.get(
+        (format_name or "").lower(), frozenset()
+    )
+
+
+def coordinate_system_for(format_name, declared_system=None, extension=None) -> str:
     """
     Resolve the source coordinate system for a parsed table.
 
-    Known formats have a fixed, specification-defined system; an explicit
-    ``declared_system`` must not silently re-interpret them. Custom tables
-    use the user's declared system, defaulting to 0-based.
+    - Known format with an authoritative ``extension`` (``.bed``, ``.gff``,
+      ``.gff3``, ``.gtf``, ``.vcf``): the format specification's system
+      wins; an explicit ``declared_system`` must not reinterpret the file.
+    - Known format inferred from extension-neutral content (e.g. a
+      BED-like ``.tsv``): an explicit ``declared_system`` takes precedence
+      over content sniffing; with no declaration the sniffed format's
+      semantics are retained.
+    - Custom tables: the user's declared system, defaulting to 0-based.
+
+    When ``extension`` is None (no file context, legacy callers), known
+    formats keep their fixed, specification-defined system.
     """
     known = FORMAT_COORDINATE_SYSTEMS.get((format_name or "").lower())
     if known is not None:
+        if extension is None or extension_authoritative_for(format_name, extension):
+            return known
+        if declared_system in _VALID_SYSTEMS:
+            return declared_system
         return known
     if declared_system in _VALID_SYSTEMS:
         return declared_system
@@ -205,9 +265,13 @@ def parse_and_normalize(
 
     - ``fmt`` overrides ``FormatDetector.detect`` (otherwise the format is
       detected from the file extension).
-    - ``declared_system`` applies only to custom tables (after column
-      mapping); it is ignored for known formats, whose coordinate
-      semantics are fixed by the format specification.
+    - ``declared_system`` sets the coordinate system for custom tables
+      (after column mapping) and, for files whose extension does not
+      authoritatively identify a known format (e.g. a BED-like ``.tsv``
+      sniffed from content), it overrides the sniffed format's system.
+      For a file carrying the known format's own extension (``.bed``,
+      ``.gff``, ``.gff3``, ``.gtf``, ``.vcf``) the format specification is
+      authoritative and the declaration has no effect.
     - ``parse_kwargs`` are forwarded to the format parser (for example
       ``feature_types`` for GFF/GTF).
 
@@ -229,5 +293,9 @@ def parse_and_normalize(
             "require explicit column mapping before normalization"
         )
 
-    system = coordinate_system_for(fmt_key, declared_system)
+    # Coordinate-system precedence: authoritative extension -> format
+    # spec; extension-neutral content -> explicit declaration wins, and
+    # Auto-detect (no declaration) keeps the sniffed semantics.
+    extension = Path(str(filepath)).suffix.lower()
+    system = coordinate_system_for(fmt_key, declared_system, extension=extension)
     return normalize_intervals(df, coordinate_system=system)

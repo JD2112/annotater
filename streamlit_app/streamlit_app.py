@@ -33,6 +33,8 @@ from streamlit_app.core import (
     CustomParser,
     FormatDetector,
     canonicalize_annotation_result,
+    coordinate_system_for,
+    extension_authoritative_for,
     normalize_intervals,
     parse_and_normalize,
     CanonicalSchemaError,
@@ -257,8 +259,19 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
                 )
                 return None
     else:
-        # Known formats have a specification-fixed coordinate system;
-        # this path is independent of the engine choice.
+        # Known formats by authoritative extension (.bed, .gff/.gff3,
+        # .gtf, .vcf) have a specification-fixed coordinate system:
+        # the parse is system-independent. A known format *sniffed from
+        # extension-neutral content* (.tsv/.txt/.csv/no extension) is
+        # not authoritative: an explicit coordinate declaration takes
+        # precedence over content sniffing, so the stored frame depends
+        # on the declaration and is invalidated when it changes
+        # (Auto-detect keeps the sniffed semantics). This path is
+        # independent of the engine choice.
+        if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
+            applied_system = coordinate_system_for(
+                fmt, declared_system, extension=Path(path).suffix.lower()
+            )
         try:
             df = parse_and_normalize(
                 str(path),

@@ -25,7 +25,9 @@ from .schema import (
 )
 from .normalization import (
     FORMAT_COORDINATE_SYSTEMS,
+    AUTHORITATIVE_FORMAT_EXTENSIONS,
     coordinate_system_for,
+    extension_authoritative_for,
     normalize_intervals,
     parse_and_normalize,
 )
@@ -50,7 +52,9 @@ __all__ = [
     "canonicalize_annotation_result",
     "validate_canonical_interval_table",
     "FORMAT_COORDINATE_SYSTEMS",
+    "AUTHORITATIVE_FORMAT_EXTENSIONS",
     "coordinate_system_for",
+    "extension_authoritative_for",
     "normalize_intervals",
     "parse_and_normalize",
 ]
