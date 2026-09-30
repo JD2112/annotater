@@ -603,10 +603,24 @@ def _render_coord_mapping_ui(coord_info, cfg):
             mapped_df = CustomParser.map_columns(
                 coord_df, chr_col, start_col, end_col_name
             )
-            # Single positions without an end column: end = start + 1,
-            # so the interval covers the position itself.
+            # A single position is exactly one base in the declared
+            # source system: a 1-based position P is the 1-base interval
+            # [P, P] (canonical [P-1, P) after the shift below); a
+            # 0-based position P is the half-open 1-base interval
+            # [P, P+1). Building end = start + 1 first would make a
+            # 1-based position 2 bp.
             if end_col_name is None:
-                mapped_df["end"] = mapped_df["start"] + 1
+                # The raw custom frame is read as text; numeric
+                # arithmetic needs an actual numeric start (non-numeric
+                # positions fail here with the same clear error that
+                # normalize_intervals would produce).
+                start_numeric = pd.to_numeric(
+                    mapped_df["start"], errors="coerce"
+                )
+                if system == "1-based":
+                    mapped_df["end"] = start_numeric
+                else:
+                    mapped_df["end"] = start_numeric + 1
             mapped_df = normalize_intervals(mapped_df, coordinate_system=system)
         except (CanonicalSchemaError, ValueError, KeyError) as exc:
             st.error(f"Column mapping failed: {exc}")
