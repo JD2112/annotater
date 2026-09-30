@@ -14,6 +14,7 @@ schema, and export semantics are identical for both backends; only the
 interval engine differs.
 """
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
@@ -135,10 +136,20 @@ def _declared_coordinate_system(option: str):
 
 
 def _file_identity(uploaded):
-    """Identity of an uploaded file for cache/invalidation purposes."""
+    """Identity of an uploaded file for cache/invalidation purposes.
+
+    Content-derived: (name, size, sha256 of the bytes). Filename and
+    size alone are NOT an identity — a replacement upload with the
+    same name and byte length but different coordinates must invalidate
+    the cached parse and any result that depended on it. The content is
+    already fully in memory (UploadedFile), so hashing it creates no
+    persistent copy; modification time and object identity are never
+    used.
+    """
     if uploaded is None:
         return None
-    return (uploaded.name, uploaded.size)
+    digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
+    return (uploaded.name, uploaded.size, digest)
 
 
 def _target_style_key(option: str):
@@ -235,52 +246,62 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
             return cached
 
     path = save_uploaded_file(uploaded)
-    fmt = FormatDetector.detect(str(path))
-    applied_system = None
-    if fmt == "custom":
-        # No fixed coordinate columns yet; canonical normalization for
-        # custom files happens only after explicit column mapping —
-        # except custom *annotation* tables, which already carry the
-        # canonical chr/start/end column names: their declared
-        # coordinate system is applied once, at this boundary.
-        try:
-            df = CustomParser.parse(str(path))
-        except Exception as exc:
-            st.error(f"Could not parse the uploaded file `{uploaded.name}`: {exc}")
-            return None
-        if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
-            applied_system = current_system
+    try:
+        fmt = FormatDetector.detect(str(path))
+        applied_system = None
+        if fmt == "custom":
+            # No fixed coordinate columns yet; canonical normalization
+            # for custom files happens only after explicit column
+            # mapping — except custom *annotation* tables, which already
+            # carry the canonical chr/start/end column names: their
+            # declared coordinate system is applied once, at this
+            # boundary.
             try:
-                df = normalize_intervals(df, coordinate_system=applied_system)
+                df = CustomParser.parse(str(path))
             except Exception as exc:
                 st.error(
-                    f"Could not normalize custom annotation coordinates "
-                    f"(declared {applied_system}): {exc}"
+                    f"Could not parse the uploaded file `{uploaded.name}`: {exc}"
                 )
                 return None
-    else:
-        # Known formats by authoritative extension (.bed, .gff/.gff3,
-        # .gtf, .vcf) have a specification-fixed coordinate system:
-        # the parse is system-independent. A known format *sniffed from
-        # extension-neutral content* (.tsv/.txt/.csv/no extension) is
-        # not authoritative: an explicit coordinate declaration takes
-        # precedence over content sniffing, so the stored frame depends
-        # on the declaration and is invalidated when it changes
-        # (Auto-detect keeps the sniffed semantics). This path is
-        # independent of the engine choice.
-        if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
-            applied_system = coordinate_system_for(
-                fmt, declared_system, extension=Path(path).suffix.lower()
-            )
-        try:
-            df = parse_and_normalize(
-                str(path),
-                fmt=fmt,
-                declared_system=declared_system,
-            )
-        except Exception as exc:
-            st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
-            return None
+            if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
+                applied_system = current_system
+                try:
+                    df = normalize_intervals(df, coordinate_system=applied_system)
+                except Exception as exc:
+                    st.error(
+                        f"Could not normalize custom annotation coordinates "
+                        f"(declared {applied_system}): {exc}"
+                    )
+                    return None
+        else:
+            # Known formats by authoritative extension (.bed, .gff/.gff3,
+            # .gtf, .vcf) have a specification-fixed coordinate system:
+            # the parse is system-independent. A known format *sniffed
+            # from extension-neutral content* (.tsv/.txt/.csv/no
+            # extension) is not authoritative: an explicit coordinate
+            # declaration takes precedence over content sniffing, so the
+            # stored frame depends on the declaration and is invalidated
+            # when it changes (Auto-detect keeps the sniffed semantics).
+            # This path is independent of the engine choice.
+            if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
+                applied_system = coordinate_system_for(
+                    fmt, declared_system, extension=Path(path).suffix.lower()
+                )
+            try:
+                df = parse_and_normalize(
+                    str(path),
+                    fmt=fmt,
+                    declared_system=declared_system,
+                )
+            except Exception as exc:
+                st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
+                return None
+    finally:
+        # The parsed frame is fully in memory at this point (or the
+        # parse failed and there is nothing to keep): delete the
+        # transient upload copy immediately, on success and on failure,
+        # so uploads never accumulate for the lifetime of the session.
+        path.unlink(missing_ok=True)
 
     info = {"identity": identity, "format": fmt, "df": df, "system": applied_system}
     st.session_state[state_key] = info
@@ -717,17 +738,47 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
         else:
             target = _target_style_key(cfg["target_chr_style"])
             if target:
-                st.info(
-                    f"Standardizing chromosome IDs to {target} style "
-                    "(manual specification)..."
+                coord_df, coord_src, _ = mapper.standardize_dataframe(
+                    coord_df, "chr", target
                 )
-                coord_df, _, _ = mapper.standardize_dataframe(coord_df, "chr", target)
-                annot_df, _, _ = mapper.standardize_dataframe(annot_df, "chr", target)
+                annot_df, annot_src, _ = mapper.standardize_dataframe(
+                    annot_df, "chr", target
+                )
+                # Claim standardization only when the converter actually
+                # maps identifiers (currently UCSC <-> Ensembl only);
+                # NCBI-style and unknown identifiers are left unchanged.
+                if any(
+                    mapper.conversion_supported(src, target)
+                    for src in (coord_src, annot_src)
+                ):
+                    st.info(
+                        f"Chromosome IDs standardized to {target} style "
+                        "(manual specification)."
+                    )
+                else:
+                    st.warning(
+                        f"Chromosome IDs cannot be converted to {target} "
+                        "style (only UCSC <-> Ensembl identifiers are "
+                        "mappable); identifiers were left unchanged."
+                    )
             else:
                 st.warning(
                     "Chromosome ID styles differ and 'Keep original' is selected; "
                     "rows on differently-named chromosomes will not match."
                 )
+
+    # --- No-shared-identifiers warning ---
+    # Whatever the conversion outcome, if the two tables share no
+    # chromosome identifiers at all, no row can match: say so explicitly
+    # instead of silently producing an all-unmatched result.
+    if len(coord_df) > 0 and len(annot_df) > 0:
+        shared = set(coord_df["chr"].unique()) & set(annot_df["chr"].unique())
+        if not shared:
+            st.warning(
+                "No shared chromosome identifiers remain between query and "
+                "annotation data. Check the chromosome naming conventions "
+                "used by each file."
+            )
 
     # --- Engine selection (execution only; explicit failure, no fallback) ---
     try:

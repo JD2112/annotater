@@ -35,6 +35,14 @@ class ChromosomeMapper:
         }
     }
     
+    # The pairs of detected styles between which convert() actually maps
+    # identifiers. Currently ONLY UCSC <-> Ensembl: NCBI-style ids
+    # (NC_000001.11) and unknown styles have no mapping and are returned
+    # unchanged by convert(). All conversion messaging (can_auto_convert
+    # in find_mismatches, UI captions/warnings) must be derived from this
+    # real capability, never from "the two detected styles merely differ".
+    SUPPORTED_CONVERTIBLE_STYLES = frozenset({frozenset(("ucsc", "ensembl"))})
+    
     # Regex patterns for style detection
     PATTERNS = {
         "ucsc": re.compile(r"^chr[0-9XYM]+$", re.IGNORECASE),
@@ -106,6 +114,18 @@ class ChromosomeMapper:
             return f"chr{chrom}" if not chrom.startswith("chr") else chrom
         
         return chrom
+    
+    def conversion_supported(self, from_style: Optional[str], to_style: Optional[str]) -> bool:
+        """
+        True ONLY if convert() actually maps identifiers between the two
+        styles. Missing/unknown styles, identical styles, and any pair not
+        in SUPPORTED_CONVERTIBLE_STYLES (in particular any pair involving
+        NCBI-style identifiers) return False: no conversion is possible
+        and identifiers would be left unchanged.
+        """
+        if not from_style or not to_style or from_style == to_style:
+            return False
+        return frozenset((from_style, to_style)) in self.SUPPORTED_CONVERTIBLE_STYLES
     
     def standardize_dataframe(
         self,
@@ -179,7 +199,7 @@ class ChromosomeMapper:
             "common_chromosomes": sorted(list(common)),
             "only_in_coord": sorted(list(only_coord)),
             "only_in_annot": sorted(list(only_annot)),
-            "can_auto_convert": coord_style and annot_style and coord_style != annot_style
+            "can_auto_convert": self.conversion_supported(coord_style, annot_style)
         }
     
     def get_conversion_suggestion(

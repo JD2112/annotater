@@ -6,6 +6,7 @@ Uses pybedtools for fast, memory-efficient genomic coordinate operations
 
 import logging
 import math
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
@@ -653,6 +654,18 @@ _BT_ANNOT_ROW_ID = "_bt_annot_row_id"
 #: all, so no ``-s``/column-6 layout exists anywhere.
 _BT_COLUMNS_PER_SIDE = 4
 
+# Concurrency safety (Task B / F7): pybedtools manages temp files in a
+# single PROCESS-GLOBAL temp area, and ``pybedtools.cleanup()`` clears
+# that shared area for the whole process. Two interleaved intersects
+# from two threads would otherwise delete each other's live temp files
+# under the running bedtools subprocess. This lock serializes exactly
+# the temp-file-lifecycle span (temp file creation, bedtools subprocess,
+# cleanup); result adaptation and post-filtering run outside the lock.
+# Only the BedtoolsEngine overlap path uses it: the Polars-Bio engine is
+# a pure in-memory operation with no temp files and no process-global
+# state, so it needs no lock.
+_BEDTOOLS_TEMP_LOCK = threading.Lock()
+
 
 class BedtoolsEngine(AnnotationEngine):
     """
@@ -837,13 +850,19 @@ class BedtoolsEngine(AnnotationEngine):
         # Backend failures MUST propagate (SPEC 9.2): a valid no-match is
         # not an exception and remains a valid empty result, but a backend
         # or conversion error must never be reported as "no matches".
-        try:
-            result = self._to_bed(coord_df, q_id).intersect(
-                self._to_bed(annot_df, a_id), **kwargs
-            )
-            raw = result.to_dataframe(header=None, dtype=str)
-        finally:
-            pybedtools.cleanup()
+        with _BEDTOOLS_TEMP_LOCK:
+            try:
+                # The lock spans the entire pybedtools temp-file
+                # lifecycle (temp file creation in _to_bed, the bedtools
+                # subprocess, and the process-global cleanup in the
+                # finally) so a concurrent run's cleanup() cannot delete
+                # this run's live temp files.
+                result = self._to_bed(coord_df, q_id).intersect(
+                    self._to_bed(annot_df, a_id), **kwargs
+                )
+                raw = result.to_dataframe(header=None, dtype=str)
+            finally:
+                pybedtools.cleanup()
 
         if raw.empty:
             # No exception was raised, so a 0-row raw result is a genuine
