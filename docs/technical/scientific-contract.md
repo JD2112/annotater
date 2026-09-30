@@ -11,7 +11,7 @@ one copy of the truth.
 
 | Document | What it fixes |
 |---|---|
-| [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md) | The normative scientific contract: §5 canonical data model (0-based half-open, canonical columns, missing-value semantics), §6 format parsing/normalization, §7 engine contract and **backend parity**, §8 the five operations (including the min_overlap fraction rule, the contains/within directional predicates, and the canonical closest distance `max(0, a_start − q_end, q_start − a_end)`), §9 result and export semantics |
+| [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md) | The normative scientific contract: §5 canonical data model (0-based half-open, canonical columns, missing-value semantics), §6 format parsing/normalization, §7 engine contract and **backend parity**, §8 the four relation modes (overlap, contains, within, closest) and their modifiers (the min_overlap fraction rule, the contains/within directional predicates, and the canonical closest distance `max(0, a_start − q_end, q_start − a_end)`), §9 result and export semantics |
 | [`docs/engine-contract.md`](https://github.com/pyrevo/annotater/blob/main/docs/engine-contract.md) | The detailed engine-level contract both backends must satisfy, and the allowed/forbidden backend-specific behavior |
 | [`docs/architecture.md`](https://github.com/pyrevo/annotater/blob/main/docs/architecture.md) | The result-adapter boundary: why no backend column names leak into the canonical result |
 

@@ -21,9 +21,15 @@ enforced by the test suite
 
 ## Why two engines at all
 
-- **Bedtools** is the long-established reference for genomic interval
-  arithmetic; choosing it makes AnnotateR results line up with what you
-  get from a `bedtools` shell pipeline.
+- **Bedtools** is the established command-line interval-processing
+  backend used by AnnotateR for the backend operations where
+  applicable. AnnotateR itself defines the canonical semantics and
+  output contract: `min_overlap`, strand, and the `contains`/`within`
+  predicates are shared AnnotateR post-processing applied on top of
+  backend pair generation, and `closest` uses the shared canonical
+  closest implementation rather than exposing a backend-native
+  distance. An equivalent-looking `bedtools` shell pipeline is
+  therefore not a specification of AnnotateR output.
 - **Polars-Bio** runs in-process, with no external binary. In the
   [AnnotateR benchmark](../benchmark.md), Polars-Bio was faster for
   pair-producing operations such as `overlap`, `contains`, and `within`
@@ -38,7 +44,12 @@ default). Pick **Polars-Bio** when:
 - your environment has no `bedtools` on PATH (the Bedtools option will
   be unavailable at run time and the run would fail with an explicit
   message);
-- you are processing very large files and want the in-process engine;
+- you are running a pair-producing operation (`overlap`, `contains`,
+  or `within`) and want the in-process engine that the
+  [AnnotateR benchmark](../benchmark.md) measured as faster for those
+  operations on the tested workloads (`closest` runs the shared
+  canonical implementation on both backends, so it has similar
+  runtime there);
 - you simply want to cross-check a result — re-running the same
   configuration on the other engine and diffing the two downloads is a
   legitimate way to sanity-check your inputs.

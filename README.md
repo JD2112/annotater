@@ -16,9 +16,10 @@ under AnnotateR's canonical semantics.
 
 AnnotateR takes two files: a query file of genomic coordinates and an
 annotation file of genomic features. For each query it reports the
-annotation features that satisfy the selected interval operation
-(overlap, minimum overlap, contains, within, or closest), with optional
-explicit strand-aware matching. Results are computed and exported in a
+annotation features that satisfy the selected relation mode
+(overlap, contains, within, or closest), with optional explicit
+strand-aware matching and a minimum query-overlap fraction (overlap
+mode only). Results are computed and exported in a
 single canonical coordinate model (0-based half-open intervals), so
 output is independent of the source format's coordinate convention.
 
@@ -36,8 +37,9 @@ from source for development.
 
 - Five input formats: BED, GFF3, GTF, VCF (query-only in v0.1.0), and
   custom CSV/TSV tables with explicit column mapping.
-- Five interval operations: overlap, minimum query-overlap fraction,
-  contains, within, closest; optional same-strand filtering.
+- Four relation modes: overlap, contains, within, closest; optional
+  modifiers: minimum query-overlap fraction (overlap mode only),
+  same-strand matching, and left/inner join behavior.
 - Chromosome identifier normalization: UCSC (`chr1`) and Ensembl (`1`)
   styles are converted automatically; NCBI accession styles are
   recognized but are not a conversion target.
@@ -51,22 +53,24 @@ from source for development.
 - Streamlit web application, containerized with Docker for local use
   and deployment.
 
-## Supported operations
+## Relation modes and modifiers
 
-All operations are supported by both backends; the backend is an
+All relation modes are supported by both backends; the backend is an
 execution choice and does not change the semantics:
 
-| Operation | Canonical semantics |
+| Relation mode | Canonical semantics |
 |---|---|
 | Overlap | positive half-open overlap |
-| Minimum query overlap (`min_overlap`) | query-relative overlap fraction |
 | Contains | query contains annotation |
 | Within | query within annotation |
 | Closest | canonical gap distance; all tied-nearest annotations returned |
 
-Strand-aware matching is an option on every operation: it filters to
-the same explicit strand, and a missing strand is never treated as a
-wildcard. The normative definition of each operation is in
+Modifiers are orthogonal options, not additional relation modes:
+`min_overlap` (the minimum query-overlap fraction, overlap mode only),
+strand-aware matching (every relation mode; it filters to the same
+explicit strand, and a missing strand is never treated as a
+wildcard), and left/inner join behavior (result visibility only).
+The normative definition of each mode is in
 [docs/engine-contract.md](docs/engine-contract.md).
 
 ## Getting started

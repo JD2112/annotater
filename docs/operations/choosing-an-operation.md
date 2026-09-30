@@ -1,9 +1,10 @@
 # Choosing an operation
 
-This is the front door to the five annotation operations. If you are
-not sure which one you need, work through the four questions below.
+This is the front door to the four relation modes
+(overlap, contains, within, closest). If you are not sure which one
+you need, work through the questions below.
 
-## The four questions
+## The questions
 
 ```text
 Q: I want every feature that intersects my query by at least one base?
