@@ -27,6 +27,11 @@ supported operations, Bedtools and Polars-Bio produce equivalent
 canonical results for the same input and options, and this parity is
 enforced by the test suite rather than assumed.
 
+AnnotateR is available as a hosted web deployment on SciLifeLab Serve
+(currently a project-restricted `0.1.0-rc1` pre-release beta), as a
+containerized local application using the published Docker images, and
+from source for development.
+
 ## Features
 
 - Five input formats: BED, GFF3, GTF, VCF (query-only in v0.1.0), and
@@ -66,16 +71,32 @@ wildcard. The normative definition of each operation is in
 
 ## Getting started
 
-Docker (recommended):
+AnnotateR can be used in three ways: the hosted SciLifeLab Serve
+deployment (currently a project-restricted `0.1.0-rc1` beta), a local
+Docker container on your own machine, or from source for development.
+
+### Local Docker container (no account or remote upload required)
+
+SciLifeLab Serve is **not required** to use AnnotateR. Users who prefer
+to keep their genomic files within their own computing environment can
+run the same AnnotateR application from the published container image:
 
 ```bash
-git clone https://github.com/pyrevo/annotater.git
-cd annotater
-docker-compose up --build
-# -> http://localhost:8501
+docker pull ghcr.io/pyrevo/annotater:0.1.0-rc1
+
+docker run --rm \
+  -p 8501:8501 \
+  ghcr.io/pyrevo/annotater:0.1.0-rc1
 ```
 
-Local installation (Python 3.12):
+Then open <http://localhost:8501>. For local Docker execution, uploaded
+files are processed by the AnnotateR container running on the user's own
+machine; SciLifeLab Serve is not involved. The image is
+`linux/amd64`; at the final `v0.1.0` release the immutable `0.1.0`
+image tag replaces the release-candidate tag (image tags and container
+deployment are documented in [docs/deployment.md](docs/deployment.md)).
+
+### From source (development)
 
 ```bash
 git clone https://github.com/pyrevo/annotater.git
@@ -87,12 +108,13 @@ streamlit run streamlit_app/streamlit_app.py
 # -> http://localhost:8501
 ```
 
-The Bedtools backend additionally requires the `bedtools` system binary;
-the Polars-Bio backend has no such requirement. Then upload a query
-file and an annotation file, choose an operation and options, run the
-annotation, and export the result. Developer install and test setup is
-in [QUICKSTART.md](QUICKSTART.md); the user-level quick start is in the
-manual ([quick start](docs/getting-started/quick-start.md)).
+Python 3.12; the Bedtools backend additionally requires the `bedtools`
+system binary, the Polars-Bio backend does not. A clone-based container
+workflow (`docker-compose up --build`) is also provided. Then upload a
+query file and an annotation file, choose an operation and options, run
+the annotation, and export the result. Full local-installation and
+container instructions: [QUICKSTART.md](QUICKSTART.md) (developers) and
+the manual ([quick start](docs/getting-started/quick-start.md)).
 
 ## Documentation
 
