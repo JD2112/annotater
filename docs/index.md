@@ -6,8 +6,9 @@ gene annotation files, gaining insights into genomic regions of interest
 directly in the browser.
 
 - **File formats:** BED · GFF3 · GTF · VCF · CSV/TSV (custom tables)
-- **Operations:** overlap, minimum overlap, contains, within, closest —
-  with optional strand-aware matching
+- **Relation modes:** overlap, contains, within, closest —
+  with optional minimum query-overlap fraction and strand-aware
+  matching
 - **Backends:** Bedtools (command-line) and Polars-Bio (dataframe),
   interchangeable and producing the same canonical result
 - **Runs locally or as a deployed service** — uploaded files are

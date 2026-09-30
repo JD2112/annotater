@@ -12,10 +12,11 @@ needs any of these, plan around them.
 - **File size limit: 200 MB per file** ([Uploading files](using/uploading-files.md)).
 - **In-memory, single-session processing** — there is no job queue;
   very large runs are bounded by the deployment's resources and any
-  deployment timeout. For very large inputs, prefer the Polars-Bio
-  engine (in-process) and expect the largest cost from **closest** mode
-  ([Backend parity and benchmark](benchmark.md) carries the
-  measured numbers).
+  deployment timeout. In the [AnnotateR benchmark](benchmark.md),
+  Polars-Bio was faster for pair-producing operations (`overlap`,
+  `contains`, `within`) on the measured workloads; `closest` uses the
+  shared canonical implementation and has similar runtime across
+  backends, and it is the most expensive operation at large scale.
 
 ## Format and semantics
 
