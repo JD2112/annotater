@@ -18,7 +18,7 @@ under any operation.
 
 | Option | Behavior |
 |---|---|
-| **Auto-convert if needed** (default) | When the two files use *different* recognizable styles, AnnotateR standardizes **both files to UCSC style** before matching. If the files already agree, nothing is converted. The preview panels and the result show the standardized names. |
+| **Auto-convert if needed** (default) | When the two files use *different* recognizable styles **that the converter can actually map (UCSC ⇄ Ensembl)**, AnnotateR standardizes **both files to UCSC style** before matching. If the files already agree, nothing is converted; if no mapping exists (for example NCBI accession names), nothing is converted either and the app warns instead of claiming a conversion. The preview panels and the result show the standardized names. |
 | **Manual specification** | You pick a **Target style** — UCSC, Ensembl, or *Keep original* — and both files are converted to it (or left as-is). |
 
 ## What can and cannot be converted in v0.1.0

@@ -738,17 +738,47 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
         else:
             target = _target_style_key(cfg["target_chr_style"])
             if target:
-                st.info(
-                    f"Standardizing chromosome IDs to {target} style "
-                    "(manual specification)..."
+                coord_df, coord_src, _ = mapper.standardize_dataframe(
+                    coord_df, "chr", target
                 )
-                coord_df, _, _ = mapper.standardize_dataframe(coord_df, "chr", target)
-                annot_df, _, _ = mapper.standardize_dataframe(annot_df, "chr", target)
+                annot_df, annot_src, _ = mapper.standardize_dataframe(
+                    annot_df, "chr", target
+                )
+                # Claim standardization only when the converter actually
+                # maps identifiers (currently UCSC <-> Ensembl only);
+                # NCBI-style and unknown identifiers are left unchanged.
+                if any(
+                    mapper.conversion_supported(src, target)
+                    for src in (coord_src, annot_src)
+                ):
+                    st.info(
+                        f"Chromosome IDs standardized to {target} style "
+                        "(manual specification)."
+                    )
+                else:
+                    st.warning(
+                        f"Chromosome IDs cannot be converted to {target} "
+                        "style (only UCSC <-> Ensembl identifiers are "
+                        "mappable); identifiers were left unchanged."
+                    )
             else:
                 st.warning(
                     "Chromosome ID styles differ and 'Keep original' is selected; "
                     "rows on differently-named chromosomes will not match."
                 )
+
+    # --- No-shared-identifiers warning ---
+    # Whatever the conversion outcome, if the two tables share no
+    # chromosome identifiers at all, no row can match: say so explicitly
+    # instead of silently producing an all-unmatched result.
+    if len(coord_df) > 0 and len(annot_df) > 0:
+        shared = set(coord_df["chr"].unique()) & set(annot_df["chr"].unique())
+        if not shared:
+            st.warning(
+                "No shared chromosome identifiers remain between query and "
+                "annotation data. Check the chromosome naming conventions "
+                "used by each file."
+            )
 
     # --- Engine selection (execution only; explicit failure, no fallback) ---
     try:
