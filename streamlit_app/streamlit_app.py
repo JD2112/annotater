@@ -33,6 +33,8 @@ from streamlit_app.core import (
     CustomParser,
     FormatDetector,
     canonicalize_annotation_result,
+    coordinate_system_for,
+    extension_authoritative_for,
     normalize_intervals,
     parse_and_normalize,
     CanonicalSchemaError,
@@ -203,36 +205,73 @@ def _min_overlap_for(cfg: dict):
 # ---------------------------------------------------------------------------
 
 def _get_parsed_frame(state_key: str, uploaded, declared_system,
-                      invalidate_mapping: bool = False):
+                      invalidate_mapping: bool = False, role: str = "coord"):
     """
     Parse an uploaded file to its (pre-mapping) DataFrame, caching by
     file identity so unchanged files are not re-parsed on every rerun.
 
-    Returns {"identity", "format", "df"} or None (nothing uploaded, or a
-    parse failure already surfaced as a user-visible error).
+    Custom *annotation* tables already use the canonical column names
+    (chr/start/end), so the user's declared coordinate system is applied
+    exactly once here, at the canonical boundary; the stored frame is
+    then system-dependent and a changed declaration invalidates it.
+
+    Returns {"identity", "format", "df", "system"} or None (nothing
+    uploaded, or a parse failure already surfaced as a user-visible
+    error). ``system`` is the coordinate system the stored frame
+    represents, or None when the parse is system-independent.
     """
     if uploaded is None:
         st.session_state.pop(state_key, None)
         return None
 
     identity = _file_identity(uploaded)
+    current_system = declared_system or "0-based"
     cached = st.session_state.get(state_key)
     if isinstance(cached, dict) and cached["identity"] == identity:
-        return cached
+        # A stored frame that depends on the declared coordinate system
+        # is only valid for the declaration it was normalized with;
+        # system-independent parses are valid for any declaration.
+        if cached.get("system") is None or cached["system"] == current_system:
+            return cached
 
     path = save_uploaded_file(uploaded)
     fmt = FormatDetector.detect(str(path))
+    applied_system = None
     if fmt == "custom":
         # No fixed coordinate columns yet; canonical normalization for
-        # custom files happens only after explicit column mapping.
+        # custom files happens only after explicit column mapping —
+        # except custom *annotation* tables, which already carry the
+        # canonical chr/start/end column names: their declared
+        # coordinate system is applied once, at this boundary.
         try:
             df = CustomParser.parse(str(path))
         except Exception as exc:
             st.error(f"Could not parse the uploaded file `{uploaded.name}`: {exc}")
             return None
+        if role == "annot" and all(c in df.columns for c in ("chr", "start", "end")):
+            applied_system = current_system
+            try:
+                df = normalize_intervals(df, coordinate_system=applied_system)
+            except Exception as exc:
+                st.error(
+                    f"Could not normalize custom annotation coordinates "
+                    f"(declared {applied_system}): {exc}"
+                )
+                return None
     else:
-        # Known formats have a specification-fixed coordinate system;
-        # this path is independent of the engine choice.
+        # Known formats by authoritative extension (.bed, .gff/.gff3,
+        # .gtf, .vcf) have a specification-fixed coordinate system:
+        # the parse is system-independent. A known format *sniffed from
+        # extension-neutral content* (.tsv/.txt/.csv/no extension) is
+        # not authoritative: an explicit coordinate declaration takes
+        # precedence over content sniffing, so the stored frame depends
+        # on the declaration and is invalidated when it changes
+        # (Auto-detect keeps the sniffed semantics). This path is
+        # independent of the engine choice.
+        if not extension_authoritative_for(fmt, Path(path).suffix.lower()):
+            applied_system = coordinate_system_for(
+                fmt, declared_system, extension=Path(path).suffix.lower()
+            )
         try:
             df = parse_and_normalize(
                 str(path),
@@ -243,7 +282,7 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
             st.error(f"Could not parse `{uploaded.name}` as {fmt.upper()}: {exc}")
             return None
 
-    info = {"identity": identity, "format": fmt, "df": df}
+    info = {"identity": identity, "format": fmt, "df": df, "system": applied_system}
     st.session_state[state_key] = info
     if invalidate_mapping:
         # A new coordinate file invalidates any previously applied
@@ -477,6 +516,7 @@ def render_upload_section(cfg: dict):
     annot_info = _get_parsed_frame(
         "annot_parse", annot_file,
         _declared_coordinate_system(cfg["annot_system"]),
+        role="annot",
     )
 
     # Previews (backend-independent by construction).
@@ -502,9 +542,14 @@ def render_upload_section(cfg: dict):
             if annot_info:
                 st.dataframe(annot_info["df"].head(10), height=220)
                 if annot_info["format"] == "custom":
+                    annot_system = (
+                        _declared_coordinate_system(cfg["annot_system"])
+                        or "0-based"
+                    )
                     st.caption(
                         "Custom format — the file must contain `chr`/`start`/`end` "
-                        "columns (0-based half-open) to be usable."
+                        f"columns; the declared coordinate system ({annot_system}) "
+                        "is applied to it."
                     )
                 else:
                     st.caption(
@@ -568,13 +613,33 @@ def _render_coord_mapping_ui(coord_info, cfg):
         end_col_name = None if end_col == "None (single positions)" else end_col
         system = _declared_coordinate_system(cfg["coord_system"]) or "0-based"
         try:
+            # Every unmapped user column is preserved as metadata (in
+            # original input order), with collision safety enforced in
+            # CustomParser.map_columns.
+            unmapped_cols = [
+                c for c in columns if c not in (chr_col, start_col, end_col_name)
+            ]
             mapped_df = CustomParser.map_columns(
-                coord_df, chr_col, start_col, end_col_name
+                coord_df, chr_col, start_col, end_col_name, unmapped_cols
             )
-            # Single positions without an end column: end = start + 1,
-            # so the interval covers the position itself.
+            # A single position is exactly one base in the declared
+            # source system: a 1-based position P is the 1-base interval
+            # [P, P] (canonical [P-1, P) after the shift below); a
+            # 0-based position P is the half-open 1-base interval
+            # [P, P+1). Building end = start + 1 first would make a
+            # 1-based position 2 bp.
             if end_col_name is None:
-                mapped_df["end"] = mapped_df["start"] + 1
+                # The raw custom frame is read as text; numeric
+                # arithmetic needs an actual numeric start (non-numeric
+                # positions fail here with the same clear error that
+                # normalize_intervals would produce).
+                start_numeric = pd.to_numeric(
+                    mapped_df["start"], errors="coerce"
+                )
+                if system == "1-based":
+                    mapped_df["end"] = start_numeric
+                else:
+                    mapped_df["end"] = start_numeric + 1
             mapped_df = normalize_intervals(mapped_df, coordinate_system=system)
         except (CanonicalSchemaError, ValueError, KeyError) as exc:
             st.error(f"Column mapping failed: {exc}")
