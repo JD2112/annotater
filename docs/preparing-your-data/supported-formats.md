@@ -70,8 +70,15 @@ The two uploaders accept different extensions:
 - **Coordinate convention:** 1-based inclusive — AnnotateR converts at
   parse time: `start := start − 1`, `end` unchanged
   ([Coordinate systems](coordinate-systems.md)).
-- **Strand:** column 7; `.` (or anything other than `+`/`-`) is
-  missing strand.
+- **Strand:** column 7; `+` and `-` are directional, `.` and `?`
+  (unknown) are missing strand. Any other value is rejected with an
+  error.
+- **Embedded FASTA:** a `##FASTA` directive ends the annotation
+  section; that line and everything after it (the embedded sequence)
+  is ignored.
+- **Column count:** every annotation record must have exactly nine
+  tab-separated columns; otherwise the upload fails with an error
+  naming the line. An empty attributes field means no attributes.
 - **Tiny valid example:**
 
   ```text
@@ -104,7 +111,10 @@ The two uploaders accept different extensions:
 - **Coordinate convention:** 1-based inclusive — converted like GFF3.
 - **Comments:** the same `#` handling as GFF3 applies (any `#` starts a
   comment, so it also truncates attribute values).
-- **Strand:** column 7.
+- **Strand:** column 7; `+`/`-` are directional, `.` and `?` are
+  missing strand, any other value is rejected. A record that does not
+  have exactly nine tab-separated columns fails with an error naming
+  the line.
 - **Tiny valid example:**
 
   ```text
