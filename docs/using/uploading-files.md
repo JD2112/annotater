@@ -83,6 +83,13 @@ declared in the sidebar ("Annotation coordinates") is applied to it
 once when it is parsed. Other columns, including an optional `strand`
 column, are kept as annotation metadata.
 
+Raw BioMart or UCSC Table Browser exports are **not** accepted as
+annotation tables as they are: their column names (for example
+`Chromosome/scaffold name`, `Gene start (bp)`, `chrom`, `txStart`) are
+not `chr`/`start`/`end`, so rename the columns first and choose the
+"Annotation coordinates" setting that matches the source data. For a
+custom *query* table you map the columns in the panel instead.
+
 See
 [Supported file formats → CSV/TSV and custom tables](../preparing-your-data/supported-formats.md)
 and [Coordinate systems](../preparing-your-data/coordinate-systems.md).

@@ -1,9 +1,19 @@
 # v0.1.0 release plan (to run AFTER manual GUI acceptance)
 
-No tag, GitHub Release, or image publication exists yet. The
-`release-prep-0.1.0` pass aligned version metadata to `0.1.0` in
-preparation, but the formal release happens only after the GUI is
-accepted.
+## Current release state
+
+- **RC1 was published:** the immutable image `0.1.0-rc1` exists in GHCR
+  (see [Release-candidate publications](#release-candidate-publications)
+  for the source commit and digest). That record is historical and is
+  not rewritten.
+- **`main` is ahead of RC1:** it contains fixes made after the RC1 source
+  commit, so RC1 does not contain them.
+- **RC2 has not been published.** No `0.1.0-rc2` image, digest or
+  workflow run exists yet; it is only the next planned candidate.
+- **Final `v0.1.0` has not been released:** there is no `v0.1.0` git
+  tag, no GitHub Release and no `0.1.0` image tag. Version metadata is
+  aligned to `0.1.0` (`release-prep-0.1.0`), but the formal release
+  happens only after the GUI is accepted.
 
 **License: RESOLVED (2026-09-28).** The maintainers selected
 BSD-3-Clause as the canonical license for the current AnnotateR
@@ -17,8 +27,10 @@ Remaining release gate (in order):
 1. Manual GUI acceptance.
 2. Apply any final approved GUI polish from the acceptance review
    (separate, small change; re-verify tests).
-3. Run the full test suite: `.venv/bin/python -m pytest` (expected
-   baseline 853 passed, 0 failed, 0 skipped — re-verify at release time).
+3. Run the full test suite: `.venv/bin/python -m pytest` (expected: all
+   tests pass, 0 failed, 0 skipped; the test count grows with the suite,
+   so record the exact count at release time. At the time of this
+   cleanup `main` measured 1462 passed.)
 4. Docker smoke: `docker build --platform linux/amd64 -t annotater . &&
    docker run --rm -p 8501:8501 annotater` and confirm `/_stcore/health`
    plus the manual GUI checks.
@@ -64,6 +76,10 @@ maintainer must set it to **public** under the repository's Package
 settings (or make the repository public) before Serve can pull it
 anonymously — the agent token of this session only has
 `gist, read:org, repo, workflow`.
+
+A `0.1.0-rc2` row will be added here only after RC2 is actually published
+(with its real source commit, digest and workflow run); it is not
+recorded in advance.
 
 Final-release images (`0.1.0`) are published only after step 5/6/7 above
 have been approved.
