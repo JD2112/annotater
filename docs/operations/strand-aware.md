@@ -34,6 +34,43 @@ query Q: [──) strand .      annotation A: [──) strand +      ✗ missing
 query Q: [──) strand .      annotation A: [──) strand .      ✗ missing (not a wildcard)
 ```
 
+Two concrete pairs with the same overlapping intervals. The pair with a
+missing annotation strand is **not** a stranded match:
+
+<!-- BEGIN GENERATED: strand_match -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)  strand +
+A        .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)  strand +
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 15–24 (10 bases); boundary coordinates 15 and 25
+
+strand matching: on
+overlap: yes
+stranded match: yes
+```
+<!-- END GENERATED: strand_match -->
+
+<!-- BEGIN GENERATED: strand_missing -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)  strand +
+A        .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)  strand missing
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 15–24 (10 bases); boundary coordinates 15 and 25
+
+strand matching: on
+overlap: yes
+stranded match: no
+```
+<!-- END GENERATED: strand_missing -->
+
 ## Per-operation composition
 
 The strand rule is an **AND** with the interval rule, uniformly:

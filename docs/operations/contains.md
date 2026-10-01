@@ -18,10 +18,23 @@ entirely inside my peaks). The directional inverse is
 
 ## Diagram
 
+<!-- BEGIN GENERATED: contains_example -->
 ```text
-annotation:                        [───────)          [30, 50)   strictly inside
-query:         [──────────────────────────────────────)          [10, 60)
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query    #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
+A        .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
+
+query  bases 10–23 (14 bases); boundary coordinates 10 and 24
+A      bases 14–19 (6 bases); boundary coordinates 14 and 20
+
+overlap: yes
+overlap length: 6
+query contains annotation: yes
+query within annotation: no
 ```
+<!-- END GENERATED: contains_example -->
 
 ## Boundary equality qualifies
 

@@ -68,11 +68,22 @@ declaration is silently ignored.
 Half-open intervals that touch at the same boundary coordinate share no
 genomic base:
 
+<!-- BEGIN GENERATED: touching_intervals -->
 ```text
-bases:      10  11  12  13  14  15  16  17  18  19  20  21  22  23  24  25
-interval A:  [────────────)                    [10, 20)
-interval B:                      [────────)   [20, 25)
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+A        .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 20–24 (5 bases); boundary coordinates 20 and 25
+
+overlap: no
+overlap length: 0
+closest distance: 0
 ```
+<!-- END GENERATED: touching_intervals -->
 
 `[10, 20)` covers bases 10–19. `[20, 25)` covers bases 20–24. **No base
 belongs to both intervals**, so under the overlap operation they do not

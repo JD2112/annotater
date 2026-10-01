@@ -16,19 +16,81 @@ distance = max(0, a_start − q_end, q_start − a_end)
 The distance is the exact number of bases in the gap between the two
 intervals, and it is always a non-negative integer.
 
+**Overlapping** — distance 0 because the intervals share bases:
+
+<!-- BEGIN GENERATED: closest_overlapping -->
 ```text
-overlapping:   Q [──)    A [────)        →  0
-                              [5,25) [15,40)
+coordinates are 0-based half-open; chromosome chr1
 
-touching:      Q [──) A [──)             →  0   (a_start == q_end)
-                              [5,15) [15,25)
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  [10, 20)
+A        .  .  .  .  #  #  #  #  #  #  #  #  #  #  [14, 24)
 
-one-base gap:  Q [──) . A [──)           →  1   (base 15 is the gap)
-                              [5,15) [16,26)
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 14–23 (10 bases); boundary coordinates 14 and 24
 
-large gap:     Q [──) ...... A [──]      →  75
-                              [5,15) [90,100)
+overlap: yes
+overlap length: 6
+closest distance: 0
 ```
+<!-- END GENERATED: closest_overlapping -->
+
+**Touching** — distance 0, but *not* an overlap (no shared base):
+
+<!-- BEGIN GENERATED: touching_intervals -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+A        .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 20–24 (5 bases); boundary coordinates 20 and 25
+
+overlap: no
+overlap length: 0
+closest distance: 0
+```
+<!-- END GENERATED: touching_intervals -->
+
+**One-base gap** — base 20 lies between them, so distance 1:
+
+<!-- BEGIN GENERATED: one_base_gap -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+A        .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [21, 25)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 21–24 (4 bases); boundary coordinates 21 and 25
+
+overlap: no
+overlap length: 0
+closest distance: 1
+```
+<!-- END GENERATED: one_base_gap -->
+
+**Large gap** — the distance counts every base in the gap:
+
+<!-- BEGIN GENERATED: closest_large_gap -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases    2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
+query    #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [2, 5)
+A        .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [17, 21)
+
+query  bases 2–4 (3 bases); boundary coordinates 2 and 5
+A      bases 17–20 (4 bases); boundary coordinates 17 and 21
+
+overlap: no
+overlap length: 0
+closest distance: 12
+```
+<!-- END GENERATED: closest_large_gap -->
 
 Key readings of this formula:
 
@@ -51,12 +113,25 @@ returned** — one row each, at the same `distance`. AnnotateR never
 breaks a tie arbitrarily. The tied rows appear in **annotation input
 order**.
 
+<!-- BEGIN GENERATED: closest_tie -->
 ```text
-query:                        [──)                 [3750, 3751)
-annotation 1:  [────────)                       [3500, 3600)   distance 150
-annotation 2:                                [────────)        [3901, 4000)  distance 150
-             → both rows returned, in annotation input order
+coordinates are 0-based half-open; chromosome chr1
+
+bases    6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    .  .  .  .  #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  [10, 13)
+A1       #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [6, 8)
+A2       .  .  .  .  .  .  .  .  .  #  #  .  .  .  .  .  .  .  .  [15, 17)
+A3       .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  [22, 25)
+
+query  bases 10–12 (3 bases); boundary coordinates 10 and 13
+A1     bases 6–7 (2 bases); boundary coordinates 6 and 8
+A2     bases 15–16 (2 bases); boundary coordinates 15 and 17
+A3     bases 22–24 (3 bases); boundary coordinates 22 and 25
+
+closest distance: 2
+closest ties retained: 2 (annotation order: A1, A2)
 ```
+<!-- END GENERATED: closest_tie -->
 
 ## Strand is applied before selection
 

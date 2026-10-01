@@ -21,6 +21,9 @@ jobs:
           python -m pip install "uv==0.11.8"
           scripts/export_requirements.sh --check
 
+      - name: Check generated docs example blocks
+        run: python scripts/generate_semantic_examples.py --check
+
   tests:
     name: pytest (Python 3.12, ${{ matrix.os }})
     # Python 3.12 is the currently tested and supported runtime. 3.13/3.14
