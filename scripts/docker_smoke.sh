@@ -64,6 +64,31 @@ for key, cls in (("bedtools", BedtoolsEngine), ("polars-bio", PolarsBioEngine)):
 assert_canonical_equal(results["bedtools_closest"], results["polars-bio_closest"],
                        label="docker-smoke-closest")
 print("closest smoke annotation: parity verified")
+
+# Exact, hand-computed scientific assertions on a tiny inline fixture
+# (0-based half-open): the bundled-data check above proves parity, this
+# proves correctness on both engines.
+tiny_q = pd.DataFrame({"chr": ["chr1", "chr1"], "start": [10, 100],
+                       "end": [20, 110], "name": ["q_ovl", "q_gap"]})
+tiny_a = pd.DataFrame({"chr": ["chr1", "chr1", "chr1"],
+                       "start": [15, 20, 125], "end": [25, 30, 140],
+                       "feature": ["a_ovl", "a_touch", "a_far"]})
+for key, cls in (("bedtools", BedtoolsEngine), ("polars-bio", PolarsBioEngine)):
+    got = canonicalize_annotation_result(
+        cls(mode="overlap").intersect(tiny_q, tiny_a, how="inner"), tiny_q, tiny_a)
+    # overlap: [10,20) x [15,25) matches; [10,20) x [20,30) only touches
+    assert got["coord_name"].tolist() == ["q_ovl"], (key, got)
+    assert got["annot_feature"].tolist() == ["a_ovl"], (key, got)
+    assert got["annot_start"].tolist() == [15], (key, got)
+    got = canonicalize_annotation_result(
+        cls(mode="closest").intersect(tiny_q, tiny_a, how="inner"),
+        tiny_q, tiny_a, extra_columns=("distance",))
+    # closest: q_ovl -> a_ovl (overlap, 0) AND a_touch (touching, 0): a tie,
+    # both returned in annotation order; q_gap [100,110) -> a_far [125,140):
+    # gap 125 - 110 = 15
+    assert got["annot_feature"].tolist() == ["a_ovl", "a_touch", "a_far"], (key, got)
+    assert got["distance"].tolist() == [0, 0, 15], (key, got)
+print("exact scientific smoke assertions: verified on both engines")
 EOF
 
 # --- 4. Streamlit from the Serve entry point ------------------------------
