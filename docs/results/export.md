@@ -60,13 +60,19 @@ It reconstructs a VCF from the *displayed* rows:
 - `QUAL` is exported as stored: integer values without a fractional
   part (`50`, not `50.0`); missing values stay `.`.
 
-**Header limitation.** The import path does not retain the original
-`##...` metadata lines, so the exported header contains only generated
-content: `##fileformat`, `##source=AnnotateR <version>`, `##date`, and
-the `##INFO` declarations for the `ANNOT_*` keys. Original INFO keys
-(for example `DP` or `END`) and FORMAT sub-fields appear in the
-records but are not re-declared — they are preserved as data, not as
-header definitions.
+**Header metadata.** The original `##...` metadata lines from the query
+VCF — for example `##contig`, `##INFO`, `##FORMAT` and `##FILTER`
+declarations, plus any other metadata — are preserved verbatim and in
+source order, once per source file (not per result row), together with
+the source file's `##fileformat` version. The exporter adds its own
+`##source=AnnotateR <version>` and `##date` lines (additions, not
+replacements), the `##INFO` declarations for the `ANNOT_*` keys it
+emits, and — if the source had no `##fileformat` line at all — a
+fallback one. If the source header already declares an `ANNOT_*` INFO
+key: a `Type=String` declaration is kept as-is (no duplicate is
+generated), while a declaration with any other type is refused with an
+explicit error rather than silently overwritten. Original definitions
+are never re-synthesized — no types or descriptions are invented.
 
 This is the one place where a format convention is deliberately
 reconstructed for the output format.

@@ -298,4 +298,10 @@ def parse_and_normalize(
     # Auto-detect (no declaration) keeps the sniffed semantics.
     extension = Path(str(filepath)).suffix.lower()
     system = coordinate_system_for(fmt_key, declared_system, extension=extension)
-    return normalize_intervals(df, coordinate_system=system)
+    result = normalize_intervals(df, coordinate_system=system)
+    # VCF ## header metadata is provenance/serialization metadata, not
+    # interval content: carry it on the returned frame (via attrs, so the
+    # column schema is unchanged) so the VCF export path can restore it.
+    if 'vcf_header_lines' in df.attrs:
+        result.attrs['vcf_header_lines'] = df.attrs['vcf_header_lines']
+    return result

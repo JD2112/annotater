@@ -321,7 +321,13 @@ class VCFParser:
         - FILTER is preserved verbatim: ``PASS`` stays ``PASS``, a
           semicolon-separated failed-filter list stays as-is, and ``.``
           (filters not applied) is canonical missing — it is NOT
-          converted to ``PASS``.
+          converted to ``PASS``;
+        - the original ``##`` metadata lines (before the ``#CHROM``
+          line) are retained verbatim, in source order, in
+          ``df.attrs['vcf_header_lines']``. They are provenance /
+          serialization metadata for the VCF export — never interval
+          columns: the DataFrame schema is unchanged and a VCF without
+          ``##`` lines yields an empty list.
         
         Sample names are used verbatim as column names except when one
         collides with a parser/core column name (for example a sample
@@ -344,6 +350,7 @@ class VCFParser:
         rows: List[Dict] = []
         samples: Optional[List[str]] = None  # None: no #CHROM line seen yet
         header_expected_fields: Optional[int] = None
+        header_lines: List[str] = []  # original ## metadata, source order
         
         with open(filepath, 'r') as handle:
             for line_number, line in enumerate(handle, start=1):
@@ -400,6 +407,12 @@ class VCFParser:
                         header_expected_fields = (
                             8 + (1 if has_format else 0) + len(names)
                         )
+                    elif line.startswith('##') and samples is None:
+                        # Original ## metadata before #CHROM: retained
+                        # verbatim (serialization provenance for the VCF
+                        # export; see the docstring). Lines after #CHROM
+                        # are not VCF metadata and are skipped as before.
+                        header_lines.append(line)
                     continue
                 
                 fields = line.split('\t')
@@ -462,9 +475,12 @@ class VCFParser:
         columns = list(cls._COLUMNS) + ['info']
         if samples is not None and len(samples) > 0:
             columns = columns + ['format'] + list(samples)
-        if not rows:
-            return pd.DataFrame(columns=columns)
-        return pd.DataFrame(rows, columns=columns)
+        if rows:
+            df = pd.DataFrame(rows, columns=columns)
+        else:
+            df = pd.DataFrame(columns=columns)
+        df.attrs['vcf_header_lines'] = header_lines
+        return df
 
 
 class CustomParser:

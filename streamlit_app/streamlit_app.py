@@ -103,6 +103,7 @@ _RESULT_STATE_KEYS = (
     "result_mode",
     "result_join",
     "result_coord_format",
+    "result_vcf_header_lines",
 )
 
 _COORD_SYSTEM_OPTIONS = [
@@ -304,7 +305,16 @@ def _get_parsed_frame(state_key: str, uploaded, declared_system,
         # so uploads never accumulate for the lifetime of the session.
         path.unlink(missing_ok=True)
 
-    info = {"identity": identity, "format": fmt, "df": df, "system": applied_system}
+    info = {
+        "identity": identity,
+        "format": fmt,
+        "df": df,
+        "system": applied_system,
+        # VCF only: original ## metadata lines, retained once per source
+        # file (serialization provenance for the annotated VCF export);
+        # None for every other format.
+        "vcf_header_lines": df.attrs.pop("vcf_header_lines", None),
+    }
     st.session_state[state_key] = info
     if invalidate_mapping:
         # A new coordinate file invalidates any previously applied
@@ -825,6 +835,12 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
         return
 
     # --- Store results with the configuration signature ---
+    coord_parse = st.session_state.get("coord_parse")
+    vcf_header_lines = (
+        coord_parse.get("vcf_header_lines")
+        if isinstance(coord_parse, dict)
+        else None
+    )
     st.session_state.update(
         {
             "result_signature": signature,
@@ -834,6 +850,9 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
             "result_mode": cfg["mode"],
             "result_join": cfg["join"],
             "result_coord_format": _coord_format_of(cfg),
+            # Original VCF ## metadata (once per source file), restored
+            # verbatim by the annotated VCF export.
+            "result_vcf_header_lines": vcf_header_lines,
         }
     )
 
@@ -866,6 +885,7 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
     engine_name = st.session_state["result_engine"]
     mode = st.session_state["result_mode"]
     coord_format = st.session_state["result_coord_format"]
+    vcf_header_lines = st.session_state.get("result_vcf_header_lines")
 
     if result_df.empty:
         how = st.session_state.get("result_join", "left")
@@ -912,7 +932,7 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
 
     st.dataframe(display_df, height=400)
 
-    _render_downloads(display_df, coord_format)
+    _render_downloads(display_df, coord_format, vcf_header_lines)
 
     with st.expander("Charts and gene list"):
         _render_charts_and_gene_list(display_df)
@@ -946,7 +966,7 @@ def _render_summary_metrics(result_df, coord_df, engine_name, mode, join):
     )
 
 
-def _render_downloads(display_df, coord_format):
+def _render_downloads(display_df, coord_format, vcf_header_lines=None):
     st.subheader("Download results")
     st.caption(
         "Exports the rows currently shown above (use the display filter to "
@@ -987,13 +1007,16 @@ def _render_downloads(display_df, coord_format):
     if coord_format == "vcf":
         st.info(
             "Reconstructed VCF: original record fields (ID/REF/ALT/QUAL/FILTER, "
-            "INFO, FORMAT and samples) are preserved, and annotations are "
-            "appended to INFO as declared ANNOT_* entries. One record per "
+            "INFO, FORMAT and samples) and the original VCF header "
+            "definitions are preserved, and annotations are appended to "
+            "INFO as declared ANNOT_* entries. One record per "
             "query-annotation pair. Shown only when the coordinate input is VCF."
         )
         st.download_button(
             "Annotated VCF",
-            data=convert_df_to_vcf(display_df),
+            data=convert_df_to_vcf(
+                display_df, original_header_lines=vcf_header_lines
+            ),
             file_name="annotated_variants.vcf",
             mime="application/octet-stream",
             key="download_vcf",
@@ -1250,7 +1273,22 @@ def _vcf_sample_name(coord_column: str) -> str:
     return name
 
 
-def convert_df_to_vcf(df: pd.DataFrame) -> str:
+def _original_header_declarations(original_header_lines) -> dict:
+    """
+    Original ``##INFO`` declarations from retained header lines,
+    mapped by INFO ID (first declaration wins, source order).
+    """
+    decls = {}
+    for line in original_header_lines or []:
+        if not isinstance(line, str):
+            continue
+        m = re.match(r"##INFO=<ID=([A-Za-z0-9_]+)", line)
+        if m:
+            decls.setdefault(m.group(1), line)
+    return decls
+
+
+def convert_df_to_vcf(df: pd.DataFrame, original_header_lines=None) -> str:
     """
     Convert results DataFrame back to VCF format.
 
@@ -1264,9 +1302,25 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
       namespace; every emitted key is declared by a generated ##INFO
       line (conservative ``Number=.,Type=String``; no unsupported type
       claims) and never overwrites or duplicates an original INFO key;
-    - the original ``##`` metadata lines are NOT retained by the parser,
-      so they are not re-emitted: the header declares only what the
-      exporter itself writes (the ANNOT_* keys) plus the source line;
+    - ``original_header_lines`` (the source file's ``##`` metadata,
+      retained by the VCF parser and passed once per source file, not
+      per result row) is preserved verbatim in stable source order:
+      contig/INFO/FORMAT/FILTER definitions and any other original
+      metadata. Exactly one ``##fileformat`` line is emitted — the
+      source's version when present, never silently upgraded or
+      downgraded (``VCFv4.2`` only as the fallback for a source with
+      none); duplicate identical lines are emitted once. The exporter
+      then adds ``##source=AnnotateR <version>`` and ``##date`` (additions —
+      an original ``##source``/``##date`` line is retained, not
+      replaced) and the ANNOT_* declarations. Original definitions are
+      never re-synthesized: no types or descriptions are invented.
+    - ANNOT_* declaration collision policy: if the original header
+      already declares an ``ANNOT_*`` INFO ID, the original definition
+      stands and no generated duplicate is emitted when it is
+      ``Type=String`` (compatible with the exported string values);
+      any other declared type (or a missing Type) is a conflict and
+      the export fails with an explicit ``ValueError`` naming the ID —
+      the original definition is never silently overwritten.
     - one output record per canonical result row: a source variant
       matching N annotations appears N times with different ANNOT_*
       payloads and identical original fields;
@@ -1276,11 +1330,36 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
       1-based VCF POS); REF/ALT/END are never rewritten from annotation
       coordinates.
     """
-    lines = [
-        "##fileformat=VCFv4.2",
-        f"##source=AnnotateR {Settings.VERSION}",
-        f"##date={pd.Timestamp.now().strftime('%Y%m%d')}",
+    original = [
+        line for line in (original_header_lines or [])
+        if isinstance(line, str) and line.startswith("##")
     ]
+
+    # Exactly one ##fileformat: the source's version when present, so
+    # the export is never silently upgraded or downgraded; VCFv4.2 is
+    # only the fallback for a source without a fileformat line.
+    fileformat = "##fileformat=VCFv4.2"
+    for line in original:
+        if line.lower().startswith("##fileformat"):
+            fileformat = line
+            break
+    lines = [fileformat]
+    seen = {fileformat}
+    for line in original:
+        if line.lower().startswith("##fileformat"):
+            # Exactly one fileformat line: the source's first, already
+            # emitted above; any further (already invalid) declaration
+            # is dropped rather than emitted twice.
+            continue
+        if line in seen:
+            # Duplicate identical metadata lines are emitted once.
+            continue
+        seen.add(line)
+        lines.append(line)
+    # AnnotateR provenance: additions, never replacements — an original
+    # ##source/##date line (if any) was already retained above.
+    lines.append(f"##source=AnnotateR {Settings.VERSION}")
+    lines.append(f"##date={pd.Timestamp.now().strftime('%Y%m%d')}")
 
     # Map internal columns to VCF standard columns
     # Canonical start is 0-based and equals POS - 1, so POS = coord_start + 1.
@@ -1325,11 +1404,34 @@ def convert_df_to_vcf(df: pd.DataFrame) -> str:
         key = _vcf_info_key(col)
         if key not in info_keys:
             info_keys[key] = col
-    lines += [
-        f"##INFO=<ID={key},Number=.,Type=String,"
-        f'Description="AnnotateR annotation (source column: {col})">'
-        for key, col in info_keys.items()
-    ]
+    # ANNOT_* declarations, honoring the collision policy: a pre-existing
+    # original declaration of the same ID stands — a String-typed one is
+    # kept as-is (no generated duplicate); any other type is refused
+    # with an explicit error rather than silently overwritten.
+    original_decls = _original_header_declarations(original)
+    conflicts = []
+    declarations = []
+    for key, col in info_keys.items():
+        decl = original_decls.get(key)
+        if decl is None:
+            declarations.append(
+                f"##INFO=<ID={key},Number=.,Type=String,"
+                f'Description="AnnotateR annotation (source column: {col})">'
+            )
+            continue
+        type_match = re.search(r"Type=([A-Za-z0-9_]+)", decl)
+        if not type_match or type_match.group(1) != "String":
+            conflicts.append(key)
+    if conflicts:
+        raise ValueError(
+            "Cannot export the annotated VCF: the original header "
+            "declares INFO ID(s) "
+            f"{', '.join(sorted(conflicts))} with a type other than "
+            "String, which conflicts with AnnotateR's ANNOT_* string "
+            "annotation values. The original definitions are not "
+            "overwritten; remove or rename those IDs in the source VCF."
+        )
+    lines.extend(declarations)
 
     # Original FORMAT/sample columns: any coord_* column beyond the fixed
     # ones, in frame order (= the original #CHROM sample order).
