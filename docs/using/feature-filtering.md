@@ -29,6 +29,28 @@ the annotation run.
 `gene`, `transcript`, `exon`, `CDS`, `5' UTR`, `3' UTR`, `start_codon`,
 `stop_codon`.
 
+### The transcript choice
+
+`transcript` is also a label: it accepts these exact, case-sensitive
+feature types.
+
+| Choice | Accepted feature types |
+|---|---|
+| `transcript` | `transcript`, `mRNA` |
+
+`transcript` is the transcript record in GENCODE (GTF and GFF3) and
+Ensembl annotations; `mRNA` is the transcript-level record in the GFF3
+specification (and in GFF3 files from sources that follow it, such as
+RefSeq). The original feature value (`transcript` or `mRNA`) is kept
+unchanged in the results.
+
+Only these two names are recognised. Other RNA feature types
+(`lnc_RNA`, `ncRNA`, `rRNA`, `tRNA`, `miRNA`, `snRNA`, `snoRNA`,
+`primary_transcript`, …) are distinct feature types and are **not**
+matched by `transcript`; other Sequence Ontology transcript subtypes are
+not normalised automatically. If your annotation uses them, leave the
+filter empty to include all features.
+
 ### The 5' UTR and 3' UTR choices
 
 These two choices are labels, not literal feature names. The filter is
@@ -53,7 +75,7 @@ features).
 The filter matches the annotation file's `feature` column value
 **exactly, case-sensitively**: a GFF3 file containing `gene` and `exon`
 records, filtered to `gene`, keeps only the gene records. A file that
-uses unusual type names (e.g. `mrna`, `match`) will have nothing
+uses unusual type names (e.g. `mrna`, `lnc_RNA`, `match`) will have nothing
 selected by the default filter — in that case, either unselect all
 types (all features) or make sure the file uses the listed type names.
 
@@ -79,5 +101,6 @@ surviving features.
 - Filtering the *query* file is not a thing — the filter belongs to the
   annotation role. (There is no query-side type column in any supported
   format.)
-- The filter does not rename, translate, or map feature types; it is a
-  membership test on the exact string.
+- The filter does not rename or rewrite feature types; it is a
+  membership test on the exact string, against the accepted values of
+  each choice (see above).

@@ -130,7 +130,14 @@ _FEATURE_TYPE_OPTIONS = [
 # lowercase spelling used before GFF3 v1.16. A generic ``UTR`` (e.g.
 # GENCODE GTF) carries no direction and is deliberately not matched. All
 # other choices are matched literally. Source values are never rewritten.
+#
+# ``transcript`` accepts the GENCODE/Ensembl ``transcript`` record and the
+# GFF3 specification's ``mRNA`` (the spec's transcript-level record for
+# protein-coding genes). Other RNA classes (lnc_RNA, ncRNA, rRNA, tRNA,
+# miRNA, snRNA, ...) are distinct feature types and are deliberately not
+# collapsed into it.
 _FEATURE_TYPE_SOURCE_VALUES = {
+    "transcript": ("transcript", "mRNA"),
     "5' UTR": ("five_prime_UTR", "five_prime_utr"),
     "3' UTR": ("three_prime_UTR", "three_prime_utr"),
 }
