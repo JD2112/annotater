@@ -119,9 +119,28 @@ _CHR_STYLES = [
 ]
 
 _FEATURE_TYPE_OPTIONS = [
-    "gene", "transcript", "exon", "CDS", "5UTR", "3UTR",
+    "gene", "transcript", "exon", "CDS", "5' UTR", "3' UTR",
     "start_codon", "stop_codon",
 ]
+
+# Directional UTR choices are user-facing labels; each maps to the exact,
+# case-sensitive source ``feature`` strings it accepts: the GFF3 /
+# Sequence Ontology terms (five_prime_UTR, three_prime_UTR) and the
+# lowercase spelling used before GFF3 v1.16. A generic ``UTR`` (e.g.
+# GENCODE GTF) carries no direction and is deliberately not matched. All
+# other choices are matched literally. Source values are never rewritten.
+_FEATURE_TYPE_SOURCE_VALUES = {
+    "5' UTR": ("five_prime_UTR", "five_prime_utr"),
+    "3' UTR": ("three_prime_UTR", "three_prime_utr"),
+}
+
+
+def _expand_feature_types(selected):
+    """Map selected filter choices to the set of accepted source values."""
+    accepted = set()
+    for choice in selected:
+        accepted.update(_FEATURE_TYPE_SOURCE_VALUES.get(choice, (choice,)))
+    return accepted
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +735,9 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
         and "feature" in annot_df.columns
     ):
         original_count = len(annot_df)
-        annot_df = annot_df[annot_df["feature"].isin(cfg["feature_types"])].copy()
+        annot_df = annot_df[
+            annot_df["feature"].isin(_expand_feature_types(cfg["feature_types"]))
+        ].copy()
         if len(annot_df) == 0:
             st.warning(
                 f"No annotations match the selected feature types "
