@@ -23,7 +23,7 @@ BY_NAME = {ex["name"]: ex for ex in EXAMPLES}
 REQUIRED_NAMES = {
     "true_overlap", "touching_intervals", "one_base_gap", "contains_example",
     "within_example", "min_overlap_on_threshold", "strand_match",
-    "strand_missing", "closest_tie",
+    "strand_missing", "closest_tie", "closest_overlapping", "one_base_overlap", "closest_large_gap",
 }
 
 

@@ -18,11 +18,23 @@ basis for all the others
 
 ## The one-base case
 
+<!-- BEGIN GENERATED: one_base_overlap -->
 ```text
-bases:        10        11        12        13  14  15  16  17  18  19  20
-query:       [─────────────────────────────)                          [10, 20)
-annotation:                                            [─────────────) [19, 20)
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19
+query    #  #  #  #  #  #  #  #  #  #  [10, 20)
+A        .  .  .  .  .  .  .  .  .  #  [19, 20)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 19–19 (1 base); boundary coordinates 19 and 20
+
+overlap: yes
+overlap length: 1
+query length: 10
+overlap fraction (query-relative): 0.1
 ```
+<!-- END GENERATED: one_base_overlap -->
 
 The shared bases are base 19 — a **1-base overlap is a real overlap**.
 Any positive intersection counts; there is no minimum length in plain
