@@ -45,9 +45,10 @@ query:        [────────────)                            
 annotation:                        [────────)                       [20, 25)
 ```
 
-`[10, 20)` covers bases 10–19; `[20, 25)` covers bases 20–24. They share
-the boundary **point** 20, but no base belongs to both intervals, so
-they do **not** overlap under this operation.
+`[10, 20)` covers bases 10–19; `[20, 25)` covers bases 20–24. They touch
+at the same boundary coordinate, 20, but share no genomic base (20 is
+not an element of `[10, 20)`), so they do **not** overlap under this
+operation.
 
 - If you expected your adjacent intervals to match, they are touching,
   not overlapping — see [Coordinate systems → why touching intervals
