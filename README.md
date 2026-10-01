@@ -29,8 +29,8 @@ canonical results for the same input and options, and this parity is
 enforced by the test suite rather than assumed.
 
 AnnotateR is available as a hosted web deployment on SciLifeLab Serve
-(currently a project-restricted pre-release beta; the latest published
-image is `0.1.0-rc1`), as a
+(currently a project-restricted pre-release beta running the
+`0.1.0-rc2` image; the latest published image is `0.1.0-rc2`), as a
 containerized local application using the published Docker images, and
 from source for development.
 
@@ -90,17 +90,20 @@ to keep their genomic files within their own computing environment can
 run the same AnnotateR application from the published container image:
 
 ```bash
-docker pull ghcr.io/pyrevo/annotater:0.1.0-rc1
+docker pull ghcr.io/pyrevo/annotater:0.1.0-rc2
 
 docker run --rm \
   -p 8501:8501 \
-  ghcr.io/pyrevo/annotater:0.1.0-rc1
+  ghcr.io/pyrevo/annotater:0.1.0-rc2
 ```
 
-`0.1.0-rc1` is the latest *published* pre-release image. `main` may
-contain fixes made after it; a later release candidate (`0.1.0-rc2`) is
-planned but not yet published, there is no `latest` tag, and the final
-`v0.1.0` release does not exist yet. Always use an explicit tag.
+`0.1.0-rc2` is the latest *published* pre-release image (source commit
+`4edb362e9143286754a41dabeb81f58034f2debc`, digest
+`sha256:a0b1b7e8941f0660208d90876a6e0aa3cd73ca9ec5e9704fdb2746c659d1f3f9`).
+`main` may contain changes made after it, there is no `latest` tag, and
+the final `v0.1.0` release does not exist yet. The earlier `0.1.0-rc1`
+remains published as a historical release candidate. Always use an
+explicit tag.
 
 Then open <http://localhost:8501>. For local Docker execution, uploaded
 files are processed by the AnnotateR container running on the user's own

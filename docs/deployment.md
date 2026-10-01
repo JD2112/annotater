@@ -120,7 +120,7 @@ Every published image is immutable and is tagged twice with the **same
 digest**:
 
 ```text
-ghcr.io/pyrevo/annotater:0.1.0-rc1     # release-candidate tag (pre-publication testing)
+ghcr.io/pyrevo/annotater:0.1.0-rc2     # release-candidate tag (pre-publication testing; latest published RC)
 ghcr.io/pyrevo/annotater:sha-<sha>     # per-commit tag of the exact published commit
 ```
 
@@ -367,12 +367,23 @@ After (re)deploying:
    are interchangeable).
 3. Confirm the deployed image version separately from the application
    version: the footer shows the application version (`0.1.0`, which is
-   unchanged between `0.1.0-rc1` and the final release), so it cannot
+   unchanged across the release candidates and the final release), so it cannot
    identify an RC tag. Check the image's OCI label instead, e.g.
    `docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' ghcr.io/pyrevo/annotater:<tag>`,
    which the `release-ghcr` workflow sets to the published tag.
 4. For Serve: confirm the container status is *Running* and the health
    check in the app overview is green.
+
+### Current public beta deployment
+
+The public beta deployment at <https://annotater.serve.scilifelab.se> is
+**running the `0.1.0-rc2` image**. The maintainer updated the existing
+Serve app from `0.1.0-rc1` by changing only the container image
+reference; the deployment is healthy and the application loads. The
+deployment is referenced by tag, not pinned by digest; the verified GHCR
+digest of that tag is recorded separately in
+[Release-candidate publications](release-plan-0.1.0.md#release-candidate-publications).
+This is a pre-release deployment: final `v0.1.0` has not been released.
 
 ## Common failure modes
 

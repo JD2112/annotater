@@ -6,12 +6,21 @@
   (see [Release-candidate publications](#release-candidate-publications)
   for the source commit and digest). That record is historical and is
   not rewritten.
-- **`main` is ahead of RC1:** it contains fixes made after the RC1 source
-  commit, so RC1 does not contain them.
-- **RC2 has not been published.** No `0.1.0-rc2` image, digest or
-  workflow run exists yet; it is only the next planned candidate.
+- **RC2 is the latest published pre-release:** `0.1.0-rc2` was published
+  to GHCR from source commit `4edb362e9143286754a41dabeb81f58034f2debc`
+  with digest
+  `sha256:a0b1b7e8941f0660208d90876a6e0aa3cd73ca9ec5e9704fdb2746c659d1f3f9`
+  and verified independently (see
+  [Release-candidate publications](#release-candidate-publications)).
+  RC1 is unchanged and remains a historical release candidate.
+- **SciLifeLab Serve is running RC2:** the existing AnnotateR app at
+  <https://annotater.serve.scilifelab.se> was updated from RC1 to RC2 by
+  changing only the container image reference; the deployment is healthy.
+- **`main` may be ahead of RC2:** RC2 contains only the source at
+  `4edb362`.
 - **Final `v0.1.0` has not been released:** there is no `v0.1.0` git
-  tag, no GitHub Release and no `0.1.0` image tag. Version metadata is
+  tag, no GitHub Release, no `0.1.0` image tag, no `latest` tag and no
+  Zenodo record or DOI. Version metadata is
   aligned to `0.1.0` (`release-prep-0.1.0`), but the formal release
   happens only after the GUI is accepted.
 
@@ -49,6 +58,13 @@ Remaining release gate (in order):
     maintainer test the RC on SciLifeLab Serve (private Project
     visibility) before the final release gate below. RC1 publication
     record: see [Release-candidate publications](#release-candidate-publications).
+5b. **RC2 (completed):** `0.1.0-rc2` was published with the same
+    `release-ghcr` workflow from source commit `4edb362`, verified
+    independently by digest (Docker smoke, scientific smoke, Polars-Bio
+    concurrency regression, issue #37 regression), and deployed by the
+    maintainer to the existing SciLifeLab Serve app. RC1 was verified
+    unchanged before and after. The final-release steps above (6-9) remain
+    pending.
 6. Tag `v0.1.0` on the release commit.
 7. Create the GitHub Release from the tag, including the first-release
    summary (canonical coordinate contract; Bedtools and Polars-Bio
@@ -67,7 +83,13 @@ Immutable GHCR images published before the final `v0.1.0` release
 
 | RC | Source commit | Image tags (same digest) | Digest | Published |
 |---|---|---|---|---|
-| 0.1.0-rc1 | `7269b47cdade3511cd317634c304ebadf3d10345` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc1`, `ghcr.io/pyrevo/annotater:sha-7269b47` | `sha256:76b5574bb506abfa2d9a0fdeea51f0d5bca941e155d8e26e62cb1fcd73f10d91` (both tags, verified from the GHCR push receipts) | 2026-09-29 (release-ghcr workflow run #1: [actions/runs/36564727227](https://github.com/pyrevo/annotater/actions/runs/36564727227), platform `linux/amd64`) |
+| 0.1.0-rc1 (historical) | `7269b47cdade3511cd317634c304ebadf3d10345` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc1`, `ghcr.io/pyrevo/annotater:sha-7269b47` | `sha256:76b5574bb506abfa2d9a0fdeea51f0d5bca941e155d8e26e62cb1fcd73f10d91` (both tags, verified from the GHCR push receipts) | 2026-09-29 (release-ghcr workflow run #1: [actions/runs/36564727227](https://github.com/pyrevo/annotater/actions/runs/36564727227), platform `linux/amd64`) |
+| 0.1.0-rc2 (latest published pre-release) | `4edb362e9143286754a41dabeb81f58034f2debc` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc2`, `ghcr.io/pyrevo/annotater:sha-4edb362` | `sha256:a0b1b7e8941f0660208d90876a6e0aa3cd73ca9ec5e9704fdb2746c659d1f3f9` (both tags verified to resolve to it) | 2026-10-01 (release-ghcr workflow run: [actions/runs/36862770914](https://github.com/pyrevo/annotater/actions/runs/36862770914), platform `linux/amd64`) |
+
+Serve deployment history: the project-restricted beta app at
+<https://annotater.serve.scilifelab.se> ran RC1 first and now runs RC2
+(image reference updated by the maintainer; referenced by tag, not
+digest). RC1 is still published and its digest is unchanged.
 
 Package visibility note (2026-09-29): the `annotater` container package was
 created by the workflow as **private** (default for a private repository)
@@ -76,10 +98,6 @@ maintainer must set it to **public** under the repository's Package
 settings (or make the repository public) before Serve can pull it
 anonymously — the agent token of this session only has
 `gist, read:org, repo, workflow`.
-
-A `0.1.0-rc2` row will be added here only after RC2 is actually published
-(with its real source commit, digest and workflow run); it is not
-recorded in advance.
 
 Final-release images (`0.1.0`) are published only after step 5/6/7 above
 have been approved.
