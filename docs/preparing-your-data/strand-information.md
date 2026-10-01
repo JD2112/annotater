@@ -12,8 +12,8 @@ becomes part of the matching rule itself
 | Format | Strand source | Result |
 |---|---|---|
 | BED | column 6 | `+`/`-` kept; `.` or empty → **missing** |
-| GFF3 | column 7 | `+`/`-` kept; `.` (anything else) → **missing** |
-| GTF | column 7 | `+`/`-` kept; `.` → **missing** |
+| GFF3 | column 7 | `+`/`-` kept; `.` or `?` → **missing**; any other value is rejected with an error |
+| GTF | column 7 | `+`/`-` kept; `.` or `?` → **missing**; any other value is rejected with an error |
 | VCF | *none* | **always missing** — the VCF format has no strand field |
 | Custom table | an unmapped column named exactly `strand` (optional) | `+`/`-` kept; `.` or empty → **missing**; any other value is rejected with an error |
 

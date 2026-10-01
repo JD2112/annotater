@@ -33,8 +33,10 @@ The two uploaders accept different extensions:
   6); further columns are preserved as metadata.
 - **Coordinate convention:** 0-based half-open — **no conversion** is
   performed ([Coordinate systems](coordinate-systems.md)).
-- **Strand:** column 6, kept verbatim as `+` / `-`; anything else
-  (including `.` or an empty value) is treated as missing strand.
+- **Strand:** column 6; `+` and `-` are kept, while `.`, an empty
+  value, or a row that has no sixth column is treated as missing
+  strand. Any other value (for example `?` or `foo`) is rejected with
+  an error.
 - **Metadata preservation:** columns 4+ become `coord_name`,
   `coord_score`, `coord_strand` plus one metadata column per extra
   input column, in input order
@@ -70,8 +72,15 @@ The two uploaders accept different extensions:
 - **Coordinate convention:** 1-based inclusive — AnnotateR converts at
   parse time: `start := start − 1`, `end` unchanged
   ([Coordinate systems](coordinate-systems.md)).
-- **Strand:** column 7; `.` (or anything other than `+`/`-`) is
-  missing strand.
+- **Strand:** column 7; `+` and `-` are directional, `.` and `?`
+  (unknown) are missing strand. Any other value is rejected with an
+  error.
+- **Embedded FASTA:** a `##FASTA` directive ends the annotation
+  section; that line and everything after it (the embedded sequence)
+  is ignored.
+- **Column count:** every annotation record must have exactly nine
+  tab-separated columns; otherwise the upload fails with an error
+  naming the line. An empty attributes field means no attributes.
 - **Tiny valid example:**
 
   ```text
@@ -104,7 +113,10 @@ The two uploaders accept different extensions:
 - **Coordinate convention:** 1-based inclusive — converted like GFF3.
 - **Comments:** the same `#` handling as GFF3 applies (any `#` starts a
   comment, so it also truncates attribute values).
-- **Strand:** column 7.
+- **Strand:** column 7; `+`/`-` are directional, `.` and `?` are
+  missing strand, any other value is rejected. A record that does not
+  have exactly nine tab-separated columns fails with an error naming
+  the line.
 - **Tiny valid example:**
 
   ```text

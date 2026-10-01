@@ -7,6 +7,7 @@ Supports:
 - Auto-detection of file format
 """
 
+import io
 import pandas as pd
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple
@@ -194,18 +195,46 @@ class GFFParser:
             feature_types: List of feature types to extract (e.g., ['gene', 'exon'])
                           If None, extract all features
             
+        Only the annotation section is parsed: a ``##FASTA`` directive ends
+        it, and everything after that line (the embedded sequence) is
+        ignored. Every annotation record must have exactly 9 tab-separated
+        columns, otherwise MalformedFileError names the physical line.
+
+        The GFF/GTF unknown-strand token ``?`` is treated like ``.``
+        (missing strand); other strand tokens are validated at
+        normalization.
+
         Returns:
             DataFrame with genomic features
         """
+        annotation_lines: List[str] = []
+        with open(filepath, 'r') as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line = line.rstrip('\r\n')
+                if line.strip() == '##FASTA':
+                    break
+                if not line.strip() or line.startswith('#'):
+                    continue
+                n_fields = len(line.split('\t'))
+                if n_fields != 9:
+                    raise MalformedFileError(
+                        f'line {line_number}: expected 9 tab-separated '
+                        f'GFF/GTF columns, got {n_fields}'
+                    )
+                annotation_lines.append(line)
+
         # Read GFF/GTF (9 standard columns)
         df = pd.read_csv(
-            filepath,
+            io.StringIO('\n'.join(annotation_lines)),
             sep='\t',
             header=None,
             comment='#',
             names=['chr', 'source', 'feature', 'start', 'end', 'score', 'strand', 'frame', 'attributes'],
             dtype={'chr': str},
         )
+        df['strand'] = df['strand'].replace('?', '.')
+        # A present-but-empty attributes field means "no attributes".
+        df['attributes'] = df['attributes'].fillna('')
         if feature_types:
             df = df[df['feature'].isin(feature_types)]
         df = GFFParser._parse_attributes(df)
