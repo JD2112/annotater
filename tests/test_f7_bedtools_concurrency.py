@@ -22,9 +22,10 @@ bedtools binary must be installed) and asserts that:
 2. every concurrent result is identical to the single-thread
    reference result (same rows, same canonical order).
 
-The Polars-Bio engine is deliberately not exercised here: it is a
-pure in-memory operation with no temp files and no process-global
-state, so it needs no lock.
+The Polars-Bio engine is deliberately not exercised here: it has no
+temp files, but it does share a process-global DataFusion context and is
+covered by its own lock and test (see
+``test_f_new_01_polars_bio_concurrency.py``).
 """
 
 from __future__ import annotations
