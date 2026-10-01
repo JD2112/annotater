@@ -117,13 +117,21 @@ pytest
 Upload one of:
 - BED file (`.bed`)
 - VCF file (`.vcf`)
-- Custom CSV/TSV with chr, start, end columns
+- Custom CSV/TSV table: after upload you map the chromosome, start and
+  (optionally) end columns in the app
 
 ### Annotation File (Required)
 Upload one of:
 - GFF/GTF file (`.gff`, `.gtf`, `.gff3`)
 - BED file as annotations
-- Custom file from BioMart or UCSC
+- Custom CSV/TSV annotation table. It is **not** read directly from an
+  arbitrary export: it must already have columns named exactly `chr`,
+  `start` and `end` (other columns are kept as metadata), so rename the
+  columns of a BioMart or UCSC Table Browser export first, and drop
+  `track`/`browser` lines. Set **Annotation coordinates** to the
+  coordinate system of the source data; the default for custom tables
+  is 0-based half-open, and no system is guessed for you. A UCSC export
+  that is BED-shaped (`.bed`, tab-separated, no header) is read as BED.
 
 ---
 
@@ -136,7 +144,9 @@ Upload one of:
 Both engines are interchangeable execution backends: the same input and options produce the same canonical result, schema, and exports on either. Selecting an unavailable backend shows a clear error instead of silently falling back to the other.
 
 ### Coordinate Systems
-- **Auto-detect**: Let the app figure it out (recommended)
+- **Auto-detect**: keeps the format's own system for known formats;
+  custom tables are treated as 0-based half-open, so declare 1-based
+  explicitly if your table is 1-based
 - **0-based (BED)**: For BED, BAM files
 - **1-based (GFF/GTF/VCF)**: For GFF, GTF, VCF, SAM files
 

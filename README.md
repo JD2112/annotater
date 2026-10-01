@@ -29,7 +29,8 @@ canonical results for the same input and options, and this parity is
 enforced by the test suite rather than assumed.
 
 AnnotateR is available as a hosted web deployment on SciLifeLab Serve
-(currently a project-restricted `0.1.0-rc1` pre-release beta), as a
+(currently a project-restricted pre-release beta; the latest published
+image is `0.1.0-rc1`), as a
 containerized local application using the published Docker images, and
 from source for development.
 
@@ -79,7 +80,7 @@ The normative definition of each mode is in
 ## Getting started
 
 AnnotateR can be used in three ways: the hosted SciLifeLab Serve
-deployment (currently a project-restricted `0.1.0-rc1` beta), a local
+deployment (currently a project-restricted pre-release beta), a local
 Docker container on your own machine, or from source for development.
 
 ### Local Docker container (no account or remote upload required)
@@ -95,6 +96,11 @@ docker run --rm \
   -p 8501:8501 \
   ghcr.io/pyrevo/annotater:0.1.0-rc1
 ```
+
+`0.1.0-rc1` is the latest *published* pre-release image. `main` may
+contain fixes made after it; a later release candidate (`0.1.0-rc2`) is
+planned but not yet published, there is no `latest` tag, and the final
+`v0.1.0` release does not exist yet. Always use an explicit tag.
 
 Then open <http://localhost:8501>. For local Docker execution, uploaded
 files are processed by the AnnotateR container running on the user's own

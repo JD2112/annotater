@@ -1,7 +1,8 @@
 # Limitations
 
 An honest list of what AnnotateR does not do in the upcoming v0.1.0
-release (currently in `0.1.0-rc1` beta testing). If a workflow needs any
+release (currently in beta testing; the latest published pre-release
+image is `0.1.0-rc1`, and these pages describe the current `main`). If a workflow needs any
 of these, plan around them.
 
 ## Scope and data
@@ -75,7 +76,8 @@ of these, plan around them.
 ## Version
 
 - This manual documents the **upcoming v0.1.0** release
-  (`0.1.0-rc1` beta testing), latest-only. The
+  (beta testing; latest published image `0.1.0-rc1`, with `main` possibly
+  ahead of it), latest-only. The
   application is pre-1.0: the *canonical result schema and the
   scientific semantics* are stable by contract
   ([Technical Reference](technical/scientific-contract.md)), but UI
