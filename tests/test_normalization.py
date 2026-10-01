@@ -1123,7 +1123,10 @@ class TestVCFExportMissingValues:
         vcf = convert_df_to_vcf(self._result_df())
         record = vcf.splitlines()[-1].split("\t")
         # CHROM POS ID REF ALT QUAL FILTER INFO
-        assert record == ["chr1", "101", ".", "A", "G", ".", ".", "feature=geneA"]
+        # (Task C / F8: annotation INFO keys are ANNOT_*-namespaced, not
+        # bare annotation column names.)
+        assert record == ["chr1", "101", ".", "A", "G", ".", ".",
+                          "ANNOT_feature=geneA"]
 
     def test_passed_filter_and_id_preserved(self):
         vcf = convert_df_to_vcf(
@@ -1133,7 +1136,9 @@ class TestVCFExportMissingValues:
         )
         record = vcf.splitlines()[-1].split("\t")
         assert record[2] == "v1"
-        assert record[5] == "20.0"
+        # (Task C / F8: integer-valued QUAL exports without a fractional
+        # part — source QUAL 20 must round-trip as "20", not "20.0".)
+        assert record[5] == "20"
         assert record[6] == "PASS"
 
     def test_missing_annotation_not_leaked_into_info(self):

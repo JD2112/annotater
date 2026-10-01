@@ -32,19 +32,47 @@ export as empty cells.
 ## The Annotated VCF export
 
 When the **query** file is VCF, a fifth button appears:
-"Reconstructed VCF with annotations added to the INFO field. Shown only
-when the coordinate input is VCF."
+"Reconstructed VCF: original record fields (ID/REF/ALT/QUAL/FILTER,
+INFO, FORMAT and samples) are preserved, and annotations are appended
+to INFO as declared ANNOT_* entries. One record per query-annotation
+pair. Shown only when the coordinate input is VCF."
 
 It reconstructs a VCF from the *displayed* rows:
 
 - `CHROM` and `POS` use VCF conventions — `POS = coord_start + 1`
   (1-based, the first base of the query interval);
-- the original variant fields are carried over from the preserved
-  `coord_*` metadata;
-- matched rows gain annotation information in the **INFO** field;
-- unmatched rows are written without annotation INFO;
+- the original record fields are preserved verbatim from the preserved
+  `coord_*` metadata: ID, REF, ALT, FILTER, the raw **INFO** field
+  (including `END` for symbolic variants), and, when present, the
+  **FORMAT** column and the sample columns in their original order;
+- matched rows gain annotation information in the **INFO** field as
+  `ANNOT_<field>` entries — the original INFO content is never
+  replaced or rewritten, and every `ANNOT_*` key is declared by a
+  generated `##INFO` line in the exported header;
+- one output record per result row: a variant matching N annotations
+  is written N times, with identical original fields and different
+  `ANNOT_*` payloads;
+- unmatched rows are written with their original fields intact and
+  without `ANNOT_*` entries (INFO is the original INFO, or `.` when
+  that was missing too);
 - rows are in the original query record order, with ties in
-  annotation input order.
+  annotation input order;
+- `QUAL` is exported as stored: integer values without a fractional
+  part (`50`, not `50.0`); missing values stay `.`.
+
+**Header metadata.** The original `##...` metadata lines from the query
+VCF — for example `##contig`, `##INFO`, `##FORMAT` and `##FILTER`
+declarations, plus any other metadata — are preserved verbatim and in
+source order, once per source file (not per result row), together with
+the source file's `##fileformat` version. The exporter adds its own
+`##source=AnnotateR <version>` and `##date` lines (additions, not
+replacements), the `##INFO` declarations for the `ANNOT_*` keys it
+emits, and — if the source had no `##fileformat` line at all — a
+fallback one. If the source header already declares an `ANNOT_*` INFO
+key: a `Type=String` declaration is kept as-is (no duplicate is
+generated), while a declaration with any other type is refused with an
+explicit error rather than silently overwritten. Original definitions
+are never re-synthesized — no types or descriptions are invented.
 
 This is the one place where a format convention is deliberately
 reconstructed for the output format.
