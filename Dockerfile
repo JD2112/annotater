@@ -11,7 +11,8 @@ ARG PLATFORM=linux/amd64
 FROM --platform=${PLATFORM} python:3.12-slim
 
 # System dependencies:
-#   bedtools - required by BedtoolsEngine (Debian bookworm ships 2.31.1,
+#   bedtools - required by BedtoolsEngine (the python:3.12-slim base
+#              currently resolves to Debian 13 trixie, which ships 2.31.1,
 #              matching the validated environment; the container smoke
 #              test asserts the version).
 #   curl     - required by the HEALTHCHECK below.

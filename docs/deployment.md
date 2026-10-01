@@ -144,11 +144,16 @@ Conventions:
 - All images are `linux/amd64` (platform pin, see
   [Architecture / platform](#architecture-platform)).
 
+The workflow has no default `image_tag`, and it fails before building if
+`image_tag` (or the `sha-<sha>` tag) already exists in GHCR, so a published
+tag can never be overwritten. A registry error while checking also fails
+the run.
+
 Example publication (GitHub → Actions → `release-ghcr` → Run workflow):
 
 ```text
 branch: main
-image_tag: 0.1.0-rc1
+image_tag: 0.1.0-rc2
 ```
 
 ### Why `app.py`

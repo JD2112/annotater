@@ -15,6 +15,11 @@ name: release-ghcr
 # `latest` is rejected: the SciLifeLab Serve deployment reference must always
 # be an explicit, immutable tag (see docs/deployment.md).
 #
+# Published tags are immutable: before anything is built, the workflow
+# checks GHCR and refuses to continue if either target tag already exists.
+# The image tag has no default, so a dispatch can never silently re-target a
+# historical release candidate.
+#
 # Platform: linux/amd64 only. The pinned Polars-Bio release publishes
 # manylinux x86_64 wheels only; multi-arch publishing is out of scope until
 # the dependency is revalidated (see docs/deployment.md).
@@ -23,9 +28,8 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: "Image tag to publish (release candidate or final release), e.g. 0.1.0-rc1"
+        description: "Image tag to publish (release candidate or final release), e.g. 0.1.0-rc2. Must not already exist in GHCR."
         required: true
-        default: "0.1.0-rc1"
         type: string
 
 # Minimal permissions: read the source, write the container package.
@@ -53,14 +57,20 @@ jobs:
           exit 1
 
       - name: Reject non-immutable tags
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          case "${{ inputs.image_tag }}" in
+          if [ -z "${IMAGE_TAG//[[:space:]]/}" ]; then
+            echo "::error::image_tag is required and must not be empty."
+            exit 1
+          fi
+          case "$IMAGE_TAG" in
             latest|main|main-*)
-              echo "::error::Tag '${{ inputs.image_tag }}' is not allowed. Use an explicit, immutable tag (e.g. 0.1.0-rc1)."
+              echo "::error::Tag '$IMAGE_TAG' is not allowed. Use an explicit, immutable tag (e.g. 0.1.0-rc2)."
               exit 1
               ;;
           esac
-          echo "Publishing tag: ${{ inputs.image_tag }}"
+          echo "Publishing tag: $IMAGE_TAG"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -69,6 +79,44 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refuse to overwrite existing GHCR tags
+        # Fails BEFORE build/push if either target tag already exists.
+        # Only an explicit HTTP 404 from the registry means "absent"; any
+        # other outcome (auth/network/unexpected status) fails safely and
+        # is never treated as "tag absent".
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          REPO: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          short=$(git rev-parse --short HEAD)
+          registry_token=$(curl --silent --show-error --fail \
+            --user "${ACTOR}:${GH_TOKEN}" \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${REPO}:pull" \
+            | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
+          for tag in "$IMAGE_TAG" "sha-${short}"; do
+            status=$(curl --silent --show-error --output /dev/null --head \
+              --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${registry_token}" \
+              --header "Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json" \
+              "https://ghcr.io/v2/${REPO}/manifests/${tag}")
+            case "$status" in
+              200)
+                echo "::error::Refusing to overwrite existing immutable GHCR tag: ${tag}"
+                exit 1
+                ;;
+              404)
+                echo "Tag ${tag} does not exist in GHCR; safe to publish."
+                ;;
+              *)
+                echo "::error::Unable to verify whether GHCR tag ${tag} exists (HTTP ${status}); refusing to publish."
+                exit 1
+                ;;
+            esac
+          done
 
       - id: meta
         uses: docker/metadata-action@v5
