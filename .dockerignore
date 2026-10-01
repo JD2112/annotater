@@ -1,5 +1,5 @@
 # The image ships only what the app (and the in-container smokes) need:
-# app.py, streamlit_app/, data/examples/, requirements.txt,
+# app.py, streamlit_app/, data/examples/, pyproject.toml + uv.lock,
 # benchmarks/benchmark_engines.py, scripts/docker_smoke.sh.
 
 # VCS / agent tooling

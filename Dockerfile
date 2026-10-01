@@ -24,9 +24,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# requirements first for layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Dependencies: installed from the committed uv.lock (the single source of
+# truth for the resolved graph, including transitive dependencies), not
+# re-resolved by pip. `uv export --frozen` fails instead of updating the
+# lock, and --require-hashes makes the install verify every artifact
+# against the hashes recorded in uv.lock. Runtime dependencies only (no
+# dev extra). uv is pinned and removed again after the install.
+# To change dependencies intentionally see docs/deployment.md.
+ARG UV_VERSION=0.11.8
+COPY pyproject.toml uv.lock ./
+RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
+    && uv export --frozen --no-dev --no-emit-project --format requirements-txt -o /tmp/locked-requirements.txt \
+    && uv pip install --system --no-cache --require-hashes --no-deps -r /tmp/locked-requirements.txt \
+    && rm /tmp/locked-requirements.txt \
+    && pip uninstall -y uv
 
 # Application code.
 #   app.py                       - Serve entry-point shim (imports the real
