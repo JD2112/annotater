@@ -203,10 +203,45 @@ The two uploaders accept different extensions:
   2	50	60	regionB
   ```
 
+- **Header line and comments:** the first non-comment line is the
+  header. Lines starting with `#` are comments, with one narrow
+  exception for tab- or comma-delimited tables: a single `#`-prefixed
+  line directly before the first data row is read as the column header
+  (marker removed) when it has the same number of fields as the data
+  rows, every field looks like a name, and the first data row contains
+  a number (UCSC-style `#bin	name	chrom	start	end`). Other `#` lines,
+  including `##` lines and comments after the header, remain comments.
+  A same-width `#` line that is not a plausible header raises an error
+  instead of being guessed. This only preserves the column names; you
+  still map the columns yourself, and AnnotateR does not claim that
+  arbitrary UCSC Table Browser or BioMart exports work without that
+  mapping. `track`/`browser` lines remain unsupported.
 - **Common errors:** declaring the wrong coordinate system (off-by-one
   everywhere — see [Troubleshooting](../troubleshooting.md));
   wrong delimiter; forgetting to apply the column mapping before
   running.
+
+## Extension-neutral files (`.txt`, `.tsv`, `.csv`, no extension)
+
+For these files AnnotateR inspects the first non-comment record to
+guess the format; it is a conservative sniff, not a guarantee.
+
+- **BED** if columns 2 and 3 are integers.
+- **GFF3/GTF** if the record has exactly 9 tab-separated columns with
+  integer start/end (4–5), a score of `.` or a number, a strand of
+  `+`, `-`, `.` or `?`, a frame of `0`, `1`, `2` or `.`, and attribute
+  syntax in column 9 (`key=value` or `key "value";`, or `.`), or a
+  `##gff-version` line precedes it. The feature type is not checked,
+  so `mRNA`, `lnc_RNA`, `exon` and so on all qualify. A `gene_id` in the
+  attributes selects GTF, otherwise GFF3.
+- **Otherwise a custom table.** A generic 9-column table is not
+  mistaken for GFF/GTF.
+
+Sniffing does not override your coordinate declaration: for these files
+an explicit "Query/Annotation coordinates" choice takes precedence over
+the sniffed format's coordinate system
+([Coordinate systems](coordinate-systems.md)). Use the format's own
+extension (`.gff3`, `.gtf`, `.bed`, `.vcf`) whenever possible.
 
 ## Where the full specifications live
 
