@@ -27,7 +27,7 @@ query    #  #  #  #  #  #  #  #  #  #  [10, 20)
 A        .  .  .  .  .  .  .  .  .  #  [19, 20)
 
 query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 19–19 (1 base); boundary coordinates 19 and 20
+A      base 19 (1 base); boundary coordinates 19 and 20
 
 overlap: yes
 overlap length: 1

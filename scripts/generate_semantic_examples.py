@@ -186,8 +186,10 @@ def render_block(example):
     lines.append("")
     for label, iv in rows:
         n = iv["end"] - iv["start"]
+        span = (f"base {iv['start']}" if n == 1
+                else f"bases {iv['start']}–{iv['end'] - 1}")
         lines.append(
-            f"{label:<{label_w}}bases {iv['start']}–{iv['end'] - 1} "
+            f"{label:<{label_w}}{span} "
             f"({n} {'base' if n == 1 else 'bases'}); "
             f"boundary coordinates {iv['start']} and {iv['end']}")
     lines.append("")
