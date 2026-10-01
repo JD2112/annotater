@@ -26,8 +26,29 @@ the annotation run.
 
 ## Available feature types
 
-`gene`, `transcript`, `exon`, `CDS`, `5UTR`, `3UTR`, `start_codon`,
+`gene`, `transcript`, `exon`, `CDS`, `5' UTR`, `3' UTR`, `start_codon`,
 `stop_codon`.
+
+### The 5' UTR and 3' UTR choices
+
+These two choices are labels, not literal feature names. The filter is
+still based on the annotation's feature-type column, and each choice
+accepts these exact, case-sensitive values:
+
+| Choice | Accepted feature types |
+|---|---|
+| `5' UTR` | `five_prime_UTR`, `five_prime_utr` |
+| `3' UTR` | `three_prime_UTR`, `three_prime_utr` |
+
+`five_prime_UTR` / `three_prime_UTR` are the GFF3 (Sequence Ontology)
+terms; the lowercase spellings are the older GFF3 form. The original
+feature value is kept unchanged in the results.
+
+A generic `UTR` feature type (as in GENCODE GTF files) has no direction,
+so it is **not** matched by either choice, and the position is not used
+to guess one. Annotations that only use `UTR` therefore cannot be
+selected with these choices (leave the filter empty to include all
+features).
 
 The filter matches the annotation file's `feature` column value
 **exactly, case-sensitively**: a GFF3 file containing `gene` and `exon`
