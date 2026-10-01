@@ -30,20 +30,42 @@ overlap mode (that is what `min_overlap` adds; see below).
 
 ## Overlap (interval intersection)
 
+<!-- BEGIN GENERATED: true_overlap -->
 ```text
-bases:        0   10   20   30   40   50   60   70   80   90  100
-query:        [────────────────────────────)                                 [10, 60)
-annotation:              [──────────────────────────)                         [30, 80)
-                         shared bases: 30..59  →  overlap of 30 bases
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21
+query    #  #  #  #  #  #  #  #  .  .  .  .  [10, 18)
+A        .  .  .  #  #  #  #  #  #  #  #  #  [13, 22)
+
+query  bases 10–17 (8 bases); boundary coordinates 10 and 18
+A      bases 13–21 (9 bases); boundary coordinates 13 and 22
+
+overlap: yes
+overlap length: 5
+query length: 8
+overlap fraction (query-relative): 0.625
 ```
+<!-- END GENERATED: true_overlap -->
 
 ## Touching is NOT overlap
 
+<!-- BEGIN GENERATED: touching_intervals -->
 ```text
-bases:        10  11  12  13  14  15  16  17  18  19  20  21  22  23  24  25
-query:        [────────────)                                        [10, 20)
-annotation:                        [────────)                       [20, 25)
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+A        .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 20–24 (5 bases); boundary coordinates 20 and 25
+
+overlap: no
+overlap length: 0
+closest distance: 0
 ```
+<!-- END GENERATED: touching_intervals -->
 
 `[10, 20)` covers bases 10–19; `[20, 25)` covers bases 20–24. They touch
 at the same boundary coordinate, 20, but share no genomic base (20 is

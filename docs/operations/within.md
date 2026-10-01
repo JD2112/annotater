@@ -19,10 +19,23 @@ is [Contains](contains.md).
 
 ## Diagram
 
+<!-- BEGIN GENERATED: within_example -->
 ```text
-query:                          [───────)          [30, 50)   strictly inside
-annotation:    [──────────────────────────────────────)       [10, 60)
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query    .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
+A        #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
+
+query  bases 14–19 (6 bases); boundary coordinates 14 and 20
+A      bases 10–23 (14 bases); boundary coordinates 10 and 24
+
+overlap: yes
+overlap length: 6
+query contains annotation: no
+query within annotation: yes
 ```
+<!-- END GENERATED: within_example -->
 
 ## Boundary equality and identity
 

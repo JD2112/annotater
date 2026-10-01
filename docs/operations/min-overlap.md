@@ -55,6 +55,31 @@ exactly two rows (`q_full/a_full` and `q_part60/a_part60`);
 see [Example 2: Minimum-overlap filtering](../examples/min-overlap.md)
 for this exact fixture.
 
+## Boundary example
+
+A pair that covers exactly the threshold qualifies. Facts for one
+canonical pair:
+
+<!-- BEGIN GENERATED: min_overlap_on_threshold -->
+```text
+coordinates are 0-based half-open; chromosome chr1
+
+bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+A        .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)
+
+query  bases 10–19 (10 bases); boundary coordinates 10 and 20
+A      bases 15–24 (10 bases); boundary coordinates 15 and 25
+
+min_overlap threshold: 0.5
+overlap: yes
+overlap length: 5
+query length: 10
+overlap fraction (query-relative): 0.5
+passes min_overlap: yes
+```
+<!-- END GENERATED: min_overlap_on_threshold -->
+
 ## min_overlap = 1 is NOT contains
 
 A common guess: "100% overlap must mean the annotation contains the
