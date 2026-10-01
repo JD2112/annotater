@@ -86,8 +86,8 @@ class TestMapping:
 
     def test_other_choices_pass_through_unchanged(self):
         assert _expand_feature_types(
-            ["gene", "exon", "transcript", "CDS", "start_codon"]
-        ) == {"gene", "exon", "transcript", "CDS", "start_codon"}
+            ["gene", "exon", "CDS", "start_codon"]
+        ) == {"gene", "exon", "CDS", "start_codon"}
 
 
 @pytest.mark.parametrize("engine", ["Bedtools", "Polars-Bio"])

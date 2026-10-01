@@ -29,6 +29,40 @@ the annotation run.
 `gene`, `transcript`, `exon`, `CDS`, `5' UTR`, `3' UTR`, `start_codon`,
 `stop_codon`.
 
+### The transcript choice
+
+`transcript` means *transcript-level annotation records*, represented by
+an explicit list of source feature types. It is a label, not a literal
+feature name: the filter still tests the annotation's feature-type
+column, case-sensitively, and accepts exactly these values:
+
+| Accepted feature type | Where it is documented as a transcript-level record |
+|---|---|
+| `transcript` | GENCODE (GTF/GFF3); Ensembl; NCBI RefSeq non-coding transcripts |
+| `mRNA` | GFF3 specification; Ensembl; NCBI RefSeq coding transcripts |
+| `lnc_RNA` | Ensembl GFF3 |
+| `snoRNA` | Ensembl GFF3 |
+| `pseudogenic_transcript` | Ensembl GFF3 |
+| `ncRNA` | NCBI RefSeq GFF3 |
+| `rRNA` | NCBI RefSeq GFF3 |
+| `tRNA` | NCBI RefSeq GFF3 |
+| `primary_transcript` | NCBI RefSeq GFF3 (miRNA precursors) |
+| `noncoding_transcript` | GFF3 specification (spliced non-coding transcripts) |
+
+The original feature value (for example `mRNA` or `lnc_RNA`) is kept
+unchanged in the results; the list is used only to select rows.
+
+AnnotateR does **not** perform automatic Sequence Ontology expansion:
+there is no ontology traversal, substring, regular-expression,
+case-insensitive or fuzzy matching. Any feature type not in the table is
+not matched by `transcript`, including `snRNA`, `miRNA`, `lincRNA`,
+`RNA`, `processed_transcript`, `NMD_transcript_variant`,
+`aberrant_processed_transcript`, `tmRNA` and `miscRNA`: primary
+documentation either does not name them as transcript-level records, or
+they denote mature products, variant annotations or biotypes rather than
+transcript records. If your annotation uses such types, leave the filter
+empty to include all features.
+
 ### The 5' UTR and 3' UTR choices
 
 These two choices are labels, not literal feature names. The filter is
@@ -53,7 +87,7 @@ features).
 The filter matches the annotation file's `feature` column value
 **exactly, case-sensitively**: a GFF3 file containing `gene` and `exon`
 records, filtered to `gene`, keeps only the gene records. A file that
-uses unusual type names (e.g. `mrna`, `match`) will have nothing
+uses unusual type names (e.g. `mrna`, `lnc_RNA`, `match`) will have nothing
 selected by the default filter — in that case, either unselect all
 types (all features) or make sure the file uses the listed type names.
 
@@ -79,5 +113,6 @@ surviving features.
 - Filtering the *query* file is not a thing — the filter belongs to the
   annotation role. (There is no query-side type column in any supported
   format.)
-- The filter does not rename, translate, or map feature types; it is a
-  membership test on the exact string.
+- The filter does not rename or rewrite feature types; it is a
+  membership test on the exact string, against the accepted values of
+  each choice (see above).
