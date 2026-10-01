@@ -5,9 +5,9 @@
 [![Tests](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml/badge.svg)](https://github.com/pyrevo/annotater/actions/workflows/python-tests.yml)
 
 AnnotateR is a web application for reproducible annotation of genomic
-intervals. It maps a set of input coordinates (BED, GFF3, GTF, VCF, or
-custom CSV/TSV tables) against a gene or feature annotation set and
-produces a canonical result table that can be exported as CSV, TSV,
+intervals. It maps a set of query coordinates (BED, VCF, or custom
+CSV/TSV tables) against a gene or feature annotation set (GFF3, GTF,
+BED, or custom CSV/TSV tables) and produces a canonical result table that can be exported as CSV, TSV,
 Excel, or (for VCF queries) annotated VCF. Interval arithmetic runs on
 Bedtools or Polars-Bio; the two are interchangeable execution backends
 under AnnotateR's canonical semantics.
@@ -35,21 +35,24 @@ from source for development.
 
 ## Features
 
-- Five input formats: BED, GFF3, GTF, VCF (query-only in v0.1.0), and
-  custom CSV/TSV tables with explicit column mapping.
+- Five input formats: BED, GFF3 and GTF (annotation-only in v0.1.0),
+  VCF (query-only in v0.1.0), and custom CSV/TSV tables (a custom query
+  table uses explicit column mapping).
 - Four relation modes: overlap, contains, within, closest; optional
   modifiers: minimum query-overlap fraction (overlap mode only),
   same-strand matching, and left/inner join behavior.
-- Chromosome identifier normalization: UCSC (`chr1`) and Ensembl (`1`)
-  styles are converted automatically; NCBI accession styles are
-  recognized but are not a conversion target.
+- Chromosome identifier normalization: UCSC (`chr1–chr22, chrX, chrY,
+  chrM`) and Ensembl (`1–22, X, Y, MT`) names are converted when the two
+  files use different styles; NCBI accession styles and all other labels
+  are left unchanged.
 - A single canonical coordinate model: 1-based formats (GFF3, GTF, VCF)
   are converted at parse time; every operation and export uses
   0-based half-open intervals.
 - Interchangeable backends: Bedtools and Polars-Bio produce equivalent
   canonical results on the supported operations (parity is test-enforced).
 - CSV, TSV, and Excel export of results; annotated VCF export for VCF
-  queries.
+  queries (original record fields and `##` header lines are carried
+  forward; `ANNOT_*` INFO fields are added).
 - Streamlit web application, containerized with Docker for local use
   and deployment.
 
@@ -158,8 +161,9 @@ production image, runs an in-container smoke test, and runs a
 deterministic, parity-gated benchmark smoke.
 
 Backend runtime performance is workload-dependent. The benchmark
-characterizes both backends under controlled synthetic workloads with
-parity verified before any number is accepted:
+characterizes both backends under controlled synthetic workloads, with
+row counts checked per repetition and strict canonical parity checked
+on the final result:
 [docs/benchmark.md](docs/benchmark.md) (methodology, environment,
 results, reproduction) and `benchmarks/benchmark_engines.py`
 (deterministic script).

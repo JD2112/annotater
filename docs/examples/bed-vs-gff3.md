@@ -73,7 +73,8 @@ they do not appear — the feature filter changes *which annotations
 exist* for matching; the interval rule still decides what qualifies.
 This part demonstrates the two most important row-count rules at once:
 *one query with N matching annotations produces N rows*, and *the
-feature filter acts at parse time, before matching*
+feature filter acts before matching* (the annotation preview still
+lists every parsed feature; the filter is applied when the run starts)
 ([Feature filtering](../using/feature-filtering.md)).
 
 ## Part C (optional) — inner join

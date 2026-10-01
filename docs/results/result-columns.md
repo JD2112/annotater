@@ -24,7 +24,7 @@ make every value's origin unambiguous.
 | `coord_start` | query | canonical **0-based** start |
 | `coord_end` | query | canonical **half-open** end |
 | `coord_strand` | query | present when the query carries strand; `+`/`-` or missing |
-| `coord_name` | query | BED column 4 / GFF `Name`-style identity / custom-mapped name (when present) |
+| `coord_name` | query | BED column 4 / a custom-table column named `name` (when present) |
 | `coord_score` | query | score-like field (when present) |
 | `annot_chr` | annotation | after standardization |
 | `annot_start` | annotation | canonical 0-based start |
@@ -50,7 +50,10 @@ columns 4–7 gets `coord_name`, `coord_score`, `coord_strand`,
 `coord_col7`; a VCF query keeps `coord_id`, `coord_ref`, `coord_alt`,
 `coord_qual`, `coord_filter`, `coord_info`, `coord_format` and one
 column per declared sample (for example `coord_SAMPLE1`); a custom
-table keeps every column you mapped
+query table keeps every column you did **not** map to chromosome,
+start or end, as `coord_<column name>` in original column order (a
+column named `strand` becomes `coord_strand`). A custom annotation
+table's extra columns appear the same way with the `annot_` prefix
 ([Supported file formats](../preparing-your-data/supported-formats.md)).
 
 ## Attribute extraction is key-exact
@@ -68,7 +71,7 @@ answer is there, under a different key.
 | Value | Normalization |
 |---|---|
 | Coordinates (`*_start`, `*_end`) | converted to canonical 0-based half-open at parse time; **not** re-adjusted for display |
-| Chromosomes (`*_chr`) | standardized when you configured it (default: auto) |
+| Chromosomes (`*_chr`) | standardized at run time when the two files use different UCSC/Ensembl styles (default: auto-convert; other labels are unchanged) |
 | Strands (`*_strand`) | **verbatim** `+`/`-`; missing stays missing — no case-folding, no guessing |
 | Scores | passed through as-is |
 | Attribute-derived columns | extracted verbatim from the raw attribute string |

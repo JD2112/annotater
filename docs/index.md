@@ -3,7 +3,7 @@
 **AnnotateR** is a free web application that maps genomic coordinates to
 gene features. Upload your genomic coordinates and annotate them against
 gene annotation files, gaining insights into genomic regions of interest
-directly in the browser.
+through a web interface.
 
 - **File formats:** BED · GFF3 · GTF · VCF · CSV/TSV (custom tables)
 - **Relation modes:** overlap, contains, within, closest —
@@ -12,8 +12,10 @@ directly in the browser.
 - **Backends:** Bedtools (command-line) and Polars-Bio (dataframe),
   interchangeable and producing the same canonical result
 - **Runs locally or as a deployed service** — uploaded files are
-  processed within the running AnnotateR session and are not persisted
-  by the application
+  processed by the running AnnotateR server; temporary parsing files are
+  deleted immediately after parsing, and parsed data and results remain
+  only in application memory for the active session
+  ([data handling](limitations.md#data-handling))
 
 ## Where to start
 

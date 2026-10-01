@@ -12,9 +12,11 @@ Check in this order:
 
 1. **Chromosome naming mismatch** — query says `1`, annotation says
    `chr1` (or accession names). Re-run with **Chromosome ID handling =
-   Auto-convert if needed**, or set a manual **Target style**. The
-   preview panels show the standardized names, so you can verify before
-   running ([Chromosome identifiers](preparing-your-data/chromosome-identifiers.md)).
+   Auto-convert if needed**, or set a manual **Target style**. Only
+   UCSC ⇄ Ensembl names are converted (not NCBI accessions), and the
+   app warns when the two tables share no chromosome identifier. The
+   previews show names *before* conversion, so compare them to see the
+   mismatch ([Chromosome identifiers](preparing-your-data/chromosome-identifiers.md)).
 2. **Strand matching on, but the data has no (or one-sided) strand** —
    especially a **VCF query**: VCF has no strand, so with strand
    matching on, *every* query row is unmatchable. Also: your GFF's
@@ -46,10 +48,12 @@ genome build/assembly).
 
 | Symptom | Usually | Fix |
 |---|---|---|
-| Uploader rejects the file | extension not in the accepted list, or file > 200 MB | save with a proper extension; split very large files |
-| "File is empty" after upload | header-only file / all comment lines | check the file has data rows |
+| Uploader rejects the file | extension not in the accepted list (for example a GFF3/GTF file in the query uploader, or a VCF in the annotation uploader), or file larger than the upload limit (200 MB by default; 100 MB on SciLifeLab Serve) | use the other uploader or save with an accepted extension; split very large files |
+| Zero-row preview, no error message | header-only, comment-only or empty file (there is no dedicated "empty file" message) | check the file has data rows |
+| Error at line 1 of a `.bed` ("expected at least 3 tab-separated fields") | UCSC `track`/`browser` line (unsupported) or a header line | delete the `track`/`browser`/header line |
+| Attribute value cut off in a GFF3/GTF | a `#` inside the attributes column starts a comment | remove or percent-encode (`%23`) the `#` |
 | Parse error naming a line number | malformed row (fields, non-integer coordinates) | open the file at that line; the error tells you what is expected |
-| "VCF header" / column layout error | missing `#CHROM` line or undeclared sample columns | restore the VCF header ([Supported file formats → VCF](preparing-your-data/supported-formats.md)) |
+| VCF column layout error | records with `FORMAT`/sample columns but no `#CHROM` line, or a record whose field count differs from the `#CHROM` line | restore the VCF header ([Supported file formats → VCF](preparing-your-data/supported-formats.md)) |
 | Preview looks off-by-one everywhere | coordinate system declared wrong (custom tables) | flip the declaration, never the file |
 | Preview columns not what I expect | column mapping not applied (custom tables) | apply the mapping in the preview panel |
 
@@ -100,4 +104,5 @@ Report the problem with: the two (small) input files, the exact
 sidebar configuration (screenshot or values), the engine selected, and
 the error message or a snippet of the unexpected rows. Zero-match
 diagnosis is fastest when the two preview panels are included — they
-show exactly what the engine received.
+show the parsed, coordinate-normalized tables, before the feature
+filter and chromosome standardization that are applied at run time.

@@ -7,18 +7,18 @@ shows you each stage.
 ```text
    1. UPLOAD              2. PARSE + NORMALIZE          3. ANNOTATE             4. RESULT
  ┌──────────────┐      ┌─────────────────────────┐   ┌──────────────────┐   ┌──────────────────┐
- │ Query        │      │ detect format           │   │ interval         │   │ canonical result │
- │ coordinates  ├─────▶│ convert to the canonical├──▶│ operation on    ├──▶│ (coord_* /       │
- │ file         │      │ 0-based half-open model │   │ the chosen       │   │  annot_* rows,   │
- │              │      │ standardize chromosome  │   │ engine           │   │  has_overlap[,   │
- │ Annotation   │      │ IDs (if configured)     │   │ (Bedtools or     │   │  distance])      │
- │ features     │      │ apply the feature       │   │  Polars-Bio)     │   │                  │
- │ file         │      │ filter (GFF/GTF)        │   │                  │   │ display + export │
+ │ Query        │      │ detect format           │   │ at Run:          │   │ canonical result │
+ │ coordinates  ├─────▶│ parse                   ├──▶│ feature filter   ├──▶│ (coord_* /       │
+ │ file         │      │ convert to the canonical│   │ (GFF/GTF),       │   │  annot_* rows,   │
+ │              │      │ 0-based half-open model │   │ chromosome       │   │  has_overlap[,   │
+ │ Annotation   │      │                         │   │ standardization, │   │  distance])      │
+ │ features     │      │ (previews show this     │   │ interval         │   │                  │
+ │ file         │      │  table)                 │   │ operation        │   │ display + export │
  └──────────────┘      └─────────────────────────┘   └──────────────────┘   └──────────────────┘
    "1. Upload"            previews below each        sidebar chooses       results section:
    section, both          uploader ("1. Upload")     stage 3; invalidates  metrics, Show filter,
-   uploaders              the previews are the       stale results on      table, charts,
-                          user-visible stage 2       every configuration   downloads
+   uploaders              show the parsed table      stale results on      table, charts,
+                          before stage 3 steps       every configuration   downloads
                                                       change
 ```
 
@@ -38,16 +38,21 @@ Each uploaded file is immediately:
    ([Supported file formats](../preparing-your-data/supported-formats.md));
 3. **Normalized to the canonical model** — all coordinates become
    **0-based half-open** `[start, end)` intervals, regardless of the
-   source format's convention ([Coordinate systems](../preparing-your-data/coordinate-systems.md));
-4. **Chromosome-standardized** — if you configured conversion, both
-   files' chromosome IDs are put in one naming style
-   ([Chromosome identifiers](../preparing-your-data/chromosome-identifiers.md));
-5. **Feature-filtered** — for GFF/GTF annotation files, only the
-   selected feature types are kept ([Feature filtering](../using/feature-filtering.md)).
+   source format's convention ([Coordinate systems](../preparing-your-data/coordinate-systems.md)).
+   Custom query tables are normalized once you apply the column mapping.
 
-The preview panel under each uploader shows the first 10 rows of the
-*normalized* table — what you see there is exactly what the annotation
-engine will receive.
+The preview panel under each uploader shows the first 10 rows of this
+parsed, coordinate-normalized table. It is shown **before** two later
+steps that are applied when you press **Run annotation**:
+
+- **Feature filtering** — for GFF/GTF annotation files, only the
+  selected feature types are kept ([Feature filtering](../using/feature-filtering.md));
+- **Chromosome standardization** — if the two files use different
+  UCSC/Ensembl naming styles, their chromosome IDs are put in one style
+  ([Chromosome identifiers](../preparing-your-data/chromosome-identifiers.md)).
+
+So the previews do not show filtered rows or converted chromosome
+names.
 
 ## Stage 3 — Annotate (UI: the sidebar)
 
@@ -59,8 +64,8 @@ The sidebar selects the execution of stage 3:
   ([Choosing an operation](../operations/choosing-an-operation.md));
 - **Join behavior** — keep all query rows (left) or matched rows only
   (inner) ([Join behavior: left vs inner](../operations/join-behavior.md));
-- **Input options** — coordinate-system declaration (custom files),
-  chromosome-ID handling;
+- **Input options** — coordinate-system declaration (custom files and
+  extension-neutral tables), chromosome-ID handling;
 - **Advanced options** — strand matching and the `min_overlap` slider
   (overlap mode only);
 - **Feature filter** — which GFF/GTF feature types participate.
@@ -84,7 +89,10 @@ Excel / annotated VCF
 
 ## What does *not* happen
 
-- No file ever leaves the app; no result is stored server-side.
+- No intentional persistence: temporary parsing files are deleted
+  immediately after parsing, and parsed data and results remain only in
+  application memory for the active session
+  ([Limitations → Data handling](../limitations.md#data-handling)).
 - No silent engine fallback: if the selected engine is unavailable, the
   run fails with an explicit message
   ([Troubleshooting](../troubleshooting.md)).

@@ -45,13 +45,19 @@ required)"; `min_overlap` is 0.*
 
 - **Query coordinates** / **Annotation coordinates** (dropdowns) —
   **Auto-detect** (default), `0-based (BED)`, `1-based (GFF/GTF/VCF)`.
-  For standard formats the coordinate system is fixed by the format
-  specification; the dropdown *declares* it for custom tables (default
-  0-based half-open). See [Coordinate systems](../preparing-your-data/coordinate-systems.md).
+  For files with a known extension (`.bed`, `.gff`, `.gff3`, `.gtf`,
+  `.vcf`) the coordinate system is fixed by the format specification
+  and the dropdown does not change it. For custom tables and
+  extension-neutral files (`.tsv`, `.txt`, `.csv`) an explicit choice
+  *declares* the coordinate system and takes precedence over content
+  detection; Auto-detect may infer a known format from the content, and
+  otherwise a custom table is read as 0-based half-open. The declaration
+  is applied exactly once. See [Coordinate systems](../preparing-your-data/coordinate-systems.md).
 - **Chromosome ID handling** (radio) — **Auto-convert if needed**
   (default) or **Manual specification**, which reveals a **Target
   style** dropdown: `UCSC (chr1, chr2, …)`, `Ensembl (1, 2, …)`,
-  **Keep original**. See
+  **Keep original** (no conversion). Only UCSC ⇄ Ensembl identifiers are
+  converted. See
   [Chromosome identifiers](../preparing-your-data/chromosome-identifiers.md).
 
 ### Feature filter

@@ -35,8 +35,11 @@ engine and replaces the results section with:
 - the download buttons,
 - the charts and gene list expander.
 
-The whole pipeline (parse → normalize → operate → canonicalize) runs
-in your session; nothing is sent to or stored on a server.
+The pipeline (parse → normalize → operate → canonicalize) runs inside
+the AnnotateR server process that serves your session. Temporary parsing
+files are deleted immediately after parsing; parsed data and results
+remain only in application memory for the active session
+([Limitations → Data handling](../limitations.md#data-handling)).
 
 ## Failure states
 
@@ -52,9 +55,12 @@ Failures are explicit errors that name what failed:
   fallback** to the other engine
   ([Choosing an annotation engine](engines.md),
   [Troubleshooting → engine unavailable](../troubleshooting.md#engine-unavailable)).
-- **Chromosome-style conflict** — e.g. you chose manual "Keep original"
-  but the two files use different chromosome naming styles; the message
-  tells you to re-run with auto-convert or a manual target style
+- **Chromosome-style warnings** — not errors: the run proceeds. If you
+  chose manual "Keep original" and the two files use different
+  chromosome naming styles, a warning says rows on differently-named
+  chromosomes will not match; if no conversion mapping exists for the
+  styles, a warning says identifiers were left unchanged; and if the two
+  tables share no chromosome identifier, a warning says so
   ([Chromosome identifiers](../preparing-your-data/chromosome-identifiers.md)).
 
 An error means the run **could not happen**. A run that happens and

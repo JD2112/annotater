@@ -8,11 +8,18 @@ the annotation run.
 
 - Applies **only to GFF3/GTF annotation files**, because only they
   carry a feature type column.
-- **Applies at parse time, before matching** — the filtered file is
-  what the preview shows and what the engine receives.
+- **Applies when you press Run annotation, before matching** — the
+  engine receives the filtered table. The annotation **preview shows the
+  parsed table before filtering** (all features, with coordinates
+  already converted to the canonical model), so it does not reflect this
+  filter; after the run, a caption reports "Using N of M annotation
+  features".
 - **Default: `gene` only.** A first run therefore annotates against
   genes only, even if your annotation file contains exons, transcripts,
   and more.
+- **A selection that matches nothing** (for example a file whose type
+  names differ from the listed ones) stops the run with a warning that
+  no annotations match the selected feature types.
 - **Empty selection = all features.** Selecting no feature types shows
   the caption "No feature types selected — all features will be
   included" and the full annotation is used.

@@ -15,7 +15,7 @@ becomes part of the matching rule itself
 | GFF3 | column 7 | `+`/`-` kept; `.` (anything else) → **missing** |
 | GTF | column 7 | `+`/`-` kept; `.` → **missing** |
 | VCF | *none* | **always missing** — the VCF format has no strand field |
-| Custom table | a mapped column (optional) | whatever your rows say |
+| Custom table | an unmapped column named exactly `strand` (optional) | `+`/`-` kept; `.` or empty → **missing**; any other value is rejected with an error |
 
 Missing strand is a real, preserved state — it is *not* converted to a
 guess and it is *not* dropped.

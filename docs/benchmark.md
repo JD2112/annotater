@@ -1,8 +1,9 @@
 # Backend Benchmark (Bedtools vs Polars-Bio)
 
 Deterministic, reproducible benchmark of AnnotateR's two interchangeable
-execution backends (Bedtools via pybedtools, and Polars-Bio), with
-**scientific parity verified before any timing is accepted**.
+execution backends (Bedtools via pybedtools, and Polars-Bio). A strict
+canonical parity check is applied to each cell's final result, and a
+mismatch aborts the run before any result is reported.
 
 Script: [`benchmarks/benchmark_engines.py`](https://github.com/pyrevo/annotater/blob/main/benchmarks/benchmark_engines.py).
 Results of the most recent full run are in [§ Results](#results).
@@ -17,7 +18,7 @@ environment.
 
 **Not shown (by design):**
 
-- **Parsing.** Parsing is backend-independent in AnnotateR (SPEC 4.1):
+- **Parsing.** Parsing is backend-independent in AnnotateR (SPEC §4, invariant 1):
   both backends consume the same canonical coordinate/annotation
   DataFrames. Parsing cost is recorded separately as reference data
   (`benchmark_parsing_*.csv`), never inside per-backend timings.
@@ -28,7 +29,7 @@ environment.
   `linux/amd64`; relative behavior is expected to hold, but do not
   transfer absolute numbers across machines.
 - **A performance ranking as such.** The two backends are *interchangeable
-  execution choices* (SPEC 5); the benchmark reports workload-dependent
+  execution choices* (SPEC §1 and §4); the benchmark reports workload-dependent
   differences, not a "winner".
 
 ## Workloads
@@ -48,7 +49,7 @@ and table contents are reproducible bit-for-bit).
 
 | Scenario | Geometry |
 |---|---|
-| `sparse` | 50 kb of empty space between consecutive annotations (packing gap shrinks automatically when the span would exceed the [32-bit coordinate cap](#coordinate-limit) — see there) |
+| `sparse` | nominally 50 kb of empty space between consecutive annotations. The packing gap shrinks automatically when the span would exceed the [32-bit coordinate cap](#coordinate-limit), so at the larger tiers the layout is **denser than the nominal 50 kb gap implies** (for example, the 100,000 × 1,000,000 `sparse` overlap run returns ≈2.6 million rows). Read `sparse` as the scenario's name, not as a density guarantee at every scale |
 | `dense` | 50 kb windows on a 10 kb pitch (≈5× coverage) |
 | `mixed` | five chromosomes of differing sizes/weights, mixed local densities |
 | `duplicates` | repeated identical intervals on both sides (multi-match stress) |
@@ -62,11 +63,15 @@ and table contents are reproducible bit-for-bit).
 ### Repetitions
 
 Each (scenario, operation, engine) cell runs **1 warmup + 5 measured
-repetitions**; the **median** wall time is reported. Every repetition's
-result is compared with the strict parity comparator; any parity failure
-aborts the whole benchmark with a non-zero exit (a faster-but-wrong
-result is never accepted). Row counts are additionally checked to be
-deterministic across repetitions.
+repetitions**; the **median** wall time is reported. Two checks apply:
+
+- **Row counts** are checked to be identical across the measured
+  repetitions of each engine; a difference aborts the benchmark.
+- **Strict canonical parity** (the same comparator as the parity test
+  suite) is performed **once per cell, on the final result of each
+  engine** — not on every repetition. Any parity failure aborts the
+  whole benchmark with a non-zero exit, so a faster-but-wrong result is
+  not reported.
 
 ## What is measured
 
@@ -82,10 +87,14 @@ No parsing, no I/O of the input tables, no Streamlit, no export.
 
 ## Memory probing
 
-Peak RSS is measured in **isolated subprocesses** (one per
+The script can probe peak RSS in **isolated subprocesses** (one per
 (size, scenario, operation, engine) cell) so the main timing loop is not
-disturbed. Run with `--measure-memory` (together with the timings) or
-`--memory-only` (re-probes memory without re-running the timing loop).
+disturbed, using `--measure-memory` (together with the timings) or
+`--memory-only`. The probe reads `RUSAGE_SELF` of the worker process, so
+it reflects that Python process only and **does not include the memory
+of the `bedtools` child process** started by the Bedtools engine. No
+memory values are published on this page, and memory should not be
+compared between the two backends on the basis of this probe.
 
 ## Coordinate limit
 
@@ -113,10 +122,10 @@ Timings were taken on the local (arm64) environment, not inside the
 
 ## Results
 
-Full run: **2026-09-25**, commit `aec841d`, wall time ≈ 115 min
+Full run: **2026-09-25**, wall time ≈ 115 min
 (`--sizes small medium large --bench-parsing`). **All 51 scenario/op
-cells parity-verified** (102 engine rows) with the strict comparator
-before their timings were accepted. Machine: Apple M1 Pro, 32 GB RAM, macOS 26.6.2 arm64 (see
+cells passed the strict canonical parity check** (102 engine rows),
+applied to each cell's final result. Machine: Apple M1 Pro, 32 GB RAM, macOS 26.6.2 arm64 (see
 [Environment](#environment)).
 
 Median wall time in seconds for `engine.intersect` +
@@ -124,6 +133,19 @@ Median wall time in seconds for `engine.intersect` +
 "speedup" = bedtools ÷ polars-bio (higher = polars-bio faster). Every
 row: both backends returned identical canonical results (parity
 `verified`).
+
+**Provenance.** The run was made from a working tree based on commit
+`aec841d`. That commit does not itself contain the benchmark script
+(`benchmarks/benchmark_engines.py` was added later, in `999955f`), so
+the numbers below are **not tied to a clean, immutable commit**. They
+have not been regenerated since the later input, VCF-export and
+UI-state changes (Tasks A–C); they characterize the engine path as it
+was at the time of the run.
+
+**Reading the tables.** Cells with `within` or `contains` that return
+0–12 result rows (marked by the *Result rows* column) time a run whose
+output is empty or nearly empty; their large speedups say nothing about
+the cost of producing pairs and should not be generalized.
 
 ### small — 1,000 queries × 10,000 annotations
 
@@ -193,7 +215,7 @@ row: both backends returned identical canonical results (parity
 
 ### Parsing (backend-independent, reference only)
 
-Parsing is not part of the per-backend numbers (SPEC 4.1). For
+Parsing is not part of the per-backend numbers (SPEC §4, invariant 1). For
 reference, parsing + normalizing the synthetic inputs took (single
 wall time, original geometry generation):
 
@@ -205,54 +227,58 @@ wall time, original geometry generation):
 
 ### Observations
 
-1. **Pair-producing operations (overlap/contains/within):** the
-   in-process backend is faster across every tier and scenario —
-   ~3–10× at small size (bedtools process startup + pybedtools I/O
-   overhead dominates), ~8–15× at medium, and ~8–15× for the large
-   pair-producing operations (with `within`/`contains` reaching ~30–38×
-   because they filter a large candidate set in-process). The
-   *relative* picture is what the benchmark exists to document; the
-   backends remain interchangeable.
-2. **`closest` is the shared canonical path, and the data shows it.**
-   Both backends run the same selection + distance code over the
-   backend-produced candidate pairs (SPEC 8.6); timings track each
-   other within ~10% in every cell (small 0.9–1.1×, medium 0.89–1.01×,
-   large 1.00–1.33×), versus 3–38× for the pair-producing operations.
-   At large size the shared nearest-selection dominates runtime
-   (~2–4 min per engine at 100k×1M sparse/duplicates): `closest` on
-   very large inputs is the most expensive AnnotateR operation on
-   **both** backends — a scale property of the shared canonical
+1. **Pair-producing operations (overlap/contains/within):** on these
+   workloads the in-process backend was faster in every cell. Speedups
+   (bedtools ÷ polars-bio) were 3.3–10.2× at small size (where bedtools
+   process startup and pybedtools I/O overhead is a large share of the
+   time), 9.1–36.7× at medium, and 8.1–38.2× at large. For `overlap`
+   alone the range is 4.3–6.6× (small, excluding `stranded`), 11.0–15.4×
+   (medium) and 8.1–12.7× (large). The `contains`/`within` cells at the
+   top of these ranges are largely cells whose output is empty or nearly
+   empty (see the note under *Results*), so they are not representative
+   of pair-producing cost. The backends remain interchangeable.
+2. **`closest` is the shared canonical path, and the data is consistent
+   with that.** `mode="closest"` makes no backend call: both engines run
+   the same shared canonical selection and distance code (SPEC §8.6).
+   Timings are within about 10% of each other in every cell except
+   large/duplicates (1.33×): small 0.9–1.1×, medium 0.89–1.01×, large
+   1.00–1.33×, versus the much larger differences for the
+   pair-producing operations. At large size `closest` took about 3–4
+   minutes per engine on 100k×1M sparse and duplicates workloads, the
+   slowest cells in the table: on these inputs it is the most expensive
+   operation on **both** backends — a property of the shared canonical
    implementation, not of either backend.
-3. **Bedtools variance is visibly higher.** The large/duplicates
-   bedtools cells show wide spreads (IQR up to ~41 s on `closest`;
-   see the raw `wall_iqr_s` column in the results CSV), consistent
-   with subprocess/scheduling effects; medians are reported
-   throughout.
+3. **Bedtools variance is higher in some cells.** The large/duplicates
+   bedtools cells showed wide spreads in the original run (the raw
+   `wall_iqr_s` column of the results CSV, which is not committed to the
+   repository); medians are reported throughout. No cause was
+   established.
 4. **Empty-result cells (e.g. `within` on sparse geometry) still pay
-   the full backend cost** — no matches does not skip work; this is
-   the same cost class a real no-hit run pays.
+   the backend cost** — no matches does not skip work. Their timings
+   should be read as the cost of a no-hit run, not as a measure of
+   pair-producing work.
 
 ## Interpretation
 
 - **`closest` is the shared canonical path.** Since Task 6E,
-  `mode="closest"` never calls a backend-native closest primitive; both
-  engines run the **same shared canonical selection and distance code**
-  (SPEC 8.6) over the backend-produced candidate pairs. The results
-  confirm this: closest cells are within ~10% across backends in every
-  tier, unlike the 3–38× spread of the pair-producing operations. Note
-  the scale caveat: at 100k×1M, closest takes ~2–4 min **on both
-  backends** (shared-path cost) — see Observations.
-- **`overlap`-derived differences are workload-dependent.** Small/sparse
-  workloads are dominated by per-call overhead (bedtools process startup,
-  pybedtools I/O) and tend to favor the in-process backend;
-  large/dense workloads move the cost into interval joining and
-  canonicalization, where the spread narrows or shifts. Read each row
-  against its scenario, not as a single number.
+  `mode="closest"` makes no backend call and uses no backend-native
+  closest primitive; both engines run the **same shared canonical
+  selection and distance code** (SPEC §8.6). The two engines'
+  `closest` timings therefore mostly measure that shared code. Note the
+  scale caveat: at 100k×1M, `closest` took about 3–4 minutes **on both
+  backends** — see Observations.
+- **`overlap`-derived differences are workload-dependent.** Small
+  workloads include a large share of per-call overhead (bedtools process
+  startup, pybedtools I/O); at larger sizes more of the cost is interval
+  joining and canonicalization, and the ratio varies by scenario
+  without a monotonic trend across tiers. Read each row against its
+  scenario, not as a single number.
 - **Parity is the headline, timings are the footnote.** Every reported
-  timing is attached to a cell whose two backend results passed the
-  strict comparator (identical canonical schema, values, order, and
-  dtype). If a future dependency update changes any result, the
-  benchmark fails before reporting.
+  cell's final result passed the strict comparator for both backends
+  (identical canonical schema, values, order, and dtype); individual
+  repetitions are checked for row-count determinism only. If a future
+  dependency update changes a final result, the benchmark fails before
+  reporting.
 - **Single-platform, single-machine data.** No cross-platform
   comparison is made. The production image (`linux/amd64`) was smoke-
   verified for parity (CI `docker-smoke` job), not re-timed.
@@ -267,8 +293,11 @@ wall time, original geometry generation):
   matrix approximates but does not reproduce production data shapes.
 - No end-to-end (parse→annotate→export) timing; see
   [What this benchmark shows](#what-this-benchmark-shows-and-does-not).
-- No concurrent-load or memory-pressure behavior is characterized beyond
-  peak RSS.
+- No concurrent-load or memory-pressure behavior is characterized, and
+  no memory results are published (the optional RSS probe excludes the
+  `bedtools` child process).
+- Results are from a working tree that cannot be identified with a
+  clean commit (see *Provenance* under Results).
 
 ## Reproducing
 
