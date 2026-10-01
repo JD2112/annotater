@@ -104,6 +104,7 @@ _RESULT_STATE_KEYS = (
     "result_join",
     "result_coord_format",
     "result_vcf_header_lines",
+    "result_vcf_contig_renames",
 )
 
 _COORD_SYSTEM_OPTIONS = [
@@ -182,6 +183,19 @@ def _target_style_key(option: str):
     if option.startswith("Ensembl"):
         return "ensembl"
     return None  # "Keep original"
+
+
+def _chrom_renames(before, after) -> dict:
+    """
+    Exact ``old -> new`` chromosome identifiers changed by standardization,
+    from the row-aligned chromosome column before and after conversion.
+    Unchanged identifiers are omitted, so no rename means an empty dict.
+    """
+    return {
+        str(old): str(new)
+        for old, new in zip(before, after)
+        if str(old) != str(new)
+    }
 
 
 def _clear_results_state():
@@ -752,6 +766,7 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
 
     # --- Chromosome ID compatibility ---
     mapper = ChromosomeMapper()
+    query_chr_before = coord_df["chr"]
     mismatch_info = mapper.find_mismatches(
         coord_df["chr"].unique().tolist(),
         annot_df["chr"].unique().tolist(),
@@ -798,6 +813,11 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
                     "Chromosome ID styles differ and 'Keep original' is selected; "
                     "rows on differently-named chromosomes will not match."
                 )
+
+    # Provenance for the VCF export: which query identifiers the
+    # standardization above actually renamed (exact old -> new pairs
+    # taken from the converter's own output, never re-derived).
+    contig_renames = _chrom_renames(query_chr_before, coord_df["chr"])
 
     # --- No-shared-identifiers warning ---
     # Whatever the conversion outcome, if the two tables share no
@@ -874,6 +894,9 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
             # Original VCF ## metadata (once per source file), restored
             # verbatim by the annotated VCF export.
             "result_vcf_header_lines": vcf_header_lines,
+            # Query chromosome identifiers renamed by standardization
+            # (old -> new); reconciles ##contig lines in the VCF export.
+            "result_vcf_contig_renames": contig_renames,
         }
     )
 
@@ -907,6 +930,7 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
     mode = st.session_state["result_mode"]
     coord_format = st.session_state["result_coord_format"]
     vcf_header_lines = st.session_state.get("result_vcf_header_lines")
+    vcf_contig_renames = st.session_state.get("result_vcf_contig_renames")
 
     if result_df.empty:
         how = st.session_state.get("result_join", "left")
@@ -953,7 +977,9 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
 
     st.dataframe(display_df, height=400)
 
-    _render_downloads(display_df, coord_format, vcf_header_lines)
+    _render_downloads(
+        display_df, coord_format, vcf_header_lines, vcf_contig_renames
+    )
 
     with st.expander("Charts and gene list"):
         _render_charts_and_gene_list(display_df)
@@ -987,7 +1013,9 @@ def _render_summary_metrics(result_df, coord_df, engine_name, mode, join):
     )
 
 
-def _render_downloads(display_df, coord_format, vcf_header_lines=None):
+def _render_downloads(
+    display_df, coord_format, vcf_header_lines=None, vcf_contig_renames=None
+):
     st.subheader("Download results")
     st.caption(
         "Exports the rows currently shown above (use the display filter to "
@@ -1036,7 +1064,9 @@ def _render_downloads(display_df, coord_format, vcf_header_lines=None):
         st.download_button(
             "Annotated VCF",
             data=convert_df_to_vcf(
-                display_df, original_header_lines=vcf_header_lines
+                display_df,
+                original_header_lines=vcf_header_lines,
+                contig_renames=vcf_contig_renames,
             ),
             file_name="annotated_variants.vcf",
             mime="application/octet-stream",
@@ -1309,7 +1339,42 @@ def _original_header_declarations(original_header_lines) -> dict:
     return decls
 
 
-def convert_df_to_vcf(df: pd.DataFrame, original_header_lines=None) -> str:
+_CONTIG_ID_RE = re.compile(r'(?<=[<,])ID=("?)([^,>"]*)\1')
+
+
+def _reconcile_contig_lines(lines, contig_renames) -> list:
+    """
+    Rename the ID of ``##contig`` lines whose identifier was converted
+    (``contig_renames``: old -> new), changing nothing else on the line.
+    A line that is renamed onto an ID already declared earlier is dropped,
+    so a contig ID is never declared twice. Without renames the lines are
+    returned untouched.
+    """
+    if not contig_renames:
+        return list(lines)
+    out = []
+    declared = set()
+    for line in lines:
+        if line.startswith("##contig=<"):
+            m = _CONTIG_ID_RE.search(line)
+            if m:
+                new_id = contig_renames.get(m.group(2), m.group(2))
+                if new_id != m.group(2):
+                    line = (
+                        line[:m.start()]
+                        + f"ID={m.group(1)}{new_id}{m.group(1)}"
+                        + line[m.end():]
+                    )
+                if new_id in declared:
+                    continue
+                declared.add(new_id)
+        out.append(line)
+    return out
+
+
+def convert_df_to_vcf(
+    df: pd.DataFrame, original_header_lines=None, contig_renames=None
+) -> str:
     """
     Convert results DataFrame back to VCF format.
 
@@ -1335,6 +1400,14 @@ def convert_df_to_vcf(df: pd.DataFrame, original_header_lines=None) -> str:
       an original ``##source``/``##date`` line is retained, not
       replaced) and the ANNOT_* declarations. Original definitions are
       never re-synthesized: no types or descriptions are invented.
+    - ``contig_renames`` (old -> new chromosome identifiers changed by
+      chromosome standardization; the result frame and exported CHROM
+      values carry the new identifiers): the ID of the matching
+      ``##contig`` lines is renamed to the exported identifier, every
+      other attribute (length, assembly, md5, ...) is kept. Contigs that
+      were not renamed, and files with no renames, keep their lines
+      untouched; no ``##contig`` line is ever invented for a source
+      that lacked one.
     - ANNOT_* declaration collision policy: if the original header
       already declares an ``ANNOT_*`` INFO ID, the original definition
       stands and no generated duplicate is emitted when it is
@@ -1351,10 +1424,13 @@ def convert_df_to_vcf(df: pd.DataFrame, original_header_lines=None) -> str:
       1-based VCF POS); REF/ALT/END are never rewritten from annotation
       coordinates.
     """
-    original = [
-        line for line in (original_header_lines or [])
-        if isinstance(line, str) and line.startswith("##")
-    ]
+    original = _reconcile_contig_lines(
+        [
+            line for line in (original_header_lines or [])
+            if isinstance(line, str) and line.startswith("##")
+        ],
+        contig_renames,
+    )
 
     # Exactly one ##fileformat: the source's version when present, so
     # the export is never silently upgraded or downgraded; VCFv4.2 is
