@@ -49,15 +49,59 @@ class FormatDetector:
         
         return "custom"
     
+    #: GFF3 ``key=value`` attribute pair.
+    _GFF3_ATTRIBUTE = re.compile(r'(^|;)\s*[^=;\s]+=')
+    #: GTF ``key "value";`` / ``key value;`` attribute pair.
+    _GTF_ATTRIBUTE = re.compile(r'^\s*[\w.]+\s+("[^"]*"|[^\s;"]+)\s*;')
+    
+    @staticmethod
+    def _looks_like_gff_record(fields: List[str], directive: bool = False) -> bool:
+        """
+        Structural test for one GFF/GTF annotation record.
+        
+        The feature type (column 3) is deliberately not consulted: valid
+        GFF3/GTF files use many type names (mRNA, lnc_RNA, ...). Evidence
+        required: exactly 9 columns, integer start/end (cols 4-5), score
+        ``.`` or numeric (col 6), strand ``+ - . ?`` (col 7), frame
+        ``0 1 2 .`` (col 8), and either attribute syntax in col 9 (GFF3
+        ``k=v`` or GTF ``k "v";``, ``.`` for none) or a ``##gff-version``
+        directive earlier in the file.
+        """
+        if len(fields) != 9:
+            return False
+        seqid, _source, ftype, start, end, score, strand, frame, attrs = fields
+        if not seqid or not ftype.strip():
+            return False
+        if not (start.isdigit() and end.isdigit()):
+            return False
+        if score != '.':
+            try:
+                float(score)
+            except ValueError:
+                return False
+        if strand not in ('+', '-', '.', '?') or frame not in ('0', '1', '2', '.'):
+            return False
+        if directive or attrs == '.':
+            return True
+        return bool(
+            FormatDetector._GFF3_ATTRIBUTE.search(attrs)
+            or FormatDetector._GTF_ATTRIBUTE.match(attrs)
+        )
+    
     @staticmethod
     def _detect_from_content(filepath: str) -> str:
         """Detect format from file content"""
         try:
+            gff_directive = False
             with open(filepath, 'r') as f:
                 # Read first non-comment line
                 for line in f:
                     line = line.strip()
-                    if not line or line.startswith('#'):
+                    if not line:
+                        continue
+                    if line.startswith('#'):
+                        if line.lower().startswith('##gff-version'):
+                            gff_directive = True
                         continue
                     
                     fields = line.split('\t')
@@ -67,12 +111,12 @@ class FormatDetector:
                         if fields[1].isdigit() and fields[2].isdigit():
                             return "bed"
                     
-                    # GFF/GTF: 9 columns with specific structure
-                    if len(fields) == 9:
-                        if fields[2] in ['gene', 'transcript', 'exon', 'CDS']:
-                            if 'gene_id' in fields[8]:
-                                return "gtf"
-                            return "gff"
+                    # GFF/GTF: decided by record structure, not feature type
+                    if FormatDetector._looks_like_gff_record(fields, gff_directive):
+                        # Existing GFF3-vs-GTF policy: GTF-style gene_id
+                        if 'gene_id' in fields[8]:
+                            return "gtf"
+                        return "gff"
                     
                     break
         except Exception:
@@ -560,6 +604,24 @@ class CustomParser:
         # normalize_intervals, at the canonical boundary.
         kwargs.setdefault("dtype", str)
         
+        # A single leading '#' tabular header line (UCSC-style) names the
+        # columns; it must not be consumed as a comment.
+        hash_header = (
+            CustomParser._find_hash_header(filepath, delimiter)
+            if has_header else None
+        )
+        if hash_header is not None:
+            header_line, names = hash_header
+            return pd.read_csv(
+                filepath,
+                sep=delimiter,
+                header=None,
+                names=names,
+                skiprows=header_line + 1,
+                comment='#',
+                **kwargs
+            )
+        
         # Read file
         df = pd.read_csv(
             filepath,
@@ -571,13 +633,106 @@ class CustomParser:
         
         return df
     
+    #: Header-like token: starts with a letter/underscore, not a number.
+    _HEADER_TOKEN = re.compile(r'^[A-Za-z_][^\t]*$')
+    
+    @staticmethod
+    def _find_hash_header(
+        filepath: str, delimiter: str
+    ) -> Optional[Tuple[int, List[str]]]:
+        """
+        Recognize a ``#``-prefixed column-header line.
+        
+        Rule (tab- or comma-delimited files only; whitespace-delimited
+        files are never reinterpreted, since prose cannot be told from a
+        header there). Let P be the last non-blank line of the leading
+        ``#`` block and F the first non-comment line. P is the header iff
+        all of:
+        
+        - P starts with exactly one ``#`` (``##`` lines are comments);
+        - P splits into the same number (>= 2) of fields as F;
+        - every P field is header-like (non-empty, begins with a letter or
+          underscore after removing the marker);
+        - F is a data row, i.e. at least one F field is numeric (a text-only
+          F is itself a header, and P stays a comment).
+        
+        If P matches F's width but is not header-like while F is a data
+        row, the line is ambiguous and MalformedFileError is raised rather
+        than guessing (a data record could otherwise be silently dropped).
+        Otherwise None is returned and ``#`` lines remain comments.
+        
+        Returns:
+            (zero-based index of the header line, column names) or None.
+        """
+        if delimiter not in ('\t', ','):
+            return None
+        import csv
+        
+        def split(text: str) -> List[str]:
+            if delimiter == '\t':
+                return text.split('\t')
+            return next(csv.reader([text]), [])
+        
+        prev_hash: Optional[Tuple[int, str]] = None
+        first_data: Optional[str] = None
+        with open(filepath, 'r') as handle:
+            for index, raw in enumerate(handle):
+                line = raw.rstrip('\r\n')
+                if not line.strip():
+                    continue
+                if line.startswith('#'):
+                    prev_hash = (index, line)
+                    continue
+                first_data = line
+                break
+        if prev_hash is None or first_data is None:
+            return None
+        
+        index, header_text = prev_hash
+        data_fields = split(first_data)
+        if len(data_fields) < 2 or header_text.startswith('##'):
+            return None
+        
+        def is_number(token: str) -> bool:
+            try:
+                float(token)
+            except ValueError:
+                return False
+            return True
+        
+        if not any(is_number(t.strip()) for t in data_fields):
+            return None  # F is itself a text header; P is a comment
+        
+        header_fields = split(header_text[1:].lstrip())
+        if len(header_fields) != len(data_fields):
+            return None
+        names = [t.strip() for t in header_fields]
+        if not all(CustomParser._HEADER_TOKEN.match(t) for t in names):
+            raise MalformedFileError(
+                f'line {index + 1}: ambiguous "#" line directly before the '
+                f'data: it has {len(names)} fields like the data rows but is '
+                f'not a plausible column header. Remove it or turn it into '
+                f'a plain header line.'
+            )
+        # Mangle duplicate names the way pandas does for header=0.
+        seen: Dict[str, int] = {}
+        unique: List[str] = []
+        for name in names:
+            if name in seen:
+                seen[name] += 1
+                unique.append(f'{name}.{seen[name]}')
+            else:
+                seen[name] = 0
+                unique.append(name)
+        return index, unique
+    
     @staticmethod
     def _detect_delimiter(filepath: str) -> str:
         """Detect delimiter (tab, comma, space)"""
         with open(filepath, 'r') as f:
             # Skip comment lines
             for line in f:
-                if not line.startswith('#'):
+                if line.strip() and not line.startswith('#'):
                     first_line = line
                     break
         
