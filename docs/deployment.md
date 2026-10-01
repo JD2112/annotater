@@ -382,7 +382,7 @@ Serve app from `0.1.0-rc1` by changing only the container image
 reference; the deployment is healthy and the application loads. The
 deployment is referenced by tag, not pinned by digest; the verified GHCR
 digest of that tag is recorded separately in
-[Release-candidate publications](release-plan-0.1.0.md#release-candidate-publications).
+[Release-candidate publications](https://github.com/pyrevo/annotater/blob/main/docs/release-plan-0.1.0.md#release-candidate-publications).
 This is a pre-release deployment: final `v0.1.0` has not been released.
 
 ## Common failure modes
