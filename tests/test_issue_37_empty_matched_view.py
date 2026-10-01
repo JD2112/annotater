@@ -203,3 +203,67 @@ class TestChartHelperDirect:
         bar.assert_not_called()
         pie.assert_not_called()
         info.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Empty display subset + VCF export (contract: the "Annotated VCF" control
+# stays available and exports the displayed subset, here header-only).
+# ---------------------------------------------------------------------------
+
+QUERY_VCF = (
+    b"##fileformat=VCFv4.2\n"
+    b"##contig=<ID=chr1>\n"
+    b"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+    b"chr1\t150\tv1\tA\tT\t.\t.\tDP=5\n"
+    b"chr1\t160\tv2\tC\tG\t.\t.\tDP=6\n"
+)
+
+
+@pytest.mark.parametrize("engine", ENGINES)
+@pytest.mark.parametrize(
+    ("annot", "view"),
+    [
+        (ANNOT_OTHER_CHR, "Matched only"),    # nothing matched
+        (ANNOT_MIXED, "Unmatched only"),       # everything matched
+    ],
+)
+def test_empty_view_vcf_export_is_safe_and_header_only(
+    tmp_path, engine, annot, view
+):
+    at = _run("q.vcf", QUERY_VCF, "a.gff", annot, engine)
+    stored = at.session_state["result_df"].copy()
+    assert len(stored) >= 2
+
+    _show(at, view)
+    assert not at.exception
+    assert len(at.dataframe[-1].value) == 0
+    assert "Annotated VCF" in [b.label for b in at.get("download_button")]
+    assert at.session_state["result_df"].equals(stored)
+
+    # The export of the displayed (empty) subset, built exactly as the app
+    # does: valid VCF, header only, none of the hidden rows.
+    flag = view == "Matched only"
+    subset = stored[stored["has_overlap"] == flag]
+    assert subset.empty
+    text = app_module.convert_df_to_vcf(
+        subset,
+        original_header_lines=at.session_state.get("result_vcf_header_lines"),
+        contig_renames=at.session_state.get("result_vcf_contig_renames"),
+    )
+    lines = text.splitlines()
+    assert lines[0] == "##fileformat=VCFv4.2"
+    assert lines[-1].startswith("#CHROM")
+    assert not [l for l in lines if l and not l.startswith("#")]
+
+    pysam = pytest.importorskip("pysam", reason="independent VCF validation")
+    path = tmp_path / "empty.vcf"
+    path.write_text(text)
+    with pysam.VariantFile(str(path)) as vf:
+        assert list(vf.header.contigs) == ["chr1"]
+        assert list(vf) == []
+
+    # Switching back to a non-empty view still works and is unchanged.
+    _show(at, "All")
+    assert not at.exception
+    assert len(at.dataframe[-1].value) == len(stored)
+    assert at.session_state["result_df"].equals(stored)

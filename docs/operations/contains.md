@@ -57,7 +57,7 @@ If you need containment, use **contains**; do not approximate it with
 ## Touching intervals never qualify
 
 Containment requires the annotation's bases to be inside the query's
-bases. Touching intervals share only a boundary point
+bases. Touching intervals meet at the same boundary coordinate but share no base
 ([Overlap → touching is not overlap](overlap.md#touching-is-not-overlap)),
 so they can never be contained either way.
 

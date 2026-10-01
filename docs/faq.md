@@ -79,8 +79,8 @@ inclusive boundaries. Both pages carry counterexamples.
 
 ### Why don't my touching intervals match?
 
-Half-open intervals share a boundary *point* but no base, so touching
-is not an overlap. If you need those pairs, use `closest` — touching
+Half-open intervals that touch at the same boundary coordinate share no
+genomic base, so touching is not an overlap. If you need those pairs, use `closest` — touching
 intervals have distance 0. See
 [Coordinate systems](preparing-your-data/coordinate-systems.md).
 
