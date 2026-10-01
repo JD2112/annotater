@@ -110,7 +110,8 @@ git clone https://github.com/pyrevo/annotater.git
 cd annotater
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements.txt   # fully pinned, generated from uv.lock
+# or, to install exactly uv.lock: uv sync --frozen
 streamlit run streamlit_app/streamlit_app.py
 # -> http://localhost:8501
 ```

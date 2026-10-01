@@ -93,6 +93,11 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
+`requirements*.txt` are generated from `uv.lock` (fully pinned, including
+transitive dependencies); do not edit them by hand. Alternatively,
+`uv sync --frozen --extra dev` installs exactly `uv.lock`. See
+`docs/deployment.md` (Dependency management).
+
 ### Run the test suite (single documented command, from the repository root)
 
 ```bash

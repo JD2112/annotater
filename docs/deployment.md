@@ -59,22 +59,52 @@ From the repository root:
 docker build --platform linux/amd64 -t annotater:dev .
 ```
 
-The build is deterministic from the repository contents: pinned
-`requirements.txt`, base image `python:3.12-slim`, and the distribution
-bedtools package (Debian bookworm ships bedtools 2.31.1, matching the
-validated environment).
+Python dependencies are installed from the committed `uv.lock` (see
+[Dependency management](#dependency-management)), so the full resolved
+graph — including transitive dependencies — is the one recorded in the
+lock, not whatever is newest on PyPI at build time. The remaining inputs
+are the base image `python:3.12-slim` (a moving tag; not digest-pinned)
+and the distribution bedtools package (Debian bookworm ships bedtools
+2.31.1, matching the validated environment). Image layers are not claimed
+to be bit-reproducible.
 
 The image contains only what the app needs:
 
 ```
 /app
 ├── app.py                        # Serve entry-point shim (see below)
-├── requirements.txt
+├── pyproject.toml                # dependency declarations (install input only)
+├── uv.lock                       # exact locked graph (install input only)
 ├── streamlit_app/                # application package
 ├── data/examples/                # bundled example inputs (no user data)
 ├── benchmarks/benchmark_engines.py
 └── scripts/docker_smoke.sh
 ```
+
+## Dependency management
+
+- `pyproject.toml` declares the direct dependencies (runtime
+  `dependencies`, test/lint tools in the `dev` extra).
+- `uv.lock` is the exact resolved graph and the single source of truth.
+- The `Dockerfile` runs `uv export --frozen --no-dev` on the lock and
+  installs the result with `uv pip install --require-hashes --no-deps`:
+  no re-resolution, hash-verified, runtime dependencies only. `uv` is
+  pinned (`UV_VERSION` build arg) and removed after the install.
+- CI runs `uv sync --frozen --extra dev` (same lock, plus dev tools) and a
+  `lock-consistency` job running `scripts/export_requirements.sh --check`,
+  which fails if `uv.lock` is out of sync with `pyproject.toml` or the
+  committed requirements files are stale.
+- `requirements.txt` / `requirements-dev.txt` are **generated** from
+  `uv.lock` (fully pinned, no hashes) for plain-`pip` users. Do not edit
+  them by hand.
+
+To change dependencies intentionally: edit `pyproject.toml`, run
+`uv lock` (or `uv lock --upgrade-package <name>` for a single package),
+review the `uv.lock` diff, run `scripts/export_requirements.sh`, and
+commit all of them together.
+
+`docs/requirements-docs.txt` (MkDocs site build) is a separate,
+non-runtime dependency set and is not covered by `uv.lock`.
 
 ## Published images (GHCR)
 
