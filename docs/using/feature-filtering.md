@@ -31,25 +31,37 @@ the annotation run.
 
 ### The transcript choice
 
-`transcript` is also a label: it accepts these exact, case-sensitive
-feature types.
+`transcript` means *transcript-level annotation records*, represented by
+an explicit list of source feature types. It is a label, not a literal
+feature name: the filter still tests the annotation's feature-type
+column, case-sensitively, and accepts exactly these values:
 
-| Choice | Accepted feature types |
+| Accepted feature type | Where it is documented as a transcript-level record |
 |---|---|
-| `transcript` | `transcript`, `mRNA` |
+| `transcript` | GENCODE (GTF/GFF3); Ensembl; NCBI RefSeq non-coding transcripts |
+| `mRNA` | GFF3 specification; Ensembl; NCBI RefSeq coding transcripts |
+| `lnc_RNA` | Ensembl GFF3 |
+| `snoRNA` | Ensembl GFF3 |
+| `pseudogenic_transcript` | Ensembl GFF3 |
+| `ncRNA` | NCBI RefSeq GFF3 |
+| `rRNA` | NCBI RefSeq GFF3 |
+| `tRNA` | NCBI RefSeq GFF3 |
+| `primary_transcript` | NCBI RefSeq GFF3 (miRNA precursors) |
+| `noncoding_transcript` | GFF3 specification (spliced non-coding transcripts) |
 
-`transcript` is the transcript record in GENCODE (GTF and GFF3) and
-Ensembl annotations; `mRNA` is the transcript-level record in the GFF3
-specification (and in GFF3 files from sources that follow it, such as
-RefSeq). The original feature value (`transcript` or `mRNA`) is kept
-unchanged in the results.
+The original feature value (for example `mRNA` or `lnc_RNA`) is kept
+unchanged in the results; the list is used only to select rows.
 
-Only these two names are recognised. Other RNA feature types
-(`lnc_RNA`, `ncRNA`, `rRNA`, `tRNA`, `miRNA`, `snRNA`, `snoRNA`,
-`primary_transcript`, …) are distinct feature types and are **not**
-matched by `transcript`; other Sequence Ontology transcript subtypes are
-not normalised automatically. If your annotation uses them, leave the
-filter empty to include all features.
+AnnotateR does **not** perform automatic Sequence Ontology expansion:
+there is no ontology traversal, substring, regular-expression,
+case-insensitive or fuzzy matching. Any feature type not in the table is
+not matched by `transcript`, including `snRNA`, `miRNA`, `lincRNA`,
+`RNA`, `processed_transcript`, `NMD_transcript_variant`,
+`aberrant_processed_transcript`, `tmRNA` and `miscRNA`: primary
+documentation either does not name them as transcript-level records, or
+they denote mature products, variant annotations or biotypes rather than
+transcript records. If your annotation uses such types, leave the filter
+empty to include all features.
 
 ### The 5' UTR and 3' UTR choices
 

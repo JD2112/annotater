@@ -53,18 +53,64 @@ DUPLICATES = (
     b"chr1\tsrc\ttranscript\t100\t900\t.\t+\t.\tID=t2\n"
 )
 
-NOT_MAPPED = [
-    "lnc_RNA", "ncRNA", "rRNA", "tRNA", "miRNA", "snRNA", "snoRNA",
-    "primary_transcript", "transcript_region", "Transcript", "MRNA", "mrna",
+INCLUDED = [
+    "transcript", "mRNA", "lnc_RNA", "ncRNA", "rRNA", "tRNA", "snoRNA",
+    "primary_transcript", "pseudogenic_transcript", "noncoding_transcript",
 ]
+
+NOT_MAPPED = [
+    "snRNA", "miRNA", "lincRNA", "RNA", "processed_transcript",
+    "NMD_transcript_variant", "aberrant_processed_transcript",
+    "tmRNA", "miscRNA", "scRNA", "transcript_region", "ncRNA_gene",
+    "pseudogene", "gene", "exon", "CDS",
+    "Transcript", "MRNA", "mrna", "LNC_RNA", "lncRNA",
+]
+
+# Ensembl GFF3: ncRNA_gene -> lnc_RNA -> exon (README: "a specific type of
+# RNA transcript such as snoRNA or lnc_RNA").
+ENSEMBL_NONCODING = (
+    b"##gff-version 3\n"
+    b"1\tensembl\tncRNA_gene\t100\t900\t.\t+\t.\tID=gene:G1;biotype=lncRNA\n"
+    b"1\tensembl\tlnc_RNA\t100\t900\t.\t+\t.\tID=transcript:T1;Parent=gene:G1\n"
+    b"1\tensembl\texon\t100\t300\t.\t+\t.\tParent=transcript:T1\n"
+)
+
+REFSEQ_QUERY = b"NC_000001.11\t0\t10000\tq1\n"
+
+# NCBI RefSeq GFF3: coding = mRNA-exon-CDS; non-coding = transcript-exon.
+REFSEQ_CODING = (
+    b"##gff-version 3\n"
+    b"NC_000001.11\tBestRefSeq\tgene\t100\t900\t.\t+\t.\tID=gene0\n"
+    b"NC_000001.11\tBestRefSeq\tmRNA\t100\t900\t.\t+\t.\tID=rna0;Parent=gene0\n"
+    b"NC_000001.11\tBestRefSeq\texon\t100\t300\t.\t+\t.\tID=exon0;Parent=rna0\n"
+    b"NC_000001.11\tBestRefSeq\tCDS\t150\t300\t.\t+\t0\tID=cds0;Parent=rna0\n"
+)
+REFSEQ_NONCODING = (
+    b"##gff-version 3\n"
+    b"NC_000001.11\tBestRefSeq\tgene\t100\t900\t.\t+\t.\tID=gene1\n"
+    b"NC_000001.11\tBestRefSeq\ttranscript\t100\t900\t.\t+\t.\tID=rna1;Parent=gene1\n"
+    b"NC_000001.11\tBestRefSeq\tgene\t1000\t1900\t.\t+\t.\tID=gene2\n"
+    b"NC_000001.11\tBestRefSeq\tncRNA\t1000\t1900\t.\t+\t.\tID=rna2;Parent=gene2\n"
+    b"NC_000001.11\tBestRefSeq\tgene\t2000\t2900\t.\t+\t.\tID=gene3\n"
+    b"NC_000001.11\tBestRefSeq\tprimary_transcript\t2000\t2900\t.\t+\t.\tID=rna3;Parent=gene3\n"
+    b"NC_000001.11\tBestRefSeq\texon\t100\t300\t.\t+\t.\tID=exon1;Parent=rna1\n"
+)
+
+
+def _single(value):
+    return (
+        b"##gff-version 3\n"
+        + f"chr1\tsrc\t{value}\t100\t900\t.\t+\t.\tID=r1\n".encode()
+    )
 
 
 def _features(at: AppTest) -> list[str]:
     return sorted(_result(at)["annot_feature"].dropna().tolist())
 
 
-def _run(selection, engine="Bedtools", annot=("annot.gff", GFF3)):
-    at = _run_flow(_app(), "q.bed", COORD, annot[0], annot[1])
+def _run(selection, engine="Bedtools", annot=("annot.gff", GFF3),
+         query=COORD):
+    at = _run_flow(_app(), "q.bed", query, annot[0], annot[1])
     return _configure_and_run(
         at,
         {
@@ -76,10 +122,10 @@ def _run(selection, engine="Bedtools", annot=("annot.gff", GFF3)):
 
 class TestMapping:
     def test_expansion_is_explicit_and_exact(self):
-        assert _expand_feature_types([TRANSCRIPT]) == {"transcript", "mRNA"}
+        assert _expand_feature_types([TRANSCRIPT]) == set(INCLUDED)
 
     @pytest.mark.parametrize("value", NOT_MAPPED)
-    def test_other_rna_classes_not_mapped(self, value):
+    def test_excluded_values_not_mapped(self, value):
         assert value not in _expand_feature_types([TRANSCRIPT])
 
     def test_other_choices_unchanged(self):
@@ -112,16 +158,30 @@ class TestFilterOnBothBackends:
         at = _run([TRANSCRIPT], engine, ("annot.gff", MIXED))
         assert not {"gene", "exon"} & set(_features(at))
 
-    @pytest.mark.parametrize("value", ["lnc_RNA", "ncRNA", "rRNA", "tRNA",
-                                       "miRNA", "snRNA"])
-    def test_unmapped_rna_classes_match_nothing(self, engine, value):
-        gff = (
-            b"##gff-version 3\n"
-            + f"chr1\tsrc\t{value}\t100\t900\t.\t+\t.\tID=r1\n".encode()
-        )
-        at = _run([TRANSCRIPT], engine, ("annot.gff", gff))
+    @pytest.mark.parametrize("value", INCLUDED)
+    def test_every_included_value_matches_and_is_preserved(self, engine, value):
+        at = _run([TRANSCRIPT], engine, ("annot.gff", _single(value)))
+        assert _features(at) == [value]
+
+    @pytest.mark.parametrize("value", NOT_MAPPED)
+    def test_every_excluded_value_matches_nothing(self, engine, value):
+        at = _run([TRANSCRIPT], engine, ("annot.gff", _single(value)))
         assert "result_df" not in at.session_state
         assert any("No annotations match" in w.value for w in at.warning)
+
+    def test_ensembl_noncoding(self, engine):
+        at = _run([TRANSCRIPT], engine, ("annot.gff", ENSEMBL_NONCODING))
+        assert _features(at) == ["lnc_RNA"]
+
+    def test_refseq_coding(self, engine):
+        at = _run([TRANSCRIPT], engine, ("annot.gff", REFSEQ_CODING),
+                 query=REFSEQ_QUERY)
+        assert _features(at) == ["mRNA"]
+
+    def test_refseq_noncoding(self, engine):
+        at = _run([TRANSCRIPT], engine, ("annot.gff", REFSEQ_NONCODING),
+                 query=REFSEQ_QUERY)
+        assert _features(at) == ["ncRNA", "primary_transcript", "transcript"]
 
     def test_empty_selection_includes_all(self, engine):
         at = _run([], engine, ("annot.gff", MIXED))

@@ -131,13 +131,24 @@ _FEATURE_TYPE_OPTIONS = [
 # GENCODE GTF) carries no direction and is deliberately not matched. All
 # other choices are matched literally. Source values are never rewritten.
 #
-# ``transcript`` accepts the GENCODE/Ensembl ``transcript`` record and the
-# GFF3 specification's ``mRNA`` (the spec's transcript-level record for
-# protein-coding genes). Other RNA classes (lnc_RNA, ncRNA, rRNA, tRNA,
-# miRNA, snRNA, ...) are distinct feature types and are deliberately not
-# collapsed into it.
+# ``transcript`` means transcript-level annotation records, matched only
+# against this explicit list of source values (no regex, substring,
+# case-insensitive, fuzzy or Sequence Ontology expansion). Each value is
+# named as a transcript-level feature by a primary source:
+#   transcript, mRNA, lnc_RNA, snoRNA, pseudogenic_transcript - Ensembl
+#       GFF3 README ("type of transcript features");
+#   transcript, mRNA, ncRNA, rRNA, tRNA, primary_transcript - NCBI RefSeq
+#       GFF3 documentation (gene-RNA-exon conventions);
+#   transcript - GENCODE; mRNA, noncoding_transcript - GFF3 specification.
+# Ambiguous or undocumented RNA-like types (snRNA, miRNA, lincRNA, RNA,
+# processed_transcript, NMD_transcript_variant, ...) are deliberately
+# excluded. See docs/using/feature-filtering.md.
 _FEATURE_TYPE_SOURCE_VALUES = {
-    "transcript": ("transcript", "mRNA"),
+    "transcript": (
+        "transcript", "mRNA", "lnc_RNA", "ncRNA", "rRNA", "tRNA", "snoRNA",
+        "primary_transcript", "pseudogenic_transcript",
+        "noncoding_transcript",
+    ),
     "5' UTR": ("five_prime_UTR", "five_prime_utr"),
     "3' UTR": ("three_prime_UTR", "three_prime_utr"),
 }
