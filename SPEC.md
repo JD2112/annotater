@@ -1,6 +1,6 @@
 # AnnotateR Specification
 
-**Status:** Draft normative specification for the Polars-Bio parity refactor  
+**Status:** Release-candidate specification for v0.1.0 (normative scientific and backend contract)  
 **Project:** AnnotateR  
 **Canonical repository slug:** `annotater`  
 **Last updated:** 2026-09-24
@@ -9,13 +9,13 @@
 
 AnnotateR is a Streamlit application for annotating genomic coordinates against genomic feature sets. The application supports multiple input formats and exposes interchangeable genomic interval backends.
 
-The purpose of the current refactor is to make backend choice an implementation detail: for operations declared equivalent by this specification, the Bedtools and Polars-Bio engines must produce the same **AnnotateR canonical result**, independent of backend-specific schemas, suffixes, ordering, null sentinels, or dataframe implementation.
+The purpose of this contract is to make backend choice an implementation detail: for operations declared equivalent by this specification, the Bedtools and Polars-Bio engines must produce the same **AnnotateR canonical result**, independent of backend-specific schemas, suffixes, ordering, null sentinels, or dataframe implementation.
 
 ## 2. Normative language
 
 The key words **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, and **MAY** are normative requirements.
 
-This specification is the source of truth for the refactor. `docs/references.md` records authoritative external manuals. When implementation behavior and this specification disagree, the discrepancy MUST be resolved explicitly; agents MUST NOT silently redefine the contract from whichever backend currently passes.
+This specification is the source of truth for backend and scientific behavior. `docs/references.md` records authoritative external manuals. When implementation behavior and this specification disagree, the discrepancy MUST be resolved explicitly; agents MUST NOT silently redefine the contract from whichever backend currently passes.
 
 ## 3. Scope
 
@@ -51,7 +51,7 @@ This specification is the source of truth for the refactor. `docs/references.md`
 
 ## 5. Canonical interval model
 
-Internally, interval operations MUST use one documented coordinate convention. The target convention for the parity refactor is:
+Internally, interval operations MUST use one documented coordinate convention. The target convention for the backend contract is:
 
 - chromosome: string;
 - start: integer, **0-based inclusive**;
@@ -364,7 +364,7 @@ Parity MUST be evaluated after canonicalization. Tests SHOULD compare values, da
 
 The Streamlit UI MUST select the annotation backend without changing scientific input semantics.
 
-The refactor MUST retain containerized deployment compatibility with SciLifeLab Serve. Deployment-specific changes are deferred until backend correctness is protected by tests.
+AnnotateR MUST retain containerized deployment compatibility with SciLifeLab Serve. Deployment-specific changes are deferred until backend correctness is protected by tests.
 
 ## 12. Repository naming
 

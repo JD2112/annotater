@@ -1,10 +1,12 @@
 # AnnotateR Polars-Bio Parity Plan
 
-**Status:** Active  
-**Branch at planning time:** `feature/polars-bio`  
+**Status:** Completed — retained for provenance  
+**Branch at planning time:** `feature/polars-bio` (historical; merged to `main`)  
 **Last updated:** 2026-09-21
 
-This is the living implementation plan for making Bedtools and Polars-Bio interchangeable AnnotateR backends. `SPEC.md` is normative; this file defines sequencing and acceptance criteria.
+> **Note (0.1.0-rc2 preparation):** the Polars-Bio parity implementation described below was completed before `0.1.0-rc2`. This file is kept unchanged as a historical record of sequencing and acceptance criteria; it is no longer an active roadmap. `SPEC.md` remains the normative contract.
+
+This was the implementation plan for making Bedtools and Polars-Bio interchangeable AnnotateR backends. `SPEC.md` is normative; this file defines sequencing and acceptance criteria.
 
 ## Working rules
 
