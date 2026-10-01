@@ -74,6 +74,16 @@ generated), while a declaration with any other type is refused with an
 explicit error rather than silently overwritten. Original definitions
 are never re-synthesized — no types or descriptions are invented.
 
+**Chromosome identifiers and `##contig`.** The exported `CHROM` values
+are the chromosome identifiers of the AnnotateR result. When chromosome
+standardization changed a query identifier (for example `1` → `chr1`,
+`MT` → `chrM`), the ID of the matching `##contig` line is renamed to the
+exported identifier and its other attributes (`length`, `assembly`, `md5`
+and so on) are kept, so `CHROM` values and `##contig` declarations agree.
+Contigs that were not converted keep their original lines, a source with
+no `##contig` lines gets none, and no `##contig` line is added for an
+identifier the source never declared.
+
 **What this export does not claim.** It is not a byte-for-byte
 round trip of the input VCF. Original metadata are carried forward as
 text; AnnotateR does not semantically reinterpret or regenerate
