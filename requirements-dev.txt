@@ -1,6 +1,169 @@
-# AnnotateR development dependencies (exact pins, Task 2.5 audit)
--r requirements.txt
-pytest==9.1.1
-pytest-cov==7.1.0
+altair==6.3.0
+    # via streamlit
+anyio==4.15.1
+    # via
+    #   starlette
+    #   streamlit
+attrs==26.1.0
+    # via
+    #   jsonschema
+    #   referencing
 black==26.5.1
+    # via annotater
+certifi==2026.7.22
+    # via requests
+charset-normalizer==3.5.1
+    # via requests
+click==8.5.0
+    # via
+    #   black
+    #   streamlit
+    #   uvicorn
+colorama==0.4.6 ; sys_platform == 'win32'
+    # via
+    #   pytest
+    #   tqdm
+coverage==7.16.1
+    # via pytest-cov
+datafusion==53.0.0
+    # via polars-bio
+et-xmlfile==2.0.0
+    # via openpyxl
+h11==0.16.0
+    # via uvicorn
+httptools==0.8.0
+    # via streamlit
+idna==3.20
+    # via
+    #   anyio
+    #   requests
+iniconfig==2.3.0
+    # via pytest
+itsdangerous==2.2.0
+    # via streamlit
+jinja2==3.1.6
+    # via
+    #   altair
+    #   pydeck
+jsonschema==4.26.0
+    # via altair
+jsonschema-specifications==2025.9.1
+    # via jsonschema
+markupsafe==3.0.3
+    # via jinja2
+mypy-extensions==1.1.0
+    # via black
+narwhals==2.26.0
+    # via
+    #   altair
+    #   plotly
+numpy==2.5.3
+    # via
+    #   annotater
+    #   pandas
+    #   pybedtools
+    #   pydeck
+    #   streamlit
+openpyxl==3.1.5
+    # via annotater
+packaging==26.3
+    # via
+    #   altair
+    #   black
+    #   plotly
+    #   pytest
+    #   streamlit
+pandas==3.0.6
+    # via
+    #   annotater
+    #   pybedtools
+    #   streamlit
+pathspec==1.1.1
+    # via black
+pillow==12.3.0
+    # via streamlit
+platformdirs==4.11.11
+    # via black
+plotly==7.1.0
+    # via annotater
+pluggy==1.6.0
+    # via
+    #   pytest
+    #   pytest-cov
+polars==1.44.2
+    # via
+    #   annotater
+    #   polars-bio
+polars-bio==0.35.1
+    # via annotater
+polars-config-meta==0.3.4
+    # via polars-bio
+polars-runtime-32==1.44.2
+    # via polars
+protobuf==7.36.2
+    # via streamlit
+pyarrow==24.0.0
+    # via
+    #   datafusion
+    #   polars-bio
+    #   streamlit
+pybedtools==0.12.1
+    # via annotater
+pydeck==0.9.3
+    # via streamlit
+pygments==2.21.0
+    # via pytest
+pysam==0.24.1
+    # via pybedtools
+pytest==9.1.1
+    # via
+    #   annotater
+    #   pytest-cov
+pytest-cov==7.1.0
+    # via annotater
+python-dateutil==2.9.0.post0
+    # via pandas
+python-multipart==0.0.32
+    # via streamlit
+pytokens==0.4.1
+    # via black
+referencing==0.37.0
+    # via
+    #   jsonschema
+    #   jsonschema-specifications
+requests==2.34.2
+    # via streamlit
+rpds-py==2026.6.3
+    # via
+    #   jsonschema
+    #   referencing
 ruff==0.16.8
+    # via annotater
+six==1.17.0
+    # via python-dateutil
+starlette==1.6.0
+    # via streamlit
+streamlit==1.64.0
+    # via annotater
+toml==0.10.2
+    # via streamlit
+tqdm==4.70.1
+    # via polars-bio
+typing-extensions==4.16.0
+    # via
+    #   altair
+    #   anyio
+    #   datafusion
+    #   referencing
+    #   starlette
+    #   streamlit
+tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
+    # via pandas
+urllib3==2.8.0
+    # via requests
+uvicorn==0.53.0
+    # via streamlit
+watchdog==6.0.0 ; sys_platform != 'darwin'
+    # via streamlit
+websockets==16.1.1
+    # via streamlit
