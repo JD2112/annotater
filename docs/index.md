@@ -49,7 +49,7 @@ deterministic walkthroughs.
 
 This site is the user manual for the upcoming AnnotateR v0.1.0 release
 (currently in beta testing; the latest published pre-release image is
-`0.1.0-rc1`, and these pages describe the current `main`, which may be
+`0.1.0-rc2`, and these pages describe the current `main`, which may be
 ahead of it).
 Technical and developer material (architecture, engine contract,
 benchmark, deployment) lives in the
