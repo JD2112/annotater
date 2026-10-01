@@ -1,5 +1,8 @@
 # Scientific semantics and engine contract
 
+*Documents the upcoming v0.1.0 release (currently `0.1.0-rc1` beta
+testing).*
+
 This page is the **user-facing entry point** to the binding technical
 documentation. For developers, scientists reviewing semantics, and CI
 maintainers, the authoritative documents live in the
@@ -11,7 +14,7 @@ one copy of the truth.
 
 | Document | What it fixes |
 |---|---|
-| [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md) | The normative scientific contract: §5 canonical data model (0-based half-open, canonical columns, missing-value semantics), §6 format parsing/normalization, §7 engine contract and **backend parity**, §8 the four relation modes (overlap, contains, within, closest) and their modifiers (the min_overlap fraction rule, the contains/within directional predicates, and the canonical closest distance `max(0, a_start − q_end, q_start − a_end)`), §9 result and export semantics |
+| [`SPEC.md`](https://github.com/pyrevo/annotater/blob/main/SPEC.md) | The normative scientific contract: §4 architectural invariants (canonical input before and canonical output after backend execution, determinism), §5 canonical interval model (0-based half-open, valid intervals, strand, normalization of 1-based source formats), §6 canonical annotation result (`coord_`/`annot_` columns, metadata preservation, deterministic row and column order), §7 join semantics (inner and left; missing-value handling for unmatched rows), §8 operation semantics (overlap, minimum overlap, strand, contains, within, and closest with the canonical distance `max(0, a_start − q_end, q_start − a_end)`), §9 backend requirements (BedtoolsEngine and PolarsBioEngine), §10 testing contract (parity fixtures and comparison) |
 | [`docs/engine-contract.md`](https://github.com/pyrevo/annotater/blob/main/docs/engine-contract.md) | The detailed engine-level contract both backends must satisfy, and the allowed/forbidden backend-specific behavior |
 | [`docs/architecture.md`](https://github.com/pyrevo/annotater/blob/main/docs/architecture.md) | The result-adapter boundary: why no backend column names leak into the canonical result |
 
@@ -28,17 +31,18 @@ selected engine; and returns a canonical result whose columns are
 prefixed by provenance (`coord_*` / `annot_*`) with a single canonical
 missing value. Both engines — Bedtools and Polars-Bio — are
 **contractually required to return identical results** for every
-supported operation and option (SPEC §7); that parity is enforced by
-the test suite, not by hope
+supported operation and option (SPEC §4 and §9, tested under SPEC §10);
+that parity is enforced by the test suite, not by hope
 ([Backend parity and benchmark](../benchmark.md)).
 
 ## Where each technical topic lives
 
-- **Interval semantics and operations** → SPEC §8 (paraphrased with
-  diagrams in the [Annotation Operations](../operations/choosing-an-operation.md)
+- **Interval semantics and operations** → SPEC §5 (interval model) and
+  §8 (operations) (paraphrased with diagrams in the
+  [Annotation Operations](../operations/choosing-an-operation.md)
   section).
 - **Canonical schema, metadata preservation, missing values** →
-  SPEC §5/§9 (paraphrased in
+  SPEC §6 (result schema) and §7 (join semantics) (paraphrased in
   [Result columns and provenance](../results/result-columns.md)).
 - **Parity and performance** → [Backend parity and benchmark](../benchmark.md)
   (the full benchmark methodology is in `docs/benchmark.md` in the
@@ -48,9 +52,11 @@ the test suite, not by hope
 - **External format specifications** (UCSC BED, GFF3, GTF, VCF) →
   [External references](../references.md) (`docs/references.md`).
 - **Legacy R implementation and license provenance** →
-  [Legacy implementation](../legacy.md) (`docs/legacy.md`).
+  [`docs/legacy.md`](https://github.com/pyrevo/annotater/blob/main/docs/legacy.md)
+  in the repository (not part of this site).
 - **Implementation notes and open items** →
-  [Implementation notes](../implementation-notes.md).
+  [`docs/implementation-notes.md`](https://github.com/pyrevo/annotater/blob/main/docs/implementation-notes.md)
+  in the repository (a development history, not part of this site).
 
 ## Documentation governance
 

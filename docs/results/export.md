@@ -74,6 +74,14 @@ generated), while a declaration with any other type is refused with an
 explicit error rather than silently overwritten. Original definitions
 are never re-synthesized — no types or descriptions are invented.
 
+**What this export does not claim.** It is not a byte-for-byte
+round trip of the input VCF. Original metadata are carried forward as
+text; AnnotateR does not semantically reinterpret or regenerate
+arbitrary original VCF metadata, and the output contains additional
+`##source`, `##date` and `ANNOT_*` `##INFO` lines. Because there is one
+record per result row, the record count can exceed the number of input
+variants when a variant matches several annotations.
+
 This is the one place where a format convention is deliberately
 reconstructed for the output format.
 

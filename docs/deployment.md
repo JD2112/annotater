@@ -16,6 +16,7 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 - [Port and health check](#port-and-health-check)
 - [SciLifeLab Serve setup](#scilifelab-serve-setup)
 - [Environment / configuration](#environment-configuration)
+  (including [upload size](#upload-size) and [data handling](#data-handling))
 - [Expected startup and resources](#expected-startup-and-resources)
 - [Deployment verification](#deployment-verification)
 - [Common failure modes](#common-failure-modes)
@@ -104,7 +105,7 @@ Conventions:
 - **Digest pinning** is available where useful: `docker pull
   ghcr.io/pyrevo/annotater@sha256:<digest>` always resolves the exact
   published image (the published digest is recorded in
-  [release-plan-0.1.0.md](release-plan-0.1.0.md)).
+  [release-plan-0.1.0.md](https://github.com/pyrevo/annotater/blob/main/docs/release-plan-0.1.0.md)).
 - **Package visibility:** Serve pulls the image anonymously, so the GHCR
   *package* must be set to **public** under the repository's Package
   settings. Package visibility is independent of the future Serve
@@ -185,8 +186,8 @@ the platform requirements this deployment satisfies:
 | Main file named `app.py` in the working directory | yes (shim) |
 | Streamlit on port 8501 | yes |
 | `linux/amd64` image | yes (pinned in `Dockerfile`) |
-| Code publicly available, no sensitive data | code is public; the app processes user-uploaded files in memory only and stores no user data |
-| Upload size limit (Streamlit apps) | **100 MB per file** (Serve platform limit; the app's own `MAX_FILE_SIZE_MB` default of 500 is therefore capped by the platform on Serve) |
+| Code publicly available, no sensitive data | code is public; uploaded files are processed by the running app, which deletes its temporary parsing copy immediately after parsing and keeps parsed data and results only in memory for the active session (see [Data handling](#data-handling)) |
+| Upload size limit (Streamlit apps) | **100 MB per file** documented by the Serve platform ([references.md](references.md)); this is lower than the Streamlit default of 200 MB that applies when running the image elsewhere (see [Upload size](#upload-size)) |
 
 ### Step-by-step
 
@@ -223,7 +224,7 @@ the platform requirements this deployment satisfies:
    | Field | Value |
    |---|---|
    | Subdomain | e.g. `annotater` → `annotater.serve.scilifelab.se` |
-   | Mount path | `None` (AnnotateR keeps no persistent state) |
+   | Mount path | `None` (AnnotateR does not use persistent storage) |
    | Hardware | default (2 vCPU / 4 GB RAM); request more via serve@scilifelab.se if motivated by a concrete workload |
    | Port | `8501` |
    | Image | `<registry>/<image>:<tag>`, e.g. `<username>/annotater:v1` |
@@ -241,24 +242,53 @@ defaults in [Environment / configuration](#environment-configuration).
 
 ## Environment / configuration
 
-The app reads the following environment variables (all optional; defaults
-shown). The Docker image sets the `STREAMLIT_*` variables; the app
-variables use their defaults unless overridden (e.g. in
-`docker-compose.yml`).
+The application uses exactly one AnnotateR-specific environment
+variable, `TEMP_DIR`. The Docker image additionally sets four
+`STREAMLIT_*` variables, and the Streamlit runtime reads
+`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` if it is set. All are optional.
 
 | Variable | Default | Effect |
 |---|---|---|
-| `MAX_FILE_SIZE_MB` | `500` | App-side rejection threshold for uploaded files (bytes = value × 1024²). On SciLifeLab Serve the platform caps uploads at 100 MB regardless of this value. |
-| `CHUNK_SIZE` | `100000` | Rows per chunk for staged file reads. |
-| `MAX_WORKERS` | `4` | Worker pool size for staged reads. |
-| `ENABLE_CACHING` | `true` | Enable the parse/result cache. |
-| `TEMP_DIR` | `/tmp/annotator` | Writable scratch for intermediate bedtools files (created in the image). |
-| `CLEANUP_AFTER_HOURS` | `24` | Age after which scratch files are cleaned. |
-| `LOG_LEVEL` | `INFO` | Python logging level. |
+| `TEMP_DIR` | `/tmp/annotator` | Directory for the temporary copy of each upload that is written for parsing (created if missing; the image creates it with world-writable permissions). The copy is deleted immediately after parsing, on success or failure. |
+| `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` | unset (Streamlit default **200**) | Maximum size of one uploaded file, in MB. Not set by the image or by the application, so the Streamlit default of 200 MB applies; see [Upload size](#upload-size). |
 | `STREAMLIT_SERVER_HEADLESS` | `true` (image) | No browser auto-open in the container. |
 | `STREAMLIT_SERVER_FILE_WATCHER_TYPE` | `poll` (image) | Avoids inotify limits on volumes. |
 | `STREAMLIT_SERVER_ENABLE_CORS` | `false` (image) | Disables CORS. |
 | `STREAMLIT_BROWSER_GATHER_USAGE_STATS` | `false` (image) | No usage stats. |
+
+Other settings-style names that appear in
+`streamlit_app/config/settings.py` or in `docker-compose.yml` (for
+example size, chunking, worker, caching, cleanup and logging settings)
+are not read by any application code path, so setting them has no
+effect and they are not supported configuration.
+
+### Upload size
+
+The effective per-file upload limit is Streamlit's
+`server.maxUploadSize`, which defaults to **200 MB** in the pinned
+Streamlit release (1.64.0) and which neither the image nor the
+application overrides. An operator running the image can change it with
+`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (in MB). AnnotateR enforces no
+separate size limit of its own. On SciLifeLab Serve, the platform
+documents a limit of **100 MB** for Streamlit apps, which applies there.
+
+### Data handling
+
+- Uploaded files are processed by the running AnnotateR server.
+- A temporary copy is written under `TEMP_DIR` for parsing and deleted
+  immediately afterwards, whether parsing succeeds or fails.
+- Parsed data and results remain only in application memory for the
+  active session; AnnotateR does not intentionally persist uploaded files
+  or results after that lifecycle.
+- Local Docker execution processes uploads in the AnnotateR container
+  running on the user's own machine; SciLifeLab Serve is not involved.
+- Infrastructure-level behavior of a hosting platform (logs, caches,
+  proxies, node storage) is outside what AnnotateR controls and is not
+  described here.
+
+The repository's `docker-compose.yml` is a development convenience
+(it bind-mounts the source tree and `/tmp/annotator`); the bind mount is
+not required for, or part of, the supported container behavior.
 
 ### Developer toolbar controls
 
@@ -282,10 +312,13 @@ ergonomics (including the local Rerun control) are unchanged.
   use with files below the 100 MB platform upload cap; the in-container
   smoke test passes within these limits. Very large inputs (hundreds of
   MB) need headroom for canonical frames held in memory — see
-  [Limitations in the README](https://github.com/pyrevo/annotater/blob/main/README.md#limitations).
+  [Limitations](limitations.md).
 - The filesystem is ephemeral except for the project *Mount path* (not
-  used). Uploaded files are parsed in memory; intermediate bedtools files
-  live in the container's scratch directory.
+  used). Each upload is written to a temporary file under `TEMP_DIR` for
+  parsing and deleted immediately afterwards; parsed data is held in
+  memory. Intermediate bedtools files are written by pybedtools to its
+  default temporary directory (`TMPDIR` / the system temp directory),
+  not to `TEMP_DIR`.
 
 ## Deployment verification
 
@@ -297,7 +330,12 @@ After (re)deploying:
    annotations, run **overlap**, then rerun with the other engine — both
    must return identical canonical results (the UI states the backends
    are interchangeable).
-3. Confirm the version line in the footer matches the deployed tag.
+3. Confirm the deployed image version separately from the application
+   version: the footer shows the application version (`0.1.0`, which is
+   unchanged between `0.1.0-rc1` and the final release), so it cannot
+   identify an RC tag. Check the image's OCI label instead, e.g.
+   `docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' ghcr.io/pyrevo/annotater:<tag>`,
+   which the `release-ghcr` workflow sets to the published tag.
 4. For Serve: confirm the container status is *Running* and the health
    check in the app overview is green.
 
@@ -308,7 +346,7 @@ After (re)deploying:
 | `docker build` fails in `pip install` on an Apple Silicon host | Building arm64-native. Build with `--platform linux/amd64` (the `Dockerfile` already pins amd64; use Docker Desktop with the x86 emulation enabled). |
 | Serve keeps serving an old version | Reused an image tag. Publish a **new unique tag** and update the Image field. |
 | Serve app never becomes available | Image tag not pulled (private GHCR package, image deleted, or typo in the Image field). The image must stay publicly available at all times. |
-| Uploads above ~100 MB are rejected on Serve | Platform upload limit (Streamlit apps). Locally, raise `MAX_FILE_SIZE_MB` if needed. |
+| Uploads above ~100 MB are rejected on Serve | Platform upload limit (Streamlit apps). When running the image yourself, the limit is Streamlit's 200 MB default; change it with `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (see [Upload size](#upload-size)). |
 | bedtools engine errors only in the container | `bedtools` not on `PATH` inside the image — run `scripts/docker_smoke.sh`; it asserts version 2.31.x. |
 | App is slow on Serve | Default 2 vCPU/4 GB allocation. Request more resources via serve@scilifelab.se with a concrete workload example. |
 | Positions ≥ 2³¹ error from the Bedtools engine | pybedtools packs coordinates into a 32-bit field (see [benchmark docs](benchmark.md) / Limitations). Not reachable with natural chromosomes. |

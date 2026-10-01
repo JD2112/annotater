@@ -60,8 +60,8 @@ For closest, strand filtering happens **before** the nearest search:
 
 ## Interaction with other options
 
-- **Feature filtering** (GFF/GTF) is applied at parse time, before the
-  operation; strand matching sees only the surviving features.
+- **Feature filtering** (GFF/GTF) is applied when the run starts,
+  before the operation; strand matching sees only the surviving features.
 - **Chromosome handling** and **coordinate systems** are independent:
   conversion happens first, strand is compared after, verbatim (`+`
   and `-` only — nothing is normalized or case-folded).

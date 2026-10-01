@@ -5,14 +5,22 @@
 ### What file formats does AnnotateR accept?
 
 BED, GFF3, GTF, VCF, and custom CSV/TSV tables with column mapping.
-VCF is a **query-only** input in v0.1.0. Details:
+Roles are fixed by the uploader: VCF is **query-only**, and GFF3/GTF are
+**annotation-only**, in v0.1.0. Details:
 [Supported file formats](preparing-your-data/supported-formats.md).
 
 ### Do my files stay on my computer?
 
-The processing happens in the app's environment for your session;
-AnnotateR has no account system, no upload history, and does not store
-your files or results on a server.
+Not by themselves. Uploaded files are processed by the running
+AnnotateR server. Temporary parsing files are deleted immediately after
+parsing; parsed data and results remain only in application memory for
+the active session. AnnotateR has no account system and no upload
+history, and does not intentionally persist uploaded files or results
+after that lifecycle.
+
+Local Docker execution processes uploads in the AnnotateR container
+running on your own machine; SciLifeLab Serve is not involved. See
+[Limitations → Data handling](limitations.md#data-handling).
 
 ### Can I annotate more than two files at once?
 
@@ -22,8 +30,10 @@ analyses and combine the exports downstream.
 ### Does AnnotateR modify my files?
 
 No. Your uploads are only parsed. All normalization (coordinate
-conversion, chromosome standardization) happens on in-memory copies and
-is visible in the preview panels.
+conversion, chromosome standardization) happens on in-memory copies.
+Coordinate conversion is visible in the preview panels; the feature
+filter and chromosome standardization are applied when you press
+**Run annotation**, after the preview.
 
 ## Semantics
 
@@ -95,8 +105,21 @@ See [Coordinate systems](preparing-your-data/coordinate-systems.md).
 CSV for spreadsheets, TSV for pipelines (and for metadata containing
 commas), Excel for .xlsx consumers (requires openpyxl), Annotated VCF
 only when your query was VCF and you want annotations back in VCF form.
-All carry the same rows and canonical 0-based coordinates.
+CSV, TSV and Excel carry the same rows and canonical 0-based
+coordinates; the Annotated VCF carries one record per result row with
+VCF's 1-based `POS`.
 [Downloading and exporting results](results/export.md).
+
+### Does the Annotated VCF reproduce my input VCF?
+
+It preserves the original record-level fields (ID, REF, ALT, QUAL,
+FILTER, INFO including `END`, FORMAT and sample columns) and carries
+the original `##` header lines forward, then adds `ANNOT_*` INFO entries
+that are declared in the header. It writes one record per result row, so
+a variant matching several annotations appears several times. It is not
+a byte-for-byte round trip: AnnotateR does not reinterpret or regenerate
+original VCF metadata, and adds its own `##source` and `##date` lines.
+See [Downloading and exporting results](results/export.md).
 
 ### Do the exported coordinates match my input GFF's coordinates?
 
@@ -107,8 +130,10 @@ No — the export is canonical **0-based half-open**, not GFF3's
 
 ### What are the file size limits?
 
-200 MB per file, two files per run
-([Uploading files](using/uploading-files.md)).
+Two files per run, **200 MB per file** by default (Streamlit's
+`server.maxUploadSize`). SciLifeLab Serve documents a lower platform
+limit of 100 MB for Streamlit apps, which applies there
+([Uploading files](using/uploading-files.md#file-limits)).
 
 ### Why is Excel export missing?
 

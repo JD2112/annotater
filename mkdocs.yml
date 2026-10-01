@@ -14,6 +14,8 @@ exclude_docs: |
   manual-plan.md
   release-plan-0.1.0.md
   FUTURE_FEATURES.md
+  implementation-notes.md
+  legacy.md
   *.resolved
   agents/*
 
@@ -86,6 +88,4 @@ nav:
       - "Architecture": architecture.md
       - "Engine contract (detailed design)": engine-contract.md
       - "Deployment": deployment.md
-      - "Implementation notes": implementation-notes.md
       - "External references": references.md
-      - "Legacy implementation": legacy.md

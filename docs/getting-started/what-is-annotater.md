@@ -2,15 +2,17 @@
 
 AnnotateR annotates genomic intervals against a set of reference
 features — for example, "which genes do my sequencing peaks overlap?" —
-completely in the browser. You upload two files, choose an interval
-operation, and download a canonical result table. Nothing is stored on
-any server.
+through a web interface. You upload two files, choose an interval
+operation, and download a canonical result table. Uploaded files are
+processed by the running AnnotateR server; see
+[Limitations → Data handling](../limitations.md#data-handling) for what
+is kept and for how long.
 
 ## Who it is for
 
 - **Researchers and bioinformaticians** with a list of genomic
   coordinates (peaks, variants, regions) who want to attach gene or
-  feature information without leaving the browser.
+  feature information to them.
 - **Computational users** who need precisely defined interval semantics
   (0-based half-open coordinates, explicit containment and distance
   rules, deterministic results) — see the
@@ -42,8 +44,10 @@ see [Choosing an annotation engine](../using/engines.md).
 
 ## What AnnotateR is NOT
 
-- **Not a database.** Files are processed in memory for the duration of
-  your session and are not persisted anywhere.
+- **Not a database.** AnnotateR does not intentionally persist uploaded
+  files or results: parsed data and results are held in application
+  memory for the active session
+  ([data handling](../limitations.md#data-handling)).
 - **Not a multi-user service.** One session, one user, your machine or a
   single deployment.
 - **Not a genome browser.** AnnotateR computes interval relations and
