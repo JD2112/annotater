@@ -661,10 +661,21 @@ _BT_COLUMNS_PER_SIDE = 4
 # under the running bedtools subprocess. This lock serializes exactly
 # the temp-file-lifecycle span (temp file creation, bedtools subprocess,
 # cleanup); result adaptation and post-filtering run outside the lock.
-# Only the BedtoolsEngine overlap path uses it: the Polars-Bio engine is
-# a pure in-memory operation with no temp files and no process-global
-# state, so it needs no lock.
+# Only the BedtoolsEngine overlap path uses it; the Polars-Bio engine has
+# its own, independent lock (``_POLARS_BIO_LOCK`` below).
 _BEDTOOLS_TEMP_LOCK = threading.Lock()
+
+# Concurrency safety (F-NEW-01): polars-bio 0.35.1 uses a shared
+# process-global DataFusion context for DataFrame range operations and
+# registers the two inputs under fixed temporary table names (``s1`` /
+# ``s2``). Interleaved ``pb.overlap`` calls from concurrent sessions
+# therefore overwrite or deregister each other's tables, returning another
+# session's rows or raising. Backend calls are serialized to prevent
+# cross-session table collisions; the lock spans the complete
+# ``pb.overlap`` call (which returns an eager, AnnotateR-owned DataFrame),
+# while frame preparation and result adaptation run outside it. It is
+# independent of ``_BEDTOOLS_TEMP_LOCK`` and the two are never nested.
+_POLARS_BIO_LOCK = threading.Lock()
 
 
 class BedtoolsEngine(AnnotationEngine):
@@ -1151,7 +1162,10 @@ class PolarsBioEngine(AnnotationEngine):
       with the per-frame coordinate-system metadata
       ``coordinate_system_zero_based=True`` so interval operations
       interpret the data as 0-based half-open. No process-global
-      polars-bio option is read or mutated.
+      polars-bio option is read or mutated. polars-bio does share a
+      process-global DataFusion context (fixed ``s1`` / ``s2`` table
+      names), so ``pb.overlap`` calls are serialized by
+      ``_POLARS_BIO_LOCK`` (F-NEW-01).
     - Stable per-row identity columns (collision-safe names, Int64) are
       added to both inputs before the backend call. They drive the
       deterministic canonical ordering (query input order, then
@@ -1267,14 +1281,17 @@ class PolarsBioEngine(AnnotationEngine):
         # Backend failures MUST propagate (SPEC 9.2): a valid no-match is
         # not an exception and remains a valid empty (0-row) result, but a
         # backend error must never be reported as "no matches".
-        raw = pb.overlap(
-            q_frame,
-            a_frame,
-            suffixes=_PB_SUFFIXES,
-            cols1=list(_PB_INTERVAL_COLUMNS),
-            cols2=list(_PB_INTERVAL_COLUMNS),
-            output_type="polars.DataFrame",
-        )
+        # The lock is held until the eager polars DataFrame is fully
+        # materialized (F-NEW-01, see ``_POLARS_BIO_LOCK``).
+        with _POLARS_BIO_LOCK:
+            raw = pb.overlap(
+                q_frame,
+                a_frame,
+                suffixes=_PB_SUFFIXES,
+                cols1=list(_PB_INTERVAL_COLUMNS),
+                cols2=list(_PB_INTERVAL_COLUMNS),
+                output_type="polars.DataFrame",
+            )
 
         return self._adapt_overlap_result(raw, coord_df, annot_df, how)
 
