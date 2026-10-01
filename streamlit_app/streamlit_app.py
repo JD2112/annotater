@@ -990,6 +990,13 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
         else:
             display_df = result_df
         st.caption(f"Showing {len(display_df):,} of {len(result_df):,} rows")
+        if display_df.empty:
+            # A valid view state, not an error: the stored result is
+            # intact and the other views still hold rows.
+            st.info(
+                f"No {result_filter.split()[0].lower()} rows to display "
+                "for the current filter."
+            )
     else:
         display_df = result_df
 
@@ -999,8 +1006,9 @@ def render_results_section(cfg: dict, coord_identity, annot_identity, coord_form
         display_df, coord_format, vcf_header_lines, vcf_contig_renames
     )
 
-    with st.expander("Charts and gene list"):
-        _render_charts_and_gene_list(display_df)
+    if not display_df.empty:
+        with st.expander("Charts and gene list"):
+            _render_charts_and_gene_list(display_df)
 
 
 def _render_summary_metrics(result_df, coord_df, engine_name, mode, join):
@@ -1113,6 +1121,12 @@ def _find_gene_column(df: pd.DataFrame):
 
 
 def _render_charts_and_gene_list(df):
+    if df.empty:
+        # Plotly cannot build the per-chromosome / per-gene bars from an
+        # empty frame; there is nothing to chart or list.
+        st.info("No rows to chart for the current filter.")
+        return
+
     chart_col1, chart_col2 = st.columns(2)
 
     with chart_col1:
