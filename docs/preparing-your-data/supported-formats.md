@@ -33,8 +33,10 @@ The two uploaders accept different extensions:
   6); further columns are preserved as metadata.
 - **Coordinate convention:** 0-based half-open — **no conversion** is
   performed ([Coordinate systems](coordinate-systems.md)).
-- **Strand:** column 6, kept verbatim as `+` / `-`; anything else
-  (including `.` or an empty value) is treated as missing strand.
+- **Strand:** column 6; `+` and `-` are kept, while `.`, an empty
+  value, or a row that has no sixth column is treated as missing
+  strand. Any other value (for example `?` or `foo`) is rejected with
+  an error.
 - **Metadata preservation:** columns 4+ become `coord_name`,
   `coord_score`, `coord_strand` plus one metadata column per extra
   input column, in input order
