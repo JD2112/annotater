@@ -1,6 +1,6 @@
 # AnnotateR Specification
 
-**Status:** Draft normative specification for the Polars-Bio parity refactor  
+**Status:** Release-candidate specification for v0.1.0 (normative scientific and backend contract)  
 **Project:** AnnotateR  
 **Canonical repository slug:** `annotater`  
 **Last updated:** 2026-09-24

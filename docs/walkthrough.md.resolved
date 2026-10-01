@@ -46,7 +46,7 @@ annotator/
 
 ## 🔧 Core Modules Developed
 
-### 1. Chromosome ID Mapper ([chromosome.py](file:///Users/masvo/Documents/repo/annotator/streamlit_app/core/chromosome.py))
+### 1. Chromosome ID Mapper ([chromosome.py](streamlit_app/core/chromosome.py))
 
 **Features:**
 - ✅ Auto-detect chromosome naming style (UCSC, Ensembl, NCBI)
@@ -69,7 +69,7 @@ mapper.convert("MT", "ensembl", "ucsc")     # → "chrM"
 df, source, target = mapper.standardize_dataframe(df, 'chr', 'ucsc')
 ```
 
-### 2. Coordinate Converter ([coordinates.py](file:///Users/masvo/Documents/repo/annotator/streamlit_app/core/coordinates.py))
+### 2. Coordinate Converter ([coordinates.py](streamlit_app/core/coordinates.py))
 
 **Features:**
 - ✅ 0-based ↔ 1-based conversion
@@ -88,7 +88,7 @@ chr, start, end = CoordinateNormalizer.normalize("chr1", 100, None, is_snp=True)
 # SNP at position 100 → interval [100, 101)
 ```
 
-### 3. File Parsers ([parsers.py](file:///Users/masvo/Documents/repo/annotator/streamlit_app/core/parsers.py))
+### 3. File Parsers ([parsers.py](streamlit_app/core/parsers.py))
 
 **Supported Formats:**
 - ✅ BED (BED3, BED6, BED12)
@@ -114,7 +114,7 @@ suggestions = CustomParser.suggest_columns(df)
 # → {'chr': 'chromosome', 'start': 'start_pos', 'end': 'end_pos'}
 ```
 
-### 4. Annotation Engine ([annotator.py](file:///Users/masvo/Documents/repo/annotator/streamlit_app/core/annotator.py))
+### 4. Annotation Engine ([annotator.py](streamlit_app/core/annotator.py))
 
 **Features:**
 - ✅ Fast bedtools-based intersection
@@ -234,8 +234,8 @@ Comprehensive documentation including:
 - Performance benchmarks
 
 ### Example Files
-- [example_coordinates.bed](file:///Users/masvo/Documents/repo/annotator/data/examples/example_coordinates.bed) - Sample BED file with 6 regions
-- [example_annotations.gff3](file:///Users/masvo/Documents/repo/annotator/data/examples/example_annotations.gff3) - Sample GFF3 with genes and exons
+- [example_coordinates.bed](data/examples/example_coordinates.bed) - Sample BED file with 6 regions
+- [example_annotations.gff3](data/examples/example_annotations.gff3) - Sample GFF3 with genes and exons
 
 ---
 
