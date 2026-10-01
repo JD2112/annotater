@@ -1476,29 +1476,6 @@ class PolarsBioEngine(AnnotationEngine):
         out[_PB_A_ID_COLUMN] = np.full(n, -1, dtype="int64")
         return out
 
-def get_summary_stats(result_df: pd.DataFrame, coord_df: pd.DataFrame) -> Dict:
-    """
-    Generate summary statistics about annotation results
-    (Standalone function now, or static method)
-    """
-    if result_df.empty:
-        return {
-            "total_coordinates": len(coord_df),
-            "annotated_coordinates": 0,
-            "total_annotations": 0,
-            "unique_chromosomes": 0,
-            "annotation_rate": 0.0
-        }
-    
-    return {
-        "total_coordinates": len(coord_df),
-        "annotated_coordinates": result_df['coord_chr'].nunique() if 'coord_chr' in result_df.columns else len(result_df),
-        "total_annotations": len(result_df),
-        "unique_chromosomes": result_df['coord_chr'].nunique() if 'coord_chr' in result_df.columns else 0,
-        "annotation_rate": len(result_df) / len(coord_df) if len(coord_df) > 0 else 0.0
-    }
-
-
 class ProgressiveAnnotator:
     """
     Annotate large files in chunks with progress tracking

@@ -13,7 +13,6 @@ from .annotator import (
     AnnotationEngine,
     BedtoolsEngine,
     PolarsBioEngine,
-    get_summary_stats
 )
 from .schema import (
     CanonicalSchemaError,
@@ -44,7 +43,6 @@ __all__ = [
     "AnnotationEngine",
     "BedtoolsEngine",
     "PolarsBioEngine",
-    "get_summary_stats",
     "CanonicalSchemaError",
     "InvalidIntervalError",
     "MalformedFileError",
