@@ -384,5 +384,13 @@ As of Task 3 this pattern is implemented by the parity harness in
   exact layer (raw backend output vs canonical adapter) and records
   positive controls for layers that already conform.
 
+Because two engines can agree on the same bug, the parity harness is
+supplemented by an independent, test-only brute-force reference
+implementation in `tests/oracle/` (Task F). It imports nothing from
+`streamlit_app`, encodes the formulas of SPEC 7-8 literally, and is
+compared row by row with both engines on deterministic seeded random
+fixtures, hand-computed boundary cases, and parser-to-engine scenarios.
+It is a supplement on small fixtures, not a formal verification.
+
 The full current deviation inventory is in
 `docs/implementation-notes.md` ("Task 3 — engine parity harness").

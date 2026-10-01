@@ -58,6 +58,33 @@ that parity is enforced by the test suite, not by hope
   [`docs/implementation-notes.md`](https://github.com/pyrevo/annotater/blob/main/docs/implementation-notes.md)
   in the repository (a development history, not part of this site).
 
+## How the contract is validated
+
+Backend parity alone is not the only validation: two engines can agree
+on the same wrong answer. AnnotateR therefore supplements backend-parity
+tests with a test-only brute-force reference implementation of the
+documented interval contract on deterministic small fixtures
+(`tests/oracle/` in the repository). The reference implementation
+imports nothing from the production package; it is plain Python with
+explicit loops and the contract formulas written out literally. Both
+engines are compared with it row by row (coordinates, metadata, strand,
+`has_overlap`, `distance`, null placement, multiplicity and order) on:
+
+- fixed-seed random fixtures (1-8 queries, 1-10 annotations, duplicate
+  rows, missing strands, chromosomes without annotations, closest ties)
+  across overlap, `min_overlap`, contains, within and closest, inner and
+  left, strand off and on;
+- hand-computed boundary cases (touching, one-base gaps, exact
+  `min_overlap` thresholds, ties, opposite and missing strand);
+- parser-to-engine scenarios that start from real BED, GFF3, GTF, VCF and
+  custom-table text.
+
+A further test swaps deliberately wrong semantics into the reference
+implementation (for example touching counted as overlap) to show that
+this comparison can fail. This is empirical validation on small
+fixtures; it is not a formal verification and does not claim exhaustive
+correctness.
+
 ## Documentation governance
 
 - The plan that shaped this site (audiences, sitemap, review record) is
