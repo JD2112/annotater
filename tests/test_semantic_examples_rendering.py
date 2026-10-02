@@ -105,11 +105,30 @@ def test_missing_required_fact_fails_validation(name, mutate):
         gen.validate_examples(data)
 
 
-def test_fact_not_rendered_for_kind_is_rejected():
+def test_extra_valid_fact_not_rendered_by_kind_is_allowed_and_ignored():
+    from tests.oracle import reference as ref
+
+    ex = _example("touching_intervals")
+    q, a = ex["query"], ex["annotations"][0]
+    # Scientifically valid facts the touching kind does not display.
+    extra = {
+        "query_length": q["end"] - q["start"],
+        "overlap_fraction": ref.overlap_length(
+            q["start"], q["end"], a["start"], a["end"]) / (q["end"] - q["start"]),
+    }
+    assert extra == {"query_length": 10, "overlap_fraction": 0.0}
+    ex["expected"].update(extra)
     data = json.loads(gen.FIXTURE.read_text())
-    ex = next(e for e in data["examples"] if e["name"] == "touching_intervals")
-    ex["expected"]["overlap_fraction"] = 0.0
-    with pytest.raises(gen.FixtureError, match="not rendered"):
+    next(e for e in data["examples"]
+         if e["name"] == "touching_intervals")["expected"].update(extra)
+    gen.validate_examples(data)  # accepted
+    assert gen.render_block(ex) == BLOCKS["touching_intervals"]  # ignored
+
+
+def test_unknown_fact_name_is_still_rejected():
+    data = json.loads(gen.FIXTURE.read_text())
+    data["examples"][0]["expected"]["not_a_fact"] = 1
+    with pytest.raises(gen.FixtureError, match="unknown expected fact"):
         gen.validate_examples(data)
 
 

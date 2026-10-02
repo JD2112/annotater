@@ -67,8 +67,9 @@ _CONTAINMENT = ["overlap", "overlap_length", "contains", "within"]
 
 # kind -> (summary order, required tokens, annotation count rule).
 # The order IS the teaching order; JSON key order never matters. A fixture
-# may only declare facts listed in its kind's order, and must declare every
-# required one (the renderer never infers a missing scientific value).
+# must declare every required one (the renderer never infers a missing
+# scientific value). Extra valid facts are allowed and simply not displayed;
+# the oracle still verifies them.
 KINDS = {
     "overlap": (_OVERLAP_LIKE, _OVERLAP_LIKE, "one"),
     "one_base_overlap": (_OVERLAP_LIKE, _OVERLAP_LIKE, "one"),
@@ -148,10 +149,6 @@ def _check_kind(where, ex, exp, n_annotations):
                            "annotation")
     if count == "many" and n_annotations < 2:
         raise FixtureError(f"{where}: kind {ex['kind']!r} needs 2+ annotations")
-    unexpected = [k for k in exp if k not in order]
-    if unexpected:
-        raise FixtureError(f"{where}: facts {sorted(unexpected)} are not "
-                           f"rendered for kind {ex['kind']!r}")
     missing = [tok for tok in required if not _token_present(tok, ex)]
     if missing:
         raise FixtureError(f"{where}: kind {ex['kind']!r} requires "
