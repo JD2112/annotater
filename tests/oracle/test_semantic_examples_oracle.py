@@ -88,6 +88,11 @@ class TestDeclaredFacts:
         rows = _pairs(ex, mode="closest")
         assert rows, "closest always returns same-chromosome candidates"
         assert {d for _, _, d in rows} == {exp["closest_distance"]}
+        if "candidate_distances" in exp:
+            q = ex["query"]
+            for a in ex["annotations"]:
+                assert exp["candidate_distances"][a["id"]] == ref.gap_distance(
+                    q["start"], q["end"], a["start"], a["end"])
         if "closest_ties" in exp:
             # all minimum-distance ties retained, in annotation input order
             ids = [ex["annotations"][ai]["id"] for _, ai, _ in rows]
@@ -130,3 +135,34 @@ def test_closest_tie_excludes_farther_annotation():
                            ex["annotations"][2]["start"],
                            ex["annotations"][2]["end"])
     assert far > ex["expected"]["closest_distance"]
+
+
+def test_candidate_distances_and_retained_state_match_oracle():
+    """Excluded candidates are exactly those farther than the minimum."""
+    ex = BY_NAME["closest_tie"]
+    cd = ex["expected"]["candidate_distances"]
+    retained = [a["id"] for a in ex["annotations"]
+                if cd[a["id"]] == min(cd.values())]
+    assert retained == ex["expected"]["closest_ties"]
+
+
+def test_kind_names_describe_the_declared_geometry():
+    """`kind` selects the presentation; the oracle checks it is truthful."""
+    for ex in EXAMPLES:
+        q = ex["query"]
+        a = ex["annotations"][0]
+        length = max(0, ref.overlap_length(q["start"], q["end"],
+                                           a["start"], a["end"]))
+        kind = ex["kind"]
+        if kind == "touching":
+            assert q["end"] == a["start"] or a["end"] == q["start"]
+            assert length == 0 and ref.gap_distance(
+                q["start"], q["end"], a["start"], a["end"]) == 0
+        elif kind == "one_base_overlap":
+            assert length == 1
+        elif kind == "closest_tie":
+            assert len(ex["expected"]["closest_ties"]) >= 2
+        elif kind == "min_overlap":
+            assert "min_overlap" in ex
+        elif kind == "strand":
+            assert ex["use_strand"] is True

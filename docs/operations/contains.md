@@ -20,14 +20,15 @@ entirely inside my peaks). The directional inverse is
 
 <!-- BEGIN GENERATED: contains_example -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
-query    #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
-A        .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query         #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
+annotation    .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
 
-query  bases 10–23 (14 bases); boundary coordinates 10 and 24
-A      bases 14–19 (6 bases); boundary coordinates 14 and 20
+query       bases 10–23 (14 bases); boundary coordinates 10 and 24
+annotation  bases 14–19 (6 bases); boundary coordinates 14 and 20
 
 overlap: yes
 overlap length: 6

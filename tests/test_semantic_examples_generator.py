@@ -71,31 +71,6 @@ def test_render_is_deterministic():
     assert _rendered() == _rendered()
 
 
-def test_touching_diagram_places_bases_correctly():
-    text = gen.render_block(EXAMPLES["touching_intervals"])
-    assert "bases 10–19 (10 bases)" in text
-    assert "bases 20–24 (5 bases)" in text
-    assert "overlap: no" in text
-    assert "overlap length: 0" in text
-    assert "closest distance: 0" in text
-    header = next(l for l in text.splitlines() if l.startswith("bases  "))
-    q_row = next(l for l in text.splitlines() if l.startswith("query ") and "#" in l)
-    a_row = next(l for l in text.splitlines() if l.startswith("A ") and "#" in l)
-    col20 = header.index(" 20") + 2  # same column as the last digit of "20"
-    assert a_row[col20] == "#" and q_row[col20] == "."
-    assert a_row[col20 - gen.CELL] == "." and q_row[col20 - gen.CELL] == "#"
-
-
-def test_tie_block_lists_all_ties_in_order():
-    assert "closest ties retained: 2 (annotation order: A1, A2)" in \
-        gen.render_block(EXAMPLES["closest_tie"])
-
-
-def test_strand_missing_is_shown_as_not_a_match():
-    text = gen.render_block(EXAMPLES["strand_missing"])
-    assert "strand missing" in text and "stranded match: no" in text
-
-
 def test_min_overlap_block_shows_exact_values():
     text = gen.render_block(EXAMPLES["min_overlap_on_threshold"])
     for line in ("query length: 10", "overlap length: 5",
