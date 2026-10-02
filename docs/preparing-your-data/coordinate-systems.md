@@ -70,14 +70,15 @@ genomic base:
 
 <!-- BEGIN GENERATED: touching_intervals -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
-A        .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+annotation    .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 20–24 (5 bases); boundary coordinates 20 and 25
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 20–24 (5 bases); boundary coordinates 20 and 25
 
 overlap: no
 overlap length: 0

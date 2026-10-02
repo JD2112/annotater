@@ -20,14 +20,15 @@ intervals, and it is always a non-negative integer.
 
 <!-- BEGIN GENERATED: closest_overlapping -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  [10, 20)
-A        .  .  .  .  #  #  #  #  #  #  #  #  #  #  [14, 24)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  [10, 20)
+annotation    .  .  .  .  #  #  #  #  #  #  #  #  #  #  [14, 24)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 14–23 (10 bases); boundary coordinates 14 and 24
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 14–23 (10 bases); boundary coordinates 14 and 24
 
 overlap: yes
 overlap length: 6
@@ -39,14 +40,15 @@ closest distance: 0
 
 <!-- BEGIN GENERATED: touching_intervals -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
-A        .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+annotation    .  .  .  .  .  .  .  .  .  .  #  #  #  #  #  [20, 25)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 20–24 (5 bases); boundary coordinates 20 and 25
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 20–24 (5 bases); boundary coordinates 20 and 25
 
 overlap: no
 overlap length: 0
@@ -58,14 +60,15 @@ closest distance: 0
 
 <!-- BEGIN GENERATED: one_base_gap -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
-A        .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [21, 25)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+annotation    .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [21, 25)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 21–24 (4 bases); boundary coordinates 21 and 25
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 21–24 (4 bases); boundary coordinates 21 and 25
 
 overlap: no
 overlap length: 0
@@ -77,14 +80,15 @@ closest distance: 1
 
 <!-- BEGIN GENERATED: closest_large_gap -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases    2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
-query    #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [2, 5)
-A        .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [17, 21)
+bases         2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20
+query         #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [2, 5)
+annotation    .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  #  [17, 21)
 
-query  bases 2–4 (3 bases); boundary coordinates 2 and 5
-A      bases 17–20 (4 bases); boundary coordinates 17 and 21
+query       bases 2–4 (3 bases); boundary coordinates 2 and 5
+annotation  bases 17–20 (4 bases); boundary coordinates 17 and 21
 
 overlap: no
 overlap length: 0
@@ -115,21 +119,26 @@ order**.
 
 <!-- BEGIN GENERATED: closest_tie -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases    6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    .  .  .  .  #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  [10, 13)
-A1       #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [6, 8)
-A2       .  .  .  .  .  .  .  .  .  #  #  .  .  .  .  .  .  .  .  [15, 17)
-A3       .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  [22, 25)
+bases            6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query            .  .  .  .  #  #  #  .  .  .  .  .  .  .  .  .  .  .  .  [10, 13)
+annotation A1    #  #  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  [6, 8)
+annotation A2    .  .  .  .  .  .  .  .  .  #  #  .  .  .  .  .  .  .  .  [15, 17)
+annotation A3    .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  .  #  #  #  [22, 25)
 
-query  bases 10–12 (3 bases); boundary coordinates 10 and 13
-A1     bases 6–7 (2 bases); boundary coordinates 6 and 8
-A2     bases 15–16 (2 bases); boundary coordinates 15 and 17
-A3     bases 22–24 (3 bases); boundary coordinates 22 and 25
+query          bases 10–12 (3 bases); boundary coordinates 10 and 13
+annotation A1  bases 6–7 (2 bases); boundary coordinates 6 and 8
+annotation A2  bases 15–16 (2 bases); boundary coordinates 15 and 17
+annotation A3  bases 22–24 (3 bases); boundary coordinates 22 and 25
 
+candidate distances:
+  annotation A1    2  retained
+  annotation A2    2  retained
+  annotation A3    9  excluded
 closest distance: 2
-closest ties retained: 2 (annotation order: A1, A2)
+retained: 2 annotations, in annotation order: annotation A1, annotation A2
 ```
 <!-- END GENERATED: closest_tie -->
 

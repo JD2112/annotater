@@ -16,6 +16,7 @@ exclude_docs: |
   FUTURE_FEATURES.md
   implementation-notes.md
   legacy.md
+  semantic-examples.md
   *.resolved
   agents/*
 

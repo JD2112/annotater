@@ -21,14 +21,15 @@ is [Contains](contains.md).
 
 <!-- BEGIN GENERATED: within_example -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23
-query    .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
-A        #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23
+query         .  .  .  .  #  #  #  #  #  #  .  .  .  .  [14, 20)
+annotation    #  #  #  #  #  #  #  #  #  #  #  #  #  #  [10, 24)
 
-query  bases 14–19 (6 bases); boundary coordinates 14 and 20
-A      bases 10–23 (14 bases); boundary coordinates 10 and 24
+query       bases 14–19 (6 bases); boundary coordinates 14 and 20
+annotation  bases 10–23 (14 bases); boundary coordinates 10 and 24
 
 overlap: yes
 overlap length: 6

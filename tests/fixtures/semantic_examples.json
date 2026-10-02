@@ -1,44 +1,51 @@
 {
-  "_comment": "Declarative scientific interval examples (canonical 0-based half-open). Expected values are declared facts: tests/oracle/test_semantic_examples_oracle.py verifies each one against the independent oracle (tests/oracle/reference.py); scripts/generate_semantic_examples.py only displays them in docs.",
+  "_comment": "Declarative scientific interval examples (canonical 0-based half-open). Each example has a `kind` that fixes which facts it must declare (see KINDS in the generator). Expected values are declared facts: tests/oracle/test_semantic_examples_oracle.py verifies each one against the independent oracle (tests/oracle/reference.py); scripts/generate_semantic_examples.py only displays them in docs.",
   "examples": [
     {
       "name": "true_overlap",
+      "kind": "overlap",
       "query": {"chr": "chr1", "start": 10, "end": 18},
       "annotations": [{"id": "A", "chr": "chr1", "start": 13, "end": 22}],
       "expected": {"overlap": true, "overlap_length": 5, "query_length": 8, "overlap_fraction": 0.625}
     },
     {
       "name": "one_base_overlap",
+      "kind": "one_base_overlap",
       "query": {"chr": "chr1", "start": 10, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 19, "end": 20}],
       "expected": {"overlap": true, "overlap_length": 1, "query_length": 10, "overlap_fraction": 0.1}
     },
     {
       "name": "touching_intervals",
+      "kind": "touching",
       "query": {"chr": "chr1", "start": 10, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 20, "end": 25}],
       "expected": {"overlap": false, "overlap_length": 0, "closest_distance": 0}
     },
     {
       "name": "one_base_gap",
+      "kind": "closest",
       "query": {"chr": "chr1", "start": 10, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 21, "end": 25}],
       "expected": {"overlap": false, "overlap_length": 0, "closest_distance": 1}
     },
     {
       "name": "contains_example",
+      "kind": "contains",
       "query": {"chr": "chr1", "start": 10, "end": 24},
       "annotations": [{"id": "A", "chr": "chr1", "start": 14, "end": 20}],
       "expected": {"overlap": true, "overlap_length": 6, "contains": true, "within": false}
     },
     {
       "name": "within_example",
+      "kind": "within",
       "query": {"chr": "chr1", "start": 14, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 10, "end": 24}],
       "expected": {"overlap": true, "overlap_length": 6, "contains": false, "within": true}
     },
     {
       "name": "min_overlap_on_threshold",
+      "kind": "min_overlap",
       "query": {"chr": "chr1", "start": 10, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 15, "end": 25}],
       "min_overlap": 0.5,
@@ -46,6 +53,7 @@
     },
     {
       "name": "strand_match",
+      "kind": "strand",
       "query": {"chr": "chr1", "start": 10, "end": 20, "strand": "+"},
       "annotations": [{"id": "A", "chr": "chr1", "start": 15, "end": 25, "strand": "+"}],
       "use_strand": true,
@@ -53,6 +61,7 @@
     },
     {
       "name": "strand_missing",
+      "kind": "strand",
       "query": {"chr": "chr1", "start": 10, "end": 20, "strand": "+"},
       "annotations": [{"id": "A", "chr": "chr1", "start": 15, "end": 25}],
       "use_strand": true,
@@ -60,25 +69,28 @@
     },
     {
       "name": "closest_overlapping",
+      "kind": "closest",
       "query": {"chr": "chr1", "start": 10, "end": 20},
       "annotations": [{"id": "A", "chr": "chr1", "start": 14, "end": 24}],
       "expected": {"overlap": true, "overlap_length": 6, "closest_distance": 0}
     },
     {
       "name": "closest_large_gap",
+      "kind": "closest",
       "query": {"chr": "chr1", "start": 2, "end": 5},
       "annotations": [{"id": "A", "chr": "chr1", "start": 17, "end": 21}],
       "expected": {"overlap": false, "overlap_length": 0, "closest_distance": 12}
     },
     {
       "name": "closest_tie",
+      "kind": "closest_tie",
       "query": {"chr": "chr1", "start": 10, "end": 13},
       "annotations": [
         {"id": "A1", "chr": "chr1", "start": 6, "end": 8},
         {"id": "A2", "chr": "chr1", "start": 15, "end": 17},
         {"id": "A3", "chr": "chr1", "start": 22, "end": 25}
       ],
-      "expected": {"closest_distance": 2, "closest_ties": ["A1", "A2"]}
+      "expected": {"candidate_distances": {"A1": 2, "A2": 2, "A3": 9}, "closest_distance": 2, "closest_ties": ["A1", "A2"]}
     }
   ]
 }

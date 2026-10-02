@@ -39,34 +39,40 @@ missing annotation strand is **not** a stranded match:
 
 <!-- BEGIN GENERATED: strand_match -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)  strand +
-A        .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)  strand +
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+annotation    .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 15–24 (10 bases); boundary coordinates 15 and 25
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 15–24 (10 bases); boundary coordinates 15 and 25
 
-strand matching: on
 overlap: yes
+strand matching: on
+query strand: +
+annotation strand: +
 stranded match: yes
 ```
 <!-- END GENERATED: strand_match -->
 
 <!-- BEGIN GENERATED: strand_missing -->
 ```text
-coordinates are 0-based half-open; chromosome chr1
+chromosome chr1; 0-based half-open coordinates
+cells are genomic bases: # = included base, . = outside interval
 
-bases   10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
-query    #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)  strand +
-A        .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)  strand missing
+bases        10 11 12 13 14 15 16 17 18 19 20 21 22 23 24
+query         #  #  #  #  #  #  #  #  #  #  .  .  .  .  .  [10, 20)
+annotation    .  .  .  .  .  #  #  #  #  #  #  #  #  #  #  [15, 25)
 
-query  bases 10–19 (10 bases); boundary coordinates 10 and 20
-A      bases 15–24 (10 bases); boundary coordinates 15 and 25
+query       bases 10–19 (10 bases); boundary coordinates 10 and 20
+annotation  bases 15–24 (10 bases); boundary coordinates 15 and 25
 
-strand matching: on
 overlap: yes
+strand matching: on
+query strand: +
+annotation strand: missing
 stranded match: no
 ```
 <!-- END GENERATED: strand_missing -->
