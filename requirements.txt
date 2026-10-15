@@ -128,9 +128,14 @@ tzdata==2026.4 ; sys_platform == 'emscripten' or sys_platform == 'win32'
     # via pandas
 urllib3==2.8.0
     # via requests
-uvicorn==0.53.0
-    # via streamlit
+uvicorn==0.54.0
+    # via streamlit, fastapi
+fastapi==0.143.0
+    # via annotater api
+python-multipart==0.0.32
+    # via fastapi
 watchdog==6.0.0 ; sys_platform != 'darwin'
     # via streamlit
 websockets==16.1.1
     # via streamlit
+
