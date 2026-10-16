@@ -36,6 +36,139 @@ import {
   Cell 
 } from 'recharts';
 
+// ---------------------------------------------------------------------------
+// Scientific report rendering (Task 14.3)
+//
+// The backend returns structured `warnings`, `chromosome_normalization` and
+// `feature_filter` from the shared execution service. These helpers surface
+// them with the existing visual vocabulary (amber alerts, slate captions,
+// mono identifier text). Identifiers are rendered verbatim.
+// ---------------------------------------------------------------------------
+
+const ID_DETAIL_LIMIT = 20;
+
+function namingLabel(meta, key) {
+  const option = meta?.naming_options?.find(n => n.key === key);
+  return option?.label || key;
+}
+
+function assemblyLabel(meta, id) {
+  const match = meta?.assemblies?.find(a => a.id === id);
+  return match?.display_label || id;
+}
+
+function identifierList(entries) {
+  const shown = entries.slice(0, ID_DETAIL_LIMIT)
+    .map(([name, count]) => `${name} (${Number(count).toLocaleString()} rows)`);
+  if (entries.length > ID_DETAIL_LIMIT) {
+    shown.push(`... and ${(entries.length - ID_DETAIL_LIMIT).toLocaleString()} more`);
+  }
+  return shown.join(', ');
+}
+
+function IdentifierDetails({ label, data, naming, source }) {
+  if (!data) return null;
+  const renames = Object.entries(data.renames || {});
+  const unknown = Object.entries(data.unknown || {});
+  const noAlias = Object.entries(data.no_alias_for_target || {});
+  const collapses = Object.entries(data.collapses || {});
+  if (!renames.length && !unknown.length && !noAlias.length && !collapses.length) {
+    return null;
+  }
+  return (
+    <div className="text-[11px] text-slate-600 flex flex-col gap-0.5">
+      <span className="font-bold text-slate-700">{label}</span>
+      {renames.length > 0 && (
+        <div>
+          <span>Normalized: </span>
+          <code className="font-mono">
+            {renames.slice(0, ID_DETAIL_LIMIT).map(([from, to]) => `${from} \u2192 ${to}`).join(', ')}
+            {renames.length > ID_DETAIL_LIMIT ? ` ... and ${renames.length - ID_DETAIL_LIMIT} more` : ''}
+          </code>
+        </div>
+      )}
+      {unknown.length > 0 && (
+        <div>
+          <span>Not recognized in {source}: </span>
+          <code className="font-mono">{identifierList(unknown)}</code>
+        </div>
+      )}
+      {noAlias.length > 0 && (
+        <div>
+          <span>Recognized, but no verified name is available in {naming}: </span>
+          <code className="font-mono">{identifierList(noAlias)}</code>
+        </div>
+      )}
+      {collapses.length > 0 && (
+        <div>
+          <span>Multiple input names normalized to the same output name: </span>
+          <code className="font-mono">
+            {collapses.map(([output, sources]) => `${sources.join(', ')} \u2192 ${output}`).join('; ')}
+          </code>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ChromosomeNormalizationReport({ report, meta }) {
+  if (!report) return null;
+  const naming = namingLabel(meta, report.target);
+  const assembly = report.assembly ? assemblyLabel(meta, report.assembly) : null;
+  const source = assembly || report.registry_name;
+  const tables = [
+    { label: 'Query', data: report.coord_report },
+    { label: 'Annotation', data: report.annot_report },
+  ];
+  const unresolved = tables.some(t => t.data?.unresolved_identifiers > 0);
+  const merged = tables.some(t => Object.keys(t.data?.collapses || {}).length > 0);
+  const hasDetails = tables.some(t =>
+    Object.keys(t.data?.renames || {}).length ||
+    Object.keys(t.data?.unknown || {}).length ||
+    Object.keys(t.data?.no_alias_for_target || {}).length ||
+    Object.keys(t.data?.collapses || {}).length);
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-3.5 bg-slate-50/30 flex flex-col gap-2">
+      <span className="text-xs font-bold text-slate-700">Chromosome normalization</span>
+      <p className="text-[11px] text-slate-500">
+        Chromosome naming: <strong>{naming}</strong>
+        {assembly
+          ? <> · Genome assembly: <strong>{assembly}</strong></>
+          : <> · <strong>{report.registry_name}</strong></>}. Coordinates are unchanged.
+      </p>
+      {tables.map(t => (
+        <p key={t.label} className="text-[11px] text-slate-600">
+          <strong>{t.label}</strong>: {t.data?.resolved_changed_identifiers ?? 0} names normalized, {t.data?.resolved_unchanged_identifiers ?? 0} already in this naming, {t.data?.unresolved_identifiers ?? 0} not normalized.
+        </p>
+      ))}
+      {unresolved && (
+        <p className="text-[11px] text-amber-800 font-medium">
+          Some chromosome names could not be normalized and were left as provided.
+        </p>
+      )}
+      {merged && (
+        <p className="text-[11px] text-[#006FB7] font-medium">
+          Some input chromosome names were normalized to the same output name.
+        </p>
+      )}
+      {hasDetails && (
+        <div className="flex flex-col gap-2 pt-2 border-t border-slate-200">
+          {tables.map(t => (
+            <IdentifierDetails
+              key={t.label}
+              label={t.label}
+              data={t.data}
+              naming={naming}
+              source={source}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   // App Metadata & Engines
   const [meta, setMeta] = useState(null);
@@ -54,7 +187,10 @@ export default function App() {
   const [coordSystem, setCoordSystem] = useState('Auto-detect');
   const [annotSystem, setAnnotSystem] = useState('Auto-detect');
   const [genomeAssembly, setGenomeAssembly] = useState('Auto-detect');
-  const [chrHandling, setChrHandling] = useState('Ensembl names');
+  // Must be one of meta.naming_options values ('Keep original names' means
+  // no normalization, matching the Streamlit default). Sending the label
+  // ('Ensembl names') with no assembly would be rejected by the backend.
+  const [chrHandling, setChrHandling] = useState('Keep original names');
   
   // Advanced options (collapsed accordion)
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -715,6 +851,28 @@ export default function App() {
 
             {execResult ? (
               <div className="flex flex-col gap-5">
+                {/* Non-fatal scientific notes (e.g. no shared identifiers) */}
+                {execResult.warnings?.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    {execResult.warnings.map((warning, idx) => (
+                      <div
+                        key={idx}
+                        className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-900 flex items-start gap-2"
+                      >
+                        <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                        <span className="font-medium">{warning.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Feature-filter provenance (only when it applied) */}
+                {execResult.feature_filter?.applied && (
+                  <p className="text-[11px] text-slate-500">
+                    Using {execResult.feature_filter.used_rows.toLocaleString()} of {execResult.feature_filter.total_rows.toLocaleString()} annotation features (feature filter).
+                  </p>
+                )}
+
                 {/* 4 KPI Summary Cards */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5">
@@ -738,6 +896,12 @@ export default function App() {
                     <span className="text-[10px] text-slate-500 block mt-0.5">No overlap</span>
                   </div>
                 </div>
+
+                {/* Chromosome normalization report (only when names changed) */}
+                <ChromosomeNormalizationReport
+                  report={execResult.chromosome_normalization}
+                  meta={meta}
+                />
 
                 {/* Filterable Table */}
                 <div className="border border-slate-200 rounded-lg p-3 bg-white flex flex-col gap-3">

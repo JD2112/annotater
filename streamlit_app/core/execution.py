@@ -36,10 +36,17 @@ from .engine_registry import (
 )
 from .schema import canonicalize_annotation_result
 from .vcf_contigs import header_contig_renames
+from streamlit_app.config import Settings
 from streamlit_app.utils.validators import DataValidator
 
 #: Formats whose ``feature`` column the feature filter applies to.
 GFF_LIKE_FORMATS = frozenset({"gff", "gtf"})
+
+#: Operations and join directions the workflow accepts. Validated up front so
+#: an invalid HTTP-supplied option is a client error, never a backend failure
+#: and never silently coerced to a different operation.
+VALID_MODES = frozenset(Settings.ANNOTATION_MODES)
+VALID_JOINS = frozenset({"inner", "left"})
 
 #: Directional UTR choices are user-facing labels; each maps to the exact,
 #: case-sensitive source ``feature`` strings it accepts: the GFF3 /
@@ -265,6 +272,20 @@ def execute_annotation(request: AnnotationRequest) -> AnnotationOutcome:
         )
     if annot_df is None:
         raise AnnotationError("no_annotation", "Upload an annotation file first.")
+
+    # --- Request shape (invalid option, not a backend error) ---
+    if request.mode not in VALID_MODES:
+        raise AnnotationError(
+            "invalid_mode",
+            f"Invalid operation {request.mode!r}; choose one of "
+            f"{sorted(VALID_MODES)}.",
+        )
+    if request.join not in VALID_JOINS:
+        raise AnnotationError(
+            "invalid_join",
+            f"Invalid join {request.join!r}; choose one of "
+            f"{sorted(VALID_JOINS)}.",
+        )
 
     # --- Validation (invalid user input, not a backend error) ---
     is_valid, error = DataValidator.validate_coordinates(coord_df)

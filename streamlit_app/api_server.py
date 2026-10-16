@@ -29,6 +29,7 @@ from streamlit_app.api_sessions import (
 
 from streamlit_app.config import Settings
 from streamlit_app.core import (
+    CanonicalSchemaError,
     CustomParser,
     FormatDetector,
     coordinate_system_for,
@@ -406,7 +407,14 @@ async def upload_file(
 
         if fmt == "custom":
             df = CustomParser.parse(str(temp_path))
-            needs_mapping = not all(c in df.columns for c in ("chr", "start", "end"))
+            # A custom coordinate file always requires an explicit column
+            # mapping: the declared coordinate system cannot be inferred from
+            # the file (Streamlit behaves the same way). A custom annotation
+            # is normalized in place when it already exposes the canonical
+            # columns.
+            needs_mapping = role == "query" or not all(
+                c in df.columns for c in ("chr", "start", "end")
+            )
             if not needs_mapping and role == "annot":
                 df = normalize_intervals(df, coordinate_system=declared or "0-based")
         else:
@@ -448,37 +456,88 @@ async def upload_file(
 class ColumnMappingRequest(BaseModel):
     chr_col: str
     start_col: str
-    end_col: str
+    # ``None`` marks a single-position file: each row becomes a one-base
+    # interval in the declared coordinate system (mirrors the Streamlit
+    # "None (single positions)" choice).
+    end_col: Optional[str] = None
     strand_col: Optional[str] = None
     coord_system: str = "0-based"
 
 
+def _declared_coordinate_system(option: Optional[str]) -> str:
+    """UI coordinate-system selector -> explicit system.
+
+    Only an explicit ``1-based`` declaration selects 1-based; everything else
+    (including ``Auto-detect``) defaults to ``0-based``, exactly as the
+    Streamlit app resolves it for custom files.
+    """
+    if option and option.startswith("1-based"):
+        return "1-based"
+    return "0-based"
+
+
 @app.post("/api/apply-mapping")
 def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_session)):
-    """Applies custom column mappings to delimited files."""
+    """Applies custom column mappings to a delimited coordinate file.
+
+    Uses the same core building blocks as the Streamlit app
+    (``CustomParser.map_columns`` + ``normalize_intervals``): chromosome,
+    start, end (or single position) and optional strand are selected from the
+    user's columns; every other column is preserved as metadata.
+    """
     if "query" not in session.data:
         raise HTTPException(status_code=400, detail="No query dataset loaded")
 
     raw_df = session.data["query"]["df"]
-    mapping = {"chr": req.chr_col, "start": req.start_col, "end": req.end_col}
-    if req.strand_col:
-        mapping["strand"] = req.strand_col
+    columns = list(raw_df.columns)
+    end_col = req.end_col or None
+    strand_col = req.strand_col or None
 
-    declared = "0-based" if "0-based" in req.coord_system else "1-based"
-    parser = CustomParser(declared_system=declared)
+    requested = [("chr_col", req.chr_col), ("start_col", req.start_col)]
+    if end_col is not None:
+        requested.append(("end_col", end_col))
+    if strand_col is not None:
+        requested.append(("strand_col", strand_col))
+    for field_name, column in requested:
+        if column not in columns:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{field_name} {column!r} is not a column of the query file",
+            )
+
+    system = _declared_coordinate_system(req.coord_system)
+    unmapped_cols = [
+        c for c in columns
+        if c not in (req.chr_col, req.start_col, end_col, strand_col)
+    ]
+
     try:
-        mapped_df = parser.apply_mapping(raw_df, mapping)
-        session.data["query"]["df"] = mapped_df
-        session.data["query"]["needs_mapping"] = False
-        session.data["query"]["columns"] = list(mapped_df.columns)
-        return {
-            "status": "success",
-            "total_rows": len(mapped_df),
-            "columns": list(mapped_df.columns),
-            "preview": _clean_df_for_json(mapped_df, 50),
-        }
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        mapped_df = CustomParser.map_columns(
+            raw_df, req.chr_col, req.start_col, end_col, unmapped_cols
+        )
+        if strand_col is not None:
+            mapped_df["strand"] = raw_df[strand_col]
+        if end_col is None:
+            # A single position is exactly one base in the declared source
+            # system (see the Streamlit mapping UI for the rationale).
+            start_numeric = pd.to_numeric(mapped_df["start"], errors="coerce")
+            mapped_df["end"] = (
+                start_numeric if system == "1-based" else start_numeric + 1
+            )
+        mapped_df = normalize_intervals(mapped_df, coordinate_system=system)
+    except (CanonicalSchemaError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=f"Column mapping failed: {exc}")
+
+    session.data["query"]["df"] = mapped_df
+    session.data["query"]["needs_mapping"] = False
+    session.data["query"]["columns"] = list(mapped_df.columns)
+    session.data["query"]["rows"] = len(mapped_df)
+    return {
+        "status": "success",
+        "total_rows": len(mapped_df),
+        "columns": list(mapped_df.columns),
+        "preview": _clean_df_for_json(mapped_df, 50),
+    }
 
 
 class ExecutionRequest(BaseModel):
