@@ -15,11 +15,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+from streamlit_app.api_sessions import (
+    SESSION_COOKIE_NAME,
+    Session,
+    SessionStore,
+    open_private_storage,
+)
 
 from streamlit_app.config import Settings
 from streamlit_app.core import (
@@ -65,9 +72,59 @@ app.add_middleware(
 )
 
 # ---------------------------------------------------------------------------
-# In-Memory Cache for Parsed Datasets and Run Results (keyed by token/id)
+# Per-session request state (replaces the previous process-global cache)
 # ---------------------------------------------------------------------------
-_DATA_CACHE: Dict[str, Any] = {}
+#: Server-side, bounded, thread-safe store of per-session state. Each browser
+#: receives its own opaque token (HttpOnly cookie); no request can reach
+#: another session's state. See streamlit_app/api_sessions for the model and
+#: the single-worker deployment constraint.
+store = SessionStore()
+_SESSION_TTL_SECONDS = int(store.ttl_seconds)
+
+
+def _cookie_is_secure(request: Request) -> bool:
+    """True when the request reached us over HTTPS (directly or via proxy)."""
+    forwarded = request.headers.get("x-forwarded-proto", "")
+    if forwarded.split(",")[0].strip().lower() == "https":
+        return True
+    return request.url.scheme == "https"
+
+
+def get_session(request: Request) -> Session:
+    """Resolve (or lazily create) the session owned by this request's cookie.
+
+    The session is keyed only by the server-issued token in the cookie; no
+    endpoint accepts a session identifier as input, so a request can never
+    address another user's state.
+    """
+    existing = getattr(request.state, "session", None)
+    if existing is not None:
+        return existing
+    session = store.get(request.cookies.get(SESSION_COOKIE_NAME))
+    if session is None:
+        session = store.create()
+        # The middleware below attaches the cookie once the response exists.
+        request.state.new_session_token = session.token
+    request.state.session = session
+    return session
+
+
+@app.middleware("http")
+async def _issue_session_cookie(request: Request, call_next):
+    """Attach the session cookie to responses that created a new session."""
+    response = await call_next(request)
+    token = getattr(request.state, "new_session_token", None)
+    if token:
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=_SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=_cookie_is_secure(request),
+            path="/",
+        )
+    return response
 
 
 def _clean_df_for_json(df: pd.DataFrame, max_rows: int = 500) -> List[Dict[str, Any]]:
@@ -250,7 +307,7 @@ def list_sample_datasets():
 
 
 @app.post("/api/load-sample")
-def load_sample(sample_id: str = Form(...)):
+def load_sample(sample_id: str = Form(...), session: Session = Depends(get_session)):
     """Loads a pre-bundled sample dataset into the active working state."""
     samples = {
         "gene_overlap": ("example_coordinates.bed", "example_annotations.gff3"),
@@ -272,8 +329,8 @@ def load_sample(sample_id: str = Form(...)):
     a_fmt = FormatDetector.detect(str(a_path))
     a_df = parse_and_normalize(str(a_path), fmt=a_fmt)
 
-    # Cache
-    _DATA_CACHE["query"] = {
+    # Store in this session only
+    session.data["query"] = {
         "filename": q_name,
         "format": q_fmt,
         "df": q_df,
@@ -281,7 +338,7 @@ def load_sample(sample_id: str = Form(...)):
         "columns": list(q_df.columns),
         "vcf_header_lines": q_df.attrs.get("vcf_header_lines"),
     }
-    _DATA_CACHE["annot"] = {
+    session.data["annot"] = {
         "filename": a_name,
         "format": a_fmt,
         "df": a_df,
@@ -313,14 +370,32 @@ async def upload_file(
     file: UploadFile = File(...),
     role: str = Form(...),  # 'query' or 'annot'
     coord_system: Optional[str] = Form(None),
+    session: Session = Depends(get_session),
 ):
     """Uploads and parses a genomic interval file."""
-    temp_dir = tempfile.mkdtemp()
-    temp_path = Path(temp_dir) / file.filename
+    if role not in ("query", "annot"):
+        raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
+
+    # The client filename is never used as a path component: the file is
+    # stored under a server-generated name inside a private temp directory,
+    # preserving only a validated extension (see api_sessions.safe_extension).
+    temp_dir = Path(tempfile.mkdtemp(prefix="annotater-upload-"))
+    fd, temp_path = open_private_storage(temp_dir, file.filename)
     try:
-        content = await file.read()
-        with open(temp_path, "wb") as f:
-            f.write(content)
+        max_bytes = Settings.get_max_file_size_bytes()
+        total = 0
+        with os.fdopen(fd, "wb") as handle:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploaded file exceeds the {Settings.MAX_FILE_SIZE_MB} MB limit",
+                    )
+                handle.write(chunk)
 
         fmt = FormatDetector.detect(str(temp_path))
         declared = None
@@ -338,7 +413,7 @@ async def upload_file(
             df = parse_and_normalize(str(temp_path), fmt=fmt, declared_system=declared)
             needs_mapping = False
 
-        _DATA_CACHE[role] = {
+        session.data[role] = {
             "filename": file.filename,
             "format": fmt,
             "df": df,
@@ -358,8 +433,14 @@ async def upload_file(
             "needs_mapping": needs_mapping,
             "preview": _clean_df_for_json(df, 50),
         }
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # User-input failures produce a clear, bounded error; server-side
+        # paths are scrubbed so they are never echoed to the client.
+        detail = str(exc).replace(str(temp_path), "the uploaded file")
+        detail = detail.replace(str(temp_dir), "the uploaded file")
+        raise HTTPException(status_code=400, detail=detail)
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
@@ -373,12 +454,12 @@ class ColumnMappingRequest(BaseModel):
 
 
 @app.post("/api/apply-mapping")
-def apply_mapping(req: ColumnMappingRequest):
+def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_session)):
     """Applies custom column mappings to delimited files."""
-    if "query" not in _DATA_CACHE:
+    if "query" not in session.data:
         raise HTTPException(status_code=400, detail="No query dataset loaded")
 
-    raw_df = _DATA_CACHE["query"]["df"]
+    raw_df = session.data["query"]["df"]
     mapping = {"chr": req.chr_col, "start": req.start_col, "end": req.end_col}
     if req.strand_col:
         mapping["strand"] = req.strand_col
@@ -387,9 +468,9 @@ def apply_mapping(req: ColumnMappingRequest):
     parser = CustomParser(declared_system=declared)
     try:
         mapped_df = parser.apply_mapping(raw_df, mapping)
-        _DATA_CACHE["query"]["df"] = mapped_df
-        _DATA_CACHE["query"]["needs_mapping"] = False
-        _DATA_CACHE["query"]["columns"] = list(mapped_df.columns)
+        session.data["query"]["df"] = mapped_df
+        session.data["query"]["needs_mapping"] = False
+        session.data["query"]["columns"] = list(mapped_df.columns)
         return {
             "status": "success",
             "total_rows": len(mapped_df),
@@ -412,14 +493,14 @@ class ExecutionRequest(BaseModel):
 
 
 @app.post("/api/execute")
-def execute_annotation(req: ExecutionRequest):
+def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_session)):
     """Executes the genomic interval annotation pipeline."""
-    if "query" not in _DATA_CACHE or "annot" not in _DATA_CACHE:
+    if "query" not in session.data or "annot" not in session.data:
         raise HTTPException(status_code=400, detail="Both query and annotation datasets must be loaded")
 
-    coord_df = _DATA_CACHE["query"]["df"].copy()
-    annot_df = _DATA_CACHE["annot"]["df"].copy()
-    annot_format = _DATA_CACHE["annot"]["format"]
+    coord_df = session.data["query"]["df"].copy()
+    annot_df = session.data["annot"]["df"].copy()
+    annot_format = session.data["annot"]["format"]
 
     is_valid, err = DataValidator.validate_coordinates(coord_df)
     if not is_valid:
@@ -450,7 +531,7 @@ def execute_annotation(req: ExecutionRequest):
             coord_df, annot_df = normalized.coord_df, normalized.annot_df
             vcf_contig_renames = dict(normalized.coord_renames)
 
-            vcf_headers = _DATA_CACHE["query"].get("vcf_header_lines")
+            vcf_headers = session.data["query"].get("vcf_header_lines")
             if vcf_headers:
                 vcf_contig_renames = {
                     **header_contig_renames(vcf_headers, registry, req.chr_naming),
@@ -487,11 +568,11 @@ def execute_annotation(req: ExecutionRequest):
     unmatched = len(result_df) - matched
     match_rate = (matched / max(1, len(coord_df))) * 100
 
-    # Cache result
-    _DATA_CACHE["result"] = {
+    # Store result in this session only
+    session.data["result"] = {
         "df": result_df,
-        "coord_format": _DATA_CACHE["query"]["format"],
-        "vcf_header_lines": _DATA_CACHE["query"].get("vcf_header_lines"),
+        "coord_format": session.data["query"]["format"],
+        "vcf_header_lines": session.data["query"].get("vcf_header_lines"),
         "vcf_contig_renames": vcf_contig_renames,
         "elapsed": elapsed,
         "join": req.join,
@@ -549,12 +630,17 @@ def execute_annotation(req: ExecutionRequest):
 
 
 @app.get("/api/results/data")
-def get_results_data(filter_type: str = "all", page: int = 1, page_size: int = 50):
+def get_results_data(
+    filter_type: str = "all",
+    page: int = 1,
+    page_size: int = 50,
+    session: Session = Depends(get_session),
+):
     """Fetches paginated results with filter support (all, matched, unmatched)."""
-    if "result" not in _DATA_CACHE:
+    if "result" not in session.data:
         raise HTTPException(status_code=404, detail="No execution results available")
 
-    df = _DATA_CACHE["result"]["df"]
+    df = session.data["result"]["df"]
     if filter_type == "matched" and "has_overlap" in df.columns:
         filtered = df[df["has_overlap"] == True]
     elif filter_type == "unmatched" and "has_overlap" in df.columns:
@@ -576,12 +662,12 @@ def get_results_data(filter_type: str = "all", page: int = 1, page_size: int = 5
 
 
 @app.get("/api/export/{fmt}")
-def export_results(fmt: str, filter_type: str = "all"):
+def export_results(fmt: str, filter_type: str = "all", session: Session = Depends(get_session)):
     """Downloads results in CSV, TSV, Excel, or VCF format."""
-    if "result" not in _DATA_CACHE:
+    if "result" not in session.data:
         raise HTTPException(status_code=404, detail="No results found to export")
 
-    res = _DATA_CACHE["result"]
+    res = session.data["result"]
     df = res["df"]
     if filter_type == "matched" and "has_overlap" in df.columns:
         export_df = df[df["has_overlap"] == True]

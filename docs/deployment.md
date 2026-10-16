@@ -315,6 +315,11 @@ documents a limit of **100 MB** for Streamlit apps, which applies there.
 - Parsed data and results remain only in application memory for the
   active session; AnnotateR does not intentionally persist uploaded files
   or results after that lifecycle.
+- Session state is held in the API process's memory and addressed by a
+  per-browser cookie, so the API must run a single Uvicorn worker. With more
+  than one worker a follow-up request could be routed to a process that does
+  not hold the session's state. The bundled `start-script.sh` starts a single
+  worker accordingly.
 - Local Docker execution processes uploads in the AnnotateR container
   running on the user's own machine; SciLifeLab Serve is not involved.
 - Infrastructure-level behavior of a hosting platform (logs, caches,
