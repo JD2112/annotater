@@ -35,6 +35,17 @@ from .normalization import (
     normalize_intervals,
     parse_and_normalize,
 )
+from .execution import (
+    AnnotationError,
+    AnnotationExecutionError,
+    AnnotationOutcome,
+    AnnotationRequest,
+    AnnotationWarning,
+    ChromosomeNormalizationOutcome,
+    FeatureFilterReport,
+    execute_annotation,
+    expand_feature_types,
+)
 
 __all__ = [
     "ChromosomeNormalizationReport",
@@ -62,4 +73,13 @@ __all__ = [
     "extension_authoritative_for",
     "normalize_intervals",
     "parse_and_normalize",
+    "AnnotationError",
+    "AnnotationExecutionError",
+    "AnnotationOutcome",
+    "AnnotationRequest",
+    "AnnotationWarning",
+    "ChromosomeNormalizationOutcome",
+    "FeatureFilterReport",
+    "execute_annotation",
+    "expand_feature_types",
 ]

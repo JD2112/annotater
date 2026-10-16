@@ -10,7 +10,6 @@ import io
 import os
 import shutil
 import tempfile
-import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,7 +31,6 @@ from streamlit_app.config import Settings
 from streamlit_app.core import (
     CustomParser,
     FormatDetector,
-    canonicalize_annotation_result,
     coordinate_system_for,
     extension_authoritative_for,
     normalize_intervals,
@@ -42,20 +40,22 @@ from streamlit_app.core.chrom_registry import (
     assembly_options,
     find_assembly,
     load_catalog,
-    load_registry,
 )
-from streamlit_app.core.chromosome_inputs import normalize_input_chromosomes
-from streamlit_app.core.vcf_contigs import header_contig_renames
 from streamlit_app.core.engine_registry import (
     DEFAULT_ENGINE,
     ENGINE_DESCRIPTIONS,
     ENGINE_LABELS,
     ENGINE_OPTIONS,
-    build_engine,
     engine_available,
     unavailable_message,
 )
-from streamlit_app.utils import DataValidator, get_example_data_path
+from streamlit_app.core.execution import (
+    AnnotationError,
+    AnnotationExecutionError,
+    AnnotationRequest,
+    execute_annotation as execute_annotation_core,
+)
+from streamlit_app.utils import get_example_data_path
 
 app = FastAPI(
     title="AnnotateR API",
@@ -494,89 +494,71 @@ class ExecutionRequest(BaseModel):
 
 @app.post("/api/execute")
 def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_session)):
-    """Executes the genomic interval annotation pipeline."""
+    """Executes the genomic interval annotation pipeline.
+
+    HTTP translation only: the single scientific workflow lives in the shared
+    ``streamlit_app.core.execution`` service (the same one the Streamlit GUI
+    uses). This endpoint maps the request onto that service and serializes the
+    outcome; it contains no scientific logic of its own.
+    """
     if "query" not in session.data or "annot" not in session.data:
         raise HTTPException(status_code=400, detail="Both query and annotation datasets must be loaded")
 
-    coord_df = session.data["query"]["df"].copy()
-    annot_df = session.data["annot"]["df"].copy()
-    annot_format = session.data["annot"]["format"]
+    query = session.data["query"]
+    annot = session.data["annot"]
 
-    is_valid, err = DataValidator.validate_coordinates(coord_df)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=f"Query coordinates validation failed: {err}")
-    is_valid, err = DataValidator.validate_coordinates(annot_df)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=f"Annotation reference validation failed: {err}")
-
-    # Feature filtering
-    if annot_format in ("gff", "gtf") and req.feature_types and "feature" in annot_df.columns:
-        annot_df = annot_df[annot_df["feature"].isin(req.feature_types)].copy()
-        if len(annot_df) == 0:
-            raise HTTPException(status_code=400, detail="No annotation features match selected feature filter")
-
-    # Assembly-aware chromosome normalization (SPEC 5.1 & RC3)
-    vcf_contig_renames = {}
-    if req.chr_naming is not None:
-        if req.assembly is None:
-            raise HTTPException(status_code=400, detail="Please select a genome assembly before normalizing chromosome names.")
-        try:
-            registry = load_registry(req.assembly)
-            normalized = normalize_input_chromosomes(
-                coord_df,
-                annot_df,
-                registry=registry,
-                target=req.chr_naming,
-            )
-            coord_df, annot_df = normalized.coord_df, normalized.annot_df
-            vcf_contig_renames = dict(normalized.coord_renames)
-
-            vcf_headers = session.data["query"].get("vcf_header_lines")
-            if vcf_headers:
-                vcf_contig_renames = {
-                    **header_contig_renames(vcf_headers, registry, req.chr_naming),
-                    **vcf_contig_renames,
-                }
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Chromosome normalization error: {exc}")
-
-    t0 = time.perf_counter()
-    try:
-        min_ov = req.min_overlap if req.mode == "overlap" else None
-        engine = build_engine(
-            req.engine,
-            mode=req.mode,
-            use_strand=req.use_strand,
-            min_overlap=min_ov,
-        )
-        raw_result = engine.intersect(coord_df, annot_df, how=req.join)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Engine annotation execution failed: {exc}")
+    request = AnnotationRequest(
+        query=query["df"],
+        annotation=annot["df"],
+        annotation_format=annot.get("format"),
+        engine=req.engine,
+        mode=req.mode,
+        join=req.join,
+        use_strand=req.use_strand,
+        min_overlap=req.min_overlap,
+        feature_types=tuple(req.feature_types or ()),
+        chr_naming=req.chr_naming,
+        assembly=req.assembly,
+        coord_vcf_header_lines=query.get("vcf_header_lines"),
+    )
 
     try:
-        result_df = canonicalize_annotation_result(
-            raw_result,
-            coord_df,
-            annot_df,
-            extra_columns=("distance",) if req.mode == "closest" else (),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Canonicalization failed: {exc}")
-    elapsed = time.perf_counter() - t0
+        outcome = execute_annotation_core(request)
+    except AnnotationExecutionError as exc:
+        # Backend/canonicalization failure is propagated explicitly, never
+        # reported as an empty result.
+        raise HTTPException(status_code=500, detail=exc.message)
+    except AnnotationError as exc:
+        raise HTTPException(status_code=400, detail=exc.message)
+
+    result_df = outcome.result_df
 
     matched = int(result_df["has_overlap"].sum()) if "has_overlap" in result_df.columns else len(result_df)
     unmatched = len(result_df) - matched
-    match_rate = (matched / max(1, len(coord_df))) * 100
+    match_rate = (matched / max(1, len(outcome.coord_df))) * 100
 
-    # Store result in this session only
+    # Store result in this session only. The scientific report fields below
+    # are ones the previous response contract could not carry; they are kept
+    # for the results/export endpoints and surfaced to the client.
     session.data["result"] = {
         "df": result_df,
-        "coord_format": session.data["query"]["format"],
-        "vcf_header_lines": session.data["query"].get("vcf_header_lines"),
-        "vcf_contig_renames": vcf_contig_renames,
-        "elapsed": elapsed,
-        "join": req.join,
-        "mode": req.mode,
+        "coord_format": query.get("format"),
+        "vcf_header_lines": outcome.vcf_header_lines,
+        "vcf_contig_renames": dict(outcome.vcf_contig_renames),
+        "chromosome_normalization": (
+            outcome.chromosome_normalization.as_dict()
+            if outcome.chromosome_normalization is not None
+            else None
+        ),
+        "warnings": [warning.as_dict() for warning in outcome.warnings],
+        "feature_filter": (
+            outcome.feature_filter.as_dict()
+            if outcome.feature_filter is not None
+            else None
+        ),
+        "elapsed": outcome.elapsed_seconds,
+        "join": outcome.join,
+        "mode": outcome.mode,
     }
 
     # Generate Chart Data
@@ -604,15 +586,15 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     return {
         "status": "success",
         "stats": {
-            "query_count": len(coord_df),
+            "query_count": len(outcome.coord_df),
             "result_count": len(result_df),
             "matched_count": matched,
             "unmatched_count": unmatched,
             "match_rate": round(match_rate, 2),
-            "elapsed_seconds": round(elapsed, 4),
-            "engine": req.engine,
-            "mode": req.mode,
-            "join": req.join,
+            "elapsed_seconds": round(outcome.elapsed_seconds, 4),
+            "engine": outcome.engine,
+            "mode": outcome.mode,
+            "join": outcome.join,
         },
         "charts": {
             "chromosome_distribution": chr_dist,
@@ -623,6 +605,21 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
                 {"name": "Unmatched", "value": unmatched},
             ],
         },
+        # Scientific report fields the previous response contract could not
+        # carry (previously discarded); exposed additively so no run
+        # information is lost. ``chromosome_normalization`` is null when
+        # names were kept as provided.
+        "warnings": [warning.as_dict() for warning in outcome.warnings],
+        "chromosome_normalization": (
+            outcome.chromosome_normalization.as_dict()
+            if outcome.chromosome_normalization is not None
+            else None
+        ),
+        "feature_filter": (
+            outcome.feature_filter.as_dict()
+            if outcome.feature_filter is not None
+            else None
+        ),
         "columns": list(result_df.columns),
         "total_rows": len(result_df),
         "preview": _clean_df_for_json(result_df, 100),

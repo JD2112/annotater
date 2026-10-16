@@ -34,7 +34,6 @@ from streamlit_app.core import (
     CanonicalSchemaError,
     CustomParser,
     FormatDetector,
-    canonicalize_annotation_result,
     coordinate_system_for,
     extension_authoritative_for,
     normalize_intervals,
@@ -49,23 +48,24 @@ from streamlit_app.core.chrom_registry import (
     load_catalog,
     resolve_registry_source,
 )
-from streamlit_app.core.chromosome_inputs import normalize_input_chromosomes
 from streamlit_app.core.engine_registry import (
     DEFAULT_ENGINE,
     ENGINE_OPTIONS,
-    EngineUnavailableError,
-    build_engine,
     engine_available,
     engine_label,
     unavailable_message,
 )
+from streamlit_app.core.execution import (
+    AnnotationError,
+    AnnotationExecutionError,
+    AnnotationRequest,
+    execute_annotation,
+)
 from streamlit_app.core.vcf_contigs import (
     ChromosomeContigCollisionError,
-    header_contig_renames,
     reconcile_contig_lines,
 )
 from streamlit_app.utils import (
-    DataValidator,
     format_file_size,
     save_uploaded_file,
 )
@@ -179,42 +179,9 @@ _FEATURE_TYPE_OPTIONS = [
     "start_codon", "stop_codon",
 ]
 
-# Directional UTR choices are user-facing labels; each maps to the exact,
-# case-sensitive source ``feature`` strings it accepts: the GFF3 /
-# Sequence Ontology terms (five_prime_UTR, three_prime_UTR) and the
-# lowercase spelling used before GFF3 v1.16. A generic ``UTR`` (e.g.
-# GENCODE GTF) carries no direction and is deliberately not matched. All
-# other choices are matched literally. Source values are never rewritten.
-#
-# ``transcript`` means transcript-level annotation records, matched only
-# against this explicit list of source values (no regex, substring,
-# case-insensitive, fuzzy or Sequence Ontology expansion). Each value is
-# named as a transcript-level feature by a primary source:
-#   transcript, mRNA, lnc_RNA, snoRNA, pseudogenic_transcript - Ensembl
-#       GFF3 README ("type of transcript features");
-#   transcript, mRNA, ncRNA, rRNA, tRNA, primary_transcript - NCBI RefSeq
-#       GFF3 documentation (gene-RNA-exon conventions);
-#   transcript - GENCODE; mRNA, noncoding_transcript - GFF3 specification.
-# Ambiguous or undocumented RNA-like types (snRNA, miRNA, lincRNA, RNA,
-# processed_transcript, NMD_transcript_variant, ...) are deliberately
-# excluded. See docs/using/feature-filtering.md.
-_FEATURE_TYPE_SOURCE_VALUES = {
-    "transcript": (
-        "transcript", "mRNA", "lnc_RNA", "ncRNA", "rRNA", "tRNA", "snoRNA",
-        "primary_transcript", "pseudogenic_transcript",
-        "noncoding_transcript",
-    ),
-    "5' UTR": ("five_prime_UTR", "five_prime_utr"),
-    "3' UTR": ("three_prime_UTR", "three_prime_utr"),
-}
-
-
-def _expand_feature_types(selected):
-    """Map selected filter choices to the set of accepted source values."""
-    accepted = set()
-    for choice in selected:
-        accepted.update(_FEATURE_TYPE_SOURCE_VALUES.get(choice, (choice,)))
-    return accepted
+# The selected choices -> accepted source values mapping (and its rationale)
+# lives in the shared core (streamlit_app.core.execution.expand_feature_types),
+# which every frontend uses for feature filtering.
 
 
 # ---------------------------------------------------------------------------
@@ -343,21 +310,6 @@ def _config_signature(cfg: dict, coord_identity, annot_identity, coord_format):
         coord_format,
         st.session_state.get("coord_mapping"),
     )
-
-
-def _min_overlap_for(cfg: dict):
-    """
-    Engine-facing min_overlap value.
-
-    min_overlap is meaningful for the overlap mode only (SPEC 8.2); other
-    modes never receive it, so a stale slider value cannot leak into a
-    contains/within/closest run. ``0`` maps to ``None`` (ordinary positive
-    overlap) per the existing UI/API policy.
-    """
-    value = cfg["min_overlap"]
-    if cfg["mode"] != "overlap" or not value:
-        return None
-    return float(value)
 
 
 # ---------------------------------------------------------------------------
@@ -890,167 +842,128 @@ def run_annotation(cfg: dict, coord_df, annot_info, signature):
     if annot_info is None:
         st.error("Upload an annotation file first.")
         return
-    annot_df = annot_info["df"]
-    annot_format = annot_info["format"]
-
-    # --- Validation (invalid user configuration, not a backend error) ---
-    is_valid, error = DataValidator.validate_coordinates(coord_df)
-    if not is_valid:
-        st.error(f"Query coordinate file is not valid: {error}")
-        return
-    is_valid, error = DataValidator.validate_coordinates(annot_df)
-    if not is_valid:
-        st.error(f"Annotation file is not valid: {error}")
-        return
-
-    # --- Feature filter (GFF/GTF only) ---
-    if (
-        annot_format in ("gff", "gtf")
-        and cfg["feature_types"]
-        and "feature" in annot_df.columns
-    ):
-        original_count = len(annot_df)
-        annot_df = annot_df[
-            annot_df["feature"].isin(_expand_feature_types(cfg["feature_types"]))
-        ].copy()
-        if len(annot_df) == 0:
-            st.warning(
-                f"No annotations match the selected feature types "
-                f"(filtered {original_count:,} features). Adjust the feature "
-                f"filter and run again."
-            )
-            return
-        st.caption(
-            f"Using {len(annot_df):,} of {original_count:,} annotation "
-            f"features (feature filter)."
-        )
-
-    # --- Chromosome naming ---
-    # "Keep original names" is a true no-op (no assembly needed). Any
-    # normalization requires an explicitly selected assembly; nothing is
-    # inferred from the files.
-    chr_summary = None
-    contig_renames = {}
+    # The chromosome registry (bundled assembly or custom mapping) is a UI
+    # concern: resolving it here surfaces the mapping errors beside the
+    # upload, exactly as before. "Keep original names" needs no registry.
+    registry = None
     if cfg["chr_naming"] is not None:
         registry = _registry_for_run(cfg)
         if registry is None:
             return
-        normalized = normalize_input_chromosomes(
-            coord_df, annot_df, registry=registry, target=cfg["chr_naming"],
-        )
-        coord_df, annot_df = normalized.coord_df, normalized.annot_df
-        # Renames come from the normalization report, never re-derived.
-        contig_renames = dict(normalized.coord_renames)
-        # Header ##contig declarations are normalized through the same
-        # registry and target, also for contigs no row uses. Row-derived
-        # renames are the same registry's answer, so they agree.
-        coord_parse = st.session_state.get("coord_parse")
-        header_lines = (coord_parse.get("vcf_header_lines")
-                        if isinstance(coord_parse, dict) else None)
-        if header_lines:
-            contig_renames = {
-                **header_contig_renames(
-                    header_lines, registry, cfg["chr_naming"]),
-                **contig_renames,
-            }
-        chr_summary = {
-            # The genome assembly's label for a bundled registry; None for
-            # a custom mapping, which has no assembly identity.
-            "assembly_label": (
-                _ASSEMBLY_LABELS[registry.assembly_id]
-                if registry.assembly_id is not None else None),
-            "source_label": (
-                _ASSEMBLY_LABELS[registry.assembly_id]
-                if registry.assembly_id is not None else registry.name),
-            "naming_label": _NAMING_LABELS[cfg["chr_naming"]],
-            "coord_report": normalized.coord_report,
-            "annot_report": normalized.annot_report,
-        }
 
-    # --- No-shared-identifiers warning ---
-    # Whatever the conversion outcome, if the two tables share no
-    # chromosome identifiers at all, no row can match: say so explicitly
-    # instead of silently producing an all-unmatched result.
-    if len(coord_df) > 0 and len(annot_df) > 0:
-        shared = set(coord_df["chr"].unique()) & set(annot_df["chr"].unique())
-        if not shared:
-            st.warning(
-                "No shared chromosome identifiers remain between query and "
-                "annotation data. Select the genome assembly and a "
-                "chromosome naming above to normalize names, or check the "
-                "names used by each file."
-            )
-
-    # --- Engine selection (execution only; explicit failure, no fallback) ---
-    try:
-        engine = build_engine(
-            cfg["engine"],
-            mode=cfg["mode"],
-            use_strand=cfg["use_strand"],
-            min_overlap=_min_overlap_for(cfg),
-        )
-    except EngineUnavailableError as exc:
-        st.error(str(exc))
-        return
-    except ValueError as exc:
-        st.error(f"Invalid option: {exc}")
-        return
-    label = engine_label(cfg["engine"])
-
-    # --- Execution ---
-    try:
-        with st.spinner(f"Running {cfg['mode']} annotation with {label}..."):
-            raw_result = engine.intersect(coord_df, annot_df, how=cfg["join"])
-        # The canonical result contract is the UI/export boundary: both
-        # backends must pass the same adapter, so the engine choice can
-        # never change the result schema, missing-value representation,
-        # or exported content (Task 7 §6, SPEC 6).
-        result_df = canonicalize_annotation_result(
-            raw_result,
-            coord_df,
-            annot_df,
-            extra_columns=("distance",) if cfg["mode"] == "closest" else (),
-        )
-    except Exception as exc:
-        # Backend execution failure: log the full traceback for developers,
-        # show a concise, labeled error to the user (SPEC 9.2).
-        logger.exception(
-            "%s backend failed during %s annotation (%s join)",
-            label, cfg["mode"], cfg["join"],
-        )
-        st.error(
-            f"{label} failed during {cfg['mode']} annotation "
-            f"({cfg['join']} join): {exc}"
-        )
-        return
-
-    # --- Store results with the configuration signature ---
     coord_parse = st.session_state.get("coord_parse")
     vcf_header_lines = (
         coord_parse.get("vcf_header_lines")
         if isinstance(coord_parse, dict)
         else None
     )
+
+    # The single scientific workflow lives in the shared core service; this
+    # frontend only translates its configuration into a request and renders
+    # the outcome.
+    request = AnnotationRequest(
+        query=coord_df,
+        annotation=annot_info["df"],
+        annotation_format=annot_info["format"],
+        engine=cfg["engine"],
+        mode=cfg["mode"],
+        join=cfg["join"],
+        use_strand=cfg["use_strand"],
+        min_overlap=cfg["min_overlap"],
+        feature_types=tuple(cfg["feature_types"]),
+        chr_naming=cfg["chr_naming"],
+        registry=registry,
+        coord_vcf_header_lines=vcf_header_lines,
+    )
+
+    label = engine_label(cfg["engine"])
+    try:
+        with st.spinner(f"Running {cfg['mode']} annotation with {label}..."):
+            outcome = execute_annotation(request)
+    except AnnotationExecutionError as exc:
+        # Backend execution failure: log the full traceback for developers,
+        # show a concise, labeled error to the user (SPEC 9.2).
+        logger.exception(
+            "%s backend failed during %s annotation (%s join)",
+            exc.engine_label, exc.mode, exc.join,
+        )
+        st.error(exc.message)
+        return
+    except AnnotationError as exc:
+        # "warning" severity is a valid request that yields nothing (for
+        # example a feature filter that matches no annotation); every other
+        # code is an invalid request. Both carry a user-facing message.
+        if exc.severity == "warning":
+            st.warning(exc.message)
+        else:
+            st.error(exc.message)
+        return
+
+    # Feature-filter caption (unchanged wording; only when it applied).
+    feature_filter = outcome.feature_filter
+    if feature_filter is not None and feature_filter.applied:
+        st.caption(
+            f"Using {feature_filter.used_rows:,} of "
+            f"{feature_filter.total_rows:,} annotation features "
+            f"(feature filter)."
+        )
+
+    # Non-fatal notes (for example no shared chromosome identifiers).
+    for warning in outcome.warnings:
+        st.warning(warning.message)
+
+    chr_summary = _chr_summary_for_display(outcome.chromosome_normalization)
+
+    # --- Store results with the configuration signature ---
     st.session_state.update(
         {
             "result_signature": signature,
-            "result_df": result_df,
-            "result_coord_df": coord_df,
-            "result_engine": label,
-            "result_mode": cfg["mode"],
-            "result_join": cfg["join"],
+            "result_df": outcome.result_df,
+            "result_coord_df": outcome.coord_df,
+            "result_engine": outcome.engine_label,
+            "result_mode": outcome.mode,
+            "result_join": outcome.join,
             "result_coord_format": _coord_format_of(cfg),
             # Original VCF ## metadata (once per source file), restored
             # verbatim by the annotated VCF export.
-            "result_vcf_header_lines": vcf_header_lines,
+            "result_vcf_header_lines": outcome.vcf_header_lines,
             # Query chromosome identifiers renamed by normalization
             # (old -> new); reconciles ##contig lines in the VCF export.
-            "result_vcf_contig_renames": contig_renames,
+            "result_vcf_contig_renames": dict(outcome.vcf_contig_renames),
             # Chromosome-normalization summary shown with the results
             # (None when names were kept as provided).
             "result_chr_normalization": chr_summary,
         }
     )
+
+
+def _chr_summary_for_display(normalization):
+    """UI labels for a core chromosome-normalization outcome, or ``None``.
+
+    The shared core reports structured data (assembly id, registry name,
+    per-table reports); mapping that to user-facing labels is a presentation
+    concern and stays here, so the service remains framework-independent.
+    """
+    if normalization is None:
+        return None
+    assembly_label = (
+        _ASSEMBLY_LABELS[normalization.assembly_id]
+        if normalization.assembly_id is not None
+        else None
+    )
+    return {
+        # The genome assembly's label for a bundled registry; None for a
+        # custom mapping, which has no assembly identity.
+        "assembly_label": assembly_label,
+        "source_label": (
+            assembly_label
+            if normalization.assembly_id is not None
+            else normalization.registry_name
+        ),
+        "naming_label": _NAMING_LABELS[normalization.target],
+        "coord_report": normalization.coord_report,
+        "annot_report": normalization.annot_report,
+    }
 
 
 def _coord_format_of(cfg: dict):
