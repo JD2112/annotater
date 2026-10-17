@@ -278,6 +278,7 @@ class TestFailureContract:
         session = api_server.store.create()
         session.data["result"] = {
             "df": pd.DataFrame({"foo": [1, 2]}),
+            "coord_format": "vcf",
             "vcf_header_lines": None,
             "vcf_contig_renames": {},
         }
@@ -503,3 +504,50 @@ def _upload(client, name, content, role, media="text/plain"):
     )
     assert response.status_code == 200, response.text
     return response
+
+
+# ---------------------------------------------------------------------------
+# Task 14.7a (review finding F2): VCF export is VCF-query-only
+# ---------------------------------------------------------------------------
+
+class TestVcfExportGating:
+    """The HTTP boundary enforces the Streamlit rule ``coord_format == 'vcf'``.
+
+    The exporter fabricates records from canonical intervals, so a BED/GFF/CSV
+    query would produce REF/ALT placeholders. The gate is server-side and does
+    not depend on the frontend hiding the control.
+    """
+
+    def _fresh(self, monkeypatch):
+        monkeypatch.setattr(api_server, "store", SessionStore())
+
+    def test_vcf_query_still_exports(self, monkeypatch):
+        _require_bedtools()
+        self._fresh(monkeypatch)
+        client = TestClient(app)
+        _upload(client, "query.vcf", QUERY_VCF, "query")
+        _upload(client, "annot.gff", ANNOT_GFF, "annot")
+        assert client.post("/api/execute", json=_REQUEST).status_code == 200
+        assert client.get("/api/export/vcf").status_code == 200
+
+    def test_bed_query_vcf_export_is_rejected(self, monkeypatch):
+        _require_bedtools()
+        self._fresh(monkeypatch)
+        client = TestClient(app)
+        _upload(client, "q.bed", b"chr1\t0\t200\tq1\n", "query")
+        _upload(client, "annot.gff", ANNOT_GFF, "annot")
+        assert client.post("/api/execute", json=_REQUEST).status_code == 200
+
+        response = client.get("/api/export/vcf")
+        assert response.status_code == 400, response.text
+        assert "VCF export is only available" in response.json()["detail"]
+
+    def test_other_formats_still_available_for_non_vcf_query(self, monkeypatch):
+        _require_bedtools()
+        self._fresh(monkeypatch)
+        client = TestClient(app)
+        _upload(client, "q.bed", b"chr1\t0\t200\tq1\n", "query")
+        _upload(client, "annot.gff", ANNOT_GFF, "annot")
+        assert client.post("/api/execute", json=_REQUEST).status_code == 200
+        for fmt in ("csv", "tsv", "xlsx"):
+            assert client.get(f"/api/export/{fmt}").status_code == 200

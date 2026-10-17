@@ -3,24 +3,14 @@ import { formatCitation, formatCitationShort, copyCitation } from './citation';
 import { 
   Dna, 
   Upload, 
-  Play, 
-  FileSpreadsheet, 
-  BarChart3, 
-  Layers, 
   Download, 
   CheckCircle2, 
   AlertCircle, 
-  Settings2, 
-  ExternalLink, 
-  FileText, 
   Clock, 
-  Sparkles, 
   Filter, 
   Check, 
   Copy, 
   BookOpen, 
-  Cpu,
-  Table,
   HelpCircle,
   ChevronDown,
   ChevronUp
@@ -170,6 +160,11 @@ function ChromosomeNormalizationReport({ report, meta }) {
   );
 }
 
+// Sentinel end-column choice for single-position inputs (old Streamlit
+// behaviour: a custom mapped file may have no end column; then each interval
+// is a 1-length position). It maps to a null end_col at the API boundary.
+const NO_END_COLUMN = 'None (single positions)';
+
 export default function App() {
   // App Metadata & Engines
   const [meta, setMeta] = useState(null);
@@ -206,13 +201,21 @@ export default function App() {
   const [resultFilter, setResultFilter] = useState('all'); // 'all', 'matched', 'unmatched'
   const [statusMessage, setStatusMessage] = useState(null);
   const [citationStatus, setCitationStatus] = useState('idle'); // 'idle' | 'copied' | 'error'
+  const [geneCopyStatus, setGeneCopyStatus] = useState('idle'); // 'idle' | 'copied' | 'error'
 
   // Custom column mapping modal
   const [mappingRequired, setMappingRequired] = useState(false);
   const [chrCol, setChrCol] = useState('');
   const [startCol, setStartCol] = useState('');
   const [endCol, setEndCol] = useState('');
-  const [strandCol, setStrandCol] = useState('');
+
+  // Review finding F5: a new upload or any configuration change invalidates
+  // the currently displayed results, so a stale table can never appear to
+  // belong to the new configuration.
+  const clearResults = () => {
+    setExecResult(null);
+    setResultFilter('all');
+  };
 
   // Initial loading
   useEffect(() => {
@@ -228,6 +231,7 @@ export default function App() {
   // Handle Sample Loading
   const handleLoadSample = async () => {
     setIsUploading(true);
+    clearResults();
     setStatusMessage({ type: 'info', text: 'Loading bundled genomic sample datasets...' });
     try {
       const formData = new FormData();
@@ -245,7 +249,7 @@ export default function App() {
       } else {
         setStatusMessage({ type: 'error', text: data.detail || 'Failed to load sample dataset' });
       }
-    } catch (err) {
+    } catch {
       setStatusMessage({ type: 'error', text: 'Network error loading sample' });
     } finally {
       setIsUploading(false);
@@ -258,6 +262,7 @@ export default function App() {
     if (!file) return;
 
     setIsUploading(true);
+    clearResults();
     setStatusMessage({ type: 'info', text: `Uploading and parsing ${file.name}...` });
     try {
       const formData = new FormData();
@@ -277,7 +282,7 @@ export default function App() {
             setMappingRequired(true);
             setChrCol(data.columns.find(c => /chr|chrom/i.test(c)) || data.columns[0]);
             setStartCol(data.columns.find(c => /start|pos/i.test(c)) || data.columns[1]);
-            setEndCol(data.columns.find(c => /end|stop/i.test(c)) || data.columns[2]);
+            setEndCol(data.columns.find(c => /end|stop/i.test(c)) || NO_END_COLUMN);
           } else {
             setMappingRequired(false);
           }
@@ -288,7 +293,7 @@ export default function App() {
       } else {
         setStatusMessage({ type: 'error', text: data.detail || 'Upload parsing error' });
       }
-    } catch (err) {
+    } catch {
       setStatusMessage({ type: 'error', text: 'Network error uploading file' });
     } finally {
       setIsUploading(false);
@@ -304,8 +309,7 @@ export default function App() {
         body: JSON.stringify({
           chr_col: chrCol,
           start_col: startCol,
-          end_col: endCol,
-          strand_col: strandCol || null,
+          end_col: endCol === NO_END_COLUMN ? null : endCol,
           coord_system: coordSystem,
         }),
       });
@@ -319,11 +323,12 @@ export default function App() {
           needs_mapping: false,
         }));
         setMappingRequired(false);
+        clearResults();
         setStatusMessage({ type: 'success', text: 'Column mapping applied successfully.' });
       } else {
         setStatusMessage({ type: 'error', text: data.detail || 'Mapping failed' });
       }
-    } catch (err) {
+    } catch {
       setStatusMessage({ type: 'error', text: 'Failed to apply column mapping' });
     }
   };
@@ -353,12 +358,14 @@ export default function App() {
         setExecResult(data);
         setStatusMessage({ 
           type: 'success', 
-          text: `Analysis complete in ${data.stats.elapsed_seconds}s! ${data.stats.matched_count.toLocaleString()} matched loci.` 
+          text: `Analysis complete in ${data.stats.elapsed_seconds}s! ${data.stats.matched_query_count.toLocaleString()} of ${data.stats.query_count.toLocaleString()} regions matched.` 
         });
       } else {
+        clearResults();
         setStatusMessage({ type: 'error', text: data.detail || 'Execution failed' });
       }
-    } catch (err) {
+    } catch {
+      clearResults();
       setStatusMessage({ type: 'error', text: 'Network execution error' });
     } finally {
       setIsExecuting(false);
@@ -370,6 +377,7 @@ export default function App() {
     setSelectedFeatures(prev => 
       prev.includes(ft) ? prev.filter(f => f !== ft) : [...prev, ft]
     );
+    clearResults();
   };
 
   // Copy Citation
@@ -377,6 +385,35 @@ export default function App() {
     const ok = await copyCitation(formatCitation());
     setCitationStatus(ok ? 'copied' : 'error');
     setTimeout(() => setCitationStatus('idle'), 2500);
+  };
+
+  // Gene-list export (restored from the original Streamlit app: one name per
+  // line for .txt, comma-separated for .csv, ready to paste into external
+  // enrichment tools).
+  const geneList = execResult?.gene_list;
+  const hasGeneList = Boolean(geneList?.gene_column) && (geneList?.genes?.length || 0) > 0;
+
+  const downloadGeneList = (kind) => {
+    const genes = geneList?.genes || [];
+    if (!genes.length) return;
+    const text = kind === 'csv' ? genes.join(', ') : genes.join('\n');
+    const mime = kind === 'csv' ? 'text/csv' : 'text/plain';
+    const url = URL.createObjectURL(new Blob([text], { type: mime }));
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = `gene_list.${kind}`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const copyGeneListText = async () => {
+    const genes = geneList?.genes || [];
+    if (!genes.length) return;
+    const ok = await copyCitation(genes.join(', '));
+    setGeneCopyStatus(ok ? 'copied' : 'error');
+    setTimeout(() => setGeneCopyStatus('idle'), 2500);
   };
 
   // Results display filtering
@@ -478,7 +515,7 @@ export default function App() {
                     name="engine" 
                     value="bedtools" 
                     checked={engine === 'bedtools'} 
-                    onChange={() => setEngine('bedtools')}
+                    onChange={() => { setEngine('bedtools'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Bedtools</span>
@@ -489,7 +526,7 @@ export default function App() {
                     name="engine" 
                     value="polars-bio" 
                     checked={engine === 'polars-bio'} 
-                    onChange={() => setEngine('polars-bio')}
+                    onChange={() => { setEngine('polars-bio'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Polars-Bio</span>
@@ -507,7 +544,7 @@ export default function App() {
               </label>
               <select 
                 value={mode} 
-                onChange={(e) => setMode(e.target.value)}
+                onChange={(e) => { setMode(e.target.value); clearResults(); }}
                 className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-blue-500 capitalize"
               >
                 <option value="overlap">Overlap</option>
@@ -535,7 +572,7 @@ export default function App() {
                     name="join" 
                     value="left" 
                     checked={join === 'left'} 
-                    onChange={() => setJoin('left')}
+                    onChange={() => { setJoin('left'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Keep all query rows (left join)</span>
@@ -546,7 +583,7 @@ export default function App() {
                     name="join" 
                     value="inner" 
                     checked={join === 'inner'} 
-                    onChange={() => setJoin('inner')}
+                    onChange={() => { setJoin('inner'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Matched rows only (inner join)</span>
@@ -564,7 +601,7 @@ export default function App() {
                 </label>
                 <select 
                   value={coordSystem} 
-                  onChange={(e) => setCoordSystem(e.target.value)}
+                  onChange={(e) => { setCoordSystem(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700"
                 >
                   <option value="Auto-detect">Auto-detect</option>
@@ -579,7 +616,7 @@ export default function App() {
                 </label>
                 <select 
                   value={annotSystem} 
-                  onChange={(e) => setAnnotSystem(e.target.value)}
+                  onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700"
                 >
                   <option value="Auto-detect">Auto-detect</option>
@@ -595,7 +632,7 @@ export default function App() {
                 </label>
                 <select 
                   value={genomeAssembly} 
-                  onChange={(e) => setGenomeAssembly(e.target.value)}
+                  onChange={(e) => { setGenomeAssembly(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs"
                 >
                   <option value="Auto-detect">Select genome assembly (Auto-detect)</option>
@@ -618,7 +655,7 @@ export default function App() {
                 </label>
                 <select 
                   value={chrHandling} 
-                  onChange={(e) => setChrHandling(e.target.value)}
+                  onChange={(e) => { setChrHandling(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs"
                 >
                   {meta?.naming_options?.map(n => (
@@ -650,7 +687,7 @@ export default function App() {
                     <input 
                       type="checkbox" 
                       checked={useStrand} 
-                      onChange={(e) => setUseStrand(e.target.checked)}
+                      onChange={(e) => { setUseStrand(e.target.checked); clearResults(); }}
                       className="rounded text-red-600 focus:ring-red-500 w-3.5 h-3.5 mt-0.5 cursor-pointer"
                     />
                     <span>Require query and annotation to have the same explicit strand</span>
@@ -668,7 +705,7 @@ export default function App() {
                         max="1" 
                         step="0.05"
                         value={minOverlap}
-                        onChange={(e) => setMinOverlap(parseFloat(e.target.value))}
+                        onChange={(e) => { setMinOverlap(parseFloat(e.target.value)); clearResults(); }}
                         className="w-full accent-red-600 cursor-pointer"
                       />
                     </div>
@@ -797,6 +834,7 @@ export default function App() {
                       onChange={(e) => setEndCol(e.target.value)}
                       className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs"
                     >
+                      <option value={NO_END_COLUMN}>{NO_END_COLUMN}</option>
                       {queryData?.columns?.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
@@ -888,11 +926,11 @@ export default function App() {
                   <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Matched Coverage</span>
                     <span className="text-2xl font-black text-emerald-600">{execResult.stats.match_rate}%</span>
-                    <span className="text-[10px] text-slate-500 block mt-0.5">{execResult.stats.matched_count.toLocaleString()} annotated</span>
+                    <span className="text-[10px] text-slate-500 block mt-0.5">{execResult.stats.matched_query_count.toLocaleString()} of {execResult.stats.query_count.toLocaleString()} regions</span>
                   </div>
                   <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3.5">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Unmatched Loci</span>
-                    <span className="text-2xl font-black text-slate-500">{execResult.stats.unmatched_count.toLocaleString()}</span>
+                    <span className="text-2xl font-black text-slate-500">{execResult.stats.unmatched_query_count.toLocaleString()}</span>
                     <span className="text-[10px] text-slate-500 block mt-0.5">No overlap</span>
                   </div>
                 </div>
@@ -1003,6 +1041,70 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Gene list & top-10 chart (restored from the original Streamlit app) */}
+                <div className="pt-2 border-t border-slate-100 flex flex-col gap-3">
+                  {!hasGeneList ? (
+                    <p className="text-[11px] text-slate-500">
+                      No gene/feature name column found in the results.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="border border-slate-100 rounded-lg p-3.5 bg-slate-50/30 flex flex-col gap-2">
+                        <span className="text-xs font-bold text-slate-700">Top 10 genes (by annotation count)</span>
+                        <div className="h-64 w-full">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={geneList.top10} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
+                              <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
+                              <YAxis type="category" dataKey="gene" width={110} tick={{ fontSize: 10 }} />
+                              <Tooltip />
+                              <Bar dataKey="count" fill="#004e92" radius={[0, 4, 4, 0]} />
+                            </BarChart>
+                          </ResponsiveContainer>
+                        </div>
+                      </div>
+
+                      <div className="border border-slate-100 rounded-lg p-3.5 bg-slate-50/30 flex flex-col gap-2.5">
+                        <span className="text-xs font-bold text-slate-700">
+                          Gene list ({geneList.genes.length.toLocaleString()})
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => downloadGeneList('txt')}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5 text-[#004e92]" /> gene_list.txt
+                          </button>
+                          <button
+                            onClick={() => downloadGeneList('csv')}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
+                          >
+                            <Download className="w-3.5 h-3.5 text-[#006FB7]" /> gene_list.csv
+                          </button>
+                          <button
+                            onClick={copyGeneListText}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
+                          >
+                            {geneCopyStatus === 'copied'
+                              ? <Check className="w-3.5 h-3.5 text-emerald-600" />
+                              : <Copy className="w-3.5 h-3.5" />}
+                            {geneCopyStatus === 'copied' ? 'Copied' : geneCopyStatus === 'error' ? 'Copy failed' : 'Copy (comma-separated)'}
+                          </button>
+                        </div>
+                        <div className="max-h-44 overflow-y-auto border border-slate-100 rounded-lg bg-white p-2 font-mono text-[11px] text-slate-600">
+                          {geneList.genes.map(g => <div key={g}>{g}</div>)}
+                        </div>
+                        <p className="text-[11px] text-slate-500 leading-normal">
+                          One gene per line in the .txt, comma-separated in the .csv. Paste into{' '}
+                          <a href="https://biit.cs.ut.ee/gprofiler" target="_blank" rel="noreferrer" className="text-[#004e92] hover:underline font-medium">g:Profiler</a>,{' '}
+                          <a href="https://maayanlab.cloud/Enrichr" target="_blank" rel="noreferrer" className="text-[#004e92] hover:underline font-medium">Enrichr</a>,{' '}
+                          <a href="https://davidbioinformatics.nih.gov/tools.jsp" target="_blank" rel="noreferrer" className="text-[#004e92] hover:underline font-medium">DAVID</a> or{' '}
+                          <a href="https://string-db.org" target="_blank" rel="noreferrer" className="text-[#004e92] hover:underline font-medium">STRING</a>.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Export Buttons */}
                 <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
                   <span className="text-xs font-bold text-slate-700">Download Results:</span>
@@ -1027,13 +1129,15 @@ export default function App() {
                   >
                     <Download className="w-3.5 h-3.5 text-emerald-600" /> Excel
                   </a>
-                  <a
-                    href={`/api/export/vcf?filter_type=${resultFilter}`}
-                    download
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
-                  >
-                    <Download className="w-3.5 h-3.5 text-purple-600" /> VCF
-                  </a>
+                  {queryData?.format?.toLowerCase() === 'vcf' && (
+                    <a
+                      href={`/api/export/vcf?filter_type=${resultFilter}`}
+                      download
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
+                    >
+                      <Download className="w-3.5 h-3.5 text-purple-600" /> VCF
+                    </a>
+                  )}
                 </div>
               </div>
             ) : (

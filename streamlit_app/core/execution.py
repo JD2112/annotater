@@ -34,7 +34,7 @@ from .engine_registry import (
     build_engine,
     engine_label,
 )
-from .schema import canonicalize_annotation_result
+from .schema import HAS_OVERLAP_COLUMN, canonicalize_annotation_result
 from .vcf_contigs import header_contig_renames
 from streamlit_app.config import Settings
 from streamlit_app.utils.validators import DataValidator
@@ -47,6 +47,16 @@ GFF_LIKE_FORMATS = frozenset({"gff", "gtf"})
 #: and never silently coerced to a different operation.
 VALID_MODES = frozenset(Settings.ANNOTATION_MODES)
 VALID_JOINS = frozenset({"inner", "left"})
+
+#: Private query-row identity column used to derive the matched-coverage
+#: metric. It is injected into a *copy* of the normalized query (never the
+#: caller's frame) and races the existing canonical metadata re-attachment
+#: channel back out of the engine; it is stripped from the public result and
+#: never participates in matching. Distinct values in this column among
+#: matched rows are exactly the distinct original query rows with >= 1 match,
+#: so duplicate query coordinates with distinct row identities are counted
+#: separately and a single query matching many annotations is counted once.
+_QUERY_ROW_UID_COLUMN = "annotater_query_row_uid"
 
 #: Directional UTR choices are user-facing labels; each maps to the exact,
 #: case-sensitive source ``feature`` strings it accepts: the GFF3 /
@@ -243,6 +253,10 @@ class AnnotationOutcome:
     vcf_header_lines: Optional[List[str]]
     vcf_contig_renames: Mapping[str, str]
     warnings: Tuple[AnnotationWarning, ...] = field(default_factory=tuple)
+    #: Distinct original query rows (row identity, not coordinates) with at
+    #: least one match, for both join directions. Display/reporting only; the
+    #: public result schema is unchanged.
+    matched_query_count: int = 0
 
 
 def _min_overlap_for(mode: str, value) -> Optional[float]:
@@ -250,6 +264,55 @@ def _min_overlap_for(mode: str, value) -> Optional[float]:
     if mode != "overlap" or not value:
         return None
     return float(value)
+
+
+def _noncolliding_column(columns, preferred: str) -> str:
+    """A metadata column name guaranteed absent from ``columns``."""
+    name = preferred
+    suffix = 2
+    existing = set(columns)
+    while name in existing:
+        name = f"{preferred}_{suffix}"
+        suffix += 1
+    return name
+
+
+def _dispatch_engine(
+    engine, coord_df: pd.DataFrame, annot_df: pd.DataFrame, join: str, mode: str
+):
+    """Run one annotation and return ``(result_df, matched_query_count)``.
+
+    ``matched_query_count`` is the number of distinct original query rows
+    with at least one match (0..len(coord_df)). It is derived from per-query
+    row identity, never from the number of result rows, so a query matching
+    many annotations counts once and a query matching none counts zero for
+    both join directions. The public result schema is unchanged: the private
+    identity column is stripped before returning.
+    """
+    extra_columns = ("distance",) if mode == "closest" else ()
+
+    if len(coord_df) == 0:
+        raw_result = engine.intersect(coord_df, annot_df, how=join)
+        result_df = canonicalize_annotation_result(
+            raw_result, coord_df, annot_df, extra_columns=extra_columns
+        )
+        return result_df, 0
+
+    uid = _noncolliding_column(coord_df.columns, _QUERY_ROW_UID_COLUMN)
+    engine_coord_df = coord_df.copy()
+    engine_coord_df[uid] = list(range(len(engine_coord_df)))
+
+    raw_result = engine.intersect(engine_coord_df, annot_df, how=join)
+    result_df = canonicalize_annotation_result(
+        raw_result, engine_coord_df, annot_df, extra_columns=extra_columns
+    )
+
+    uid_result_column = f"coord_{uid}"
+    matched_query_count = int(
+        result_df.loc[result_df[HAS_OVERLAP_COLUMN], uid_result_column].nunique()
+    ) if uid_result_column in result_df.columns else 0
+    result_df = result_df.drop(columns=[uid_result_column])
+    return result_df, matched_query_count
 
 
 def execute_annotation(request: AnnotationRequest) -> AnnotationOutcome:
@@ -406,12 +469,8 @@ def execute_annotation(request: AnnotationRequest) -> AnnotationOutcome:
     # --- Execution + canonicalization ---
     started = time.perf_counter()
     try:
-        raw_result = engine.intersect(coord_df, annot_df, how=request.join)
-        result_df = canonicalize_annotation_result(
-            raw_result,
-            coord_df,
-            annot_df,
-            extra_columns=("distance",) if request.mode == "closest" else (),
+        result_df, matched_query_count = _dispatch_engine(
+            engine, coord_df, annot_df, request.join, request.mode
         )
     except Exception as exc:
         raise AnnotationExecutionError(
@@ -446,4 +505,5 @@ def execute_annotation(request: AnnotationRequest) -> AnnotationOutcome:
         ),
         vcf_contig_renames=vcf_contig_renames,
         warnings=tuple(warnings),
+        matched_query_count=matched_query_count,
     )

@@ -67,6 +67,7 @@ app = FastAPI(
     description="High-performance genomic coordinate annotation and interval overlap analysis API",
 )
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -136,6 +137,38 @@ def _clean_df_for_json(df: pd.DataFrame, max_rows: int = 500) -> List[Dict[str, 
     subset = df.head(max_rows).copy()
     subset = subset.replace({float("nan"): None, float("inf"): None, float("-inf"): None})
     return subset.to_dict(orient="records")
+
+
+#: Placeholder tokens some writers emit where no name exists (for example the
+#: ``-1`` a BED interval without a name receives). They are never reported as
+#: genes by the gene-list endpoint.
+_GENE_PLACEHOLDERS = {"-1", ".", "nan", ""}
+
+
+def _find_gene_column(df: pd.DataFrame) -> Optional[str]:
+    """Best-effort gene/feature name column in a canonical result frame.
+
+    Ported from the original Streamlit app: annotation-derived columns are
+    only returned when they actually contain non-placeholder values, so a
+    BED result without names does not surface a column full of ``-1``.
+    """
+    possible_gene_cols = [
+        "annot_Name", "annot_gene_name", "annot_name",
+        "gene_name", "Name",
+        "annot_gene_id", "annot_ID", "gene_id", "ID",
+        "gene", "Gene", "GENE", "symbol", "Symbol",
+    ]
+    for col in possible_gene_cols:
+        if col not in df.columns:
+            continue
+        if col.startswith("annot_"):
+            valid = df[col].dropna()
+            valid = valid[~valid.astype(str).isin(_GENE_PLACEHOLDERS)]
+            if len(valid) > 0:
+                return col
+        else:
+            return col
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -525,9 +558,16 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
 
     result_df = outcome.result_df
 
-    matched = int(result_df["has_overlap"].sum()) if "has_overlap" in result_df.columns else len(result_df)
-    unmatched = len(result_df) - matched
-    match_rate = (matched / max(1, len(outcome.coord_df))) * 100
+    query_count = len(outcome.coord_df)
+    matched_rows = int(result_df["has_overlap"].sum()) if "has_overlap" in result_df.columns else len(result_df)
+    unmatched_rows = len(result_df) - matched_rows
+    # Coverage is query-row based (distinct original query rows with at least
+    # one match), never a ratio of result rows to query rows: a single query
+    # matching many annotations is one matched query, so the invariant 0..100
+    # always holds regardless of join direction.
+    matched_queries = int(outcome.matched_query_count)
+    unmatched_queries = max(0, query_count - matched_queries)
+    match_rate = (matched_queries / max(1, query_count)) * 100
 
     # Store result in this session only. The scientific report fields below
     # are ones the previous response contract could not carry; they are kept
@@ -578,10 +618,12 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     return {
         "status": "success",
         "stats": {
-            "query_count": len(outcome.coord_df),
+            "query_count": query_count,
             "result_count": len(result_df),
-            "matched_count": matched,
-            "unmatched_count": unmatched,
+            "matched_count": matched_rows,
+            "unmatched_count": unmatched_rows,
+            "matched_query_count": matched_queries,
+            "unmatched_query_count": unmatched_queries,
             "match_rate": round(match_rate, 2),
             "elapsed_seconds": round(outcome.elapsed_seconds, 4),
             "engine": outcome.engine,
@@ -593,8 +635,8 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
             "feature_distribution": feature_dist,
             "distance_distribution": distance_dist,
             "match_ratio": [
-                {"name": "Matched", "value": matched},
-                {"name": "Unmatched", "value": unmatched},
+                {"name": "Matched", "value": matched_queries},
+                {"name": "Unmatched", "value": unmatched_queries},
             ],
         },
         # Scientific report fields the previous response contract could not
@@ -612,6 +654,9 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
             if outcome.feature_filter is not None
             else None
         ),
+        # Gene/feature frequency table for the results gene-list panel
+        # (restored from the original Streamlit app; review finding F4).
+        "gene_list": _gene_list_payload(result_df),
         "columns": list(result_df.columns),
         "total_rows": len(result_df),
         "preview": _clean_df_for_json(result_df, 100),
@@ -648,6 +693,42 @@ def get_results_data(
         "total_pages": (len(filtered) + page_size - 1) // page_size,
         "rows": _clean_df_for_json(sliced, page_size),
     }
+
+
+def _gene_list_payload(df: pd.DataFrame) -> Dict[str, Any]:
+    """Gene/feature frequency payload for the results gene-list panel.
+
+    ``genes`` is the sorted, placeholder-free list of distinct names (the
+    input for external enrichment tools); ``top10`` feeds the bar chart and
+    keeps the original result's row counts.
+    """
+    gene_col = _find_gene_column(df)
+    if gene_col is None:
+        return {"gene_column": None, "genes": [], "top10": []}
+
+    values = df[gene_col].dropna().astype(str)
+    genes = sorted({value for value in values if value not in _GENE_PLACEHOLDERS})
+    counts = df[gene_col].dropna().value_counts().head(10)
+    return {
+        "gene_column": gene_col,
+        "genes": genes,
+        "top10": [{"gene": str(name), "count": int(count)} for name, count in counts.items()],
+    }
+
+
+@app.get("/api/results/gene-list")
+def get_gene_list(session: Session = Depends(get_session)):
+    """Frequency table of the matched annotation gene/feature names.
+
+    Restores the "Charts and gene list" panel of the original Streamlit app
+    (top-10 gene chart and gene-list export for external enrichment tools
+    such as g:Profiler/Enrichr/DAVID/STRING). This is a frequency table over
+    the existing result; no enrichment is computed here.
+    """
+    if "result" not in session.data:
+        raise HTTPException(status_code=404, detail="No execution results available")
+
+    return _gene_list_payload(session.data["result"]["df"])
 
 
 @app.get("/api/export/{fmt}")
@@ -689,6 +770,21 @@ def export_results(fmt: str, filter_type: str = "all", session: Session = Depend
             headers={"Content-Disposition": "attachment; filename=annotated_intervals.xlsx"},
         )
     elif fmt == "vcf":
+        # VCF export is only meaningful for VCF query input: the exporter
+        # fabricates records from canonical intervals, so REF/ALT would be
+        # synthetic placeholders for BED/GFF/CSV input. The released
+        # Streamlit app gated this on ``coord_format == "vcf"``; enforce the
+        # same rule at the HTTP boundary, independently of the frontend.
+        if res.get("coord_format") != "vcf":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "VCF export is only available when the query input is a "
+                    "VCF file; this result was produced from "
+                    f"{res.get('coord_format') or 'an unknown'} input. Export "
+                    "as CSV, TSV or Excel instead."
+                ),
+            )
         try:
             vcf_str = build_annotated_vcf(
                 export_df,
