@@ -507,6 +507,34 @@ async def upload_file(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+class DatasetClearRequest(BaseModel):
+    role: str
+
+
+@app.post("/api/dataset/clear")
+def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_session)):
+    """Discards one role's stored dataset and any result derived from it.
+
+    The declared coordinate system is baked into the parsed table at upload
+    time (for known formats) or at mapping time (for custom tables); changing
+    the declaration afterwards must invalidate the stored table, not be
+    silently ignored (review finding N2). The React frontend calls this when
+    the user changes the coordinate-system selector of an already-loaded
+    side, which forces a re-upload under the new declaration.
+
+    This is a state *removal*: it never allocates a session, so an anonymous
+    request that has nothing stored clears nothing (finding N4).
+    """
+    if req.role not in ("query", "annot"):
+        raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
+    was_loaded = req.role in session.data
+    session.data.pop(req.role, None)
+    # A stored result is always derived from the current datasets, so it is
+    # stale the moment one of them is discarded (finding F5).
+    session.data.pop("result", None)
+    return {"status": "success", "cleared": req.role, "was_loaded": was_loaded}
+
+
 class ColumnMappingRequest(BaseModel):
     chr_col: str
     start_col: str

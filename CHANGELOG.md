@@ -13,12 +13,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Automated frontend linting and build validation step (`oxlint` + `vite build`) in GitHub Actions CI workflow (`python-tests.yml`).
 - Multi-stage Docker build producing an optimized production container image with embedded frontend assets and non-root user execution (`appuser:appgroup`).
 - Restored the "Charts and gene list" results panel from the original Streamlit application: a top-10 gene/feature bar chart and gene-list export (`.txt` / comma-separated `.csv`) for external enrichment tools (g:Profiler, Enrichr, DAVID, STRING), served by the new `GET /api/results/gene-list` endpoint and the `gene_list` field of the execute response.
+- `POST /api/dataset/clear` endpoint that discards one role's stored dataset together with any result derived from it, without allocating a session (it is a state removal, not a write).
 
 ### Changed
 - Result statistics report match coverage as query-row-identity matches (`matched_query_count`), and the React results header and summary use it instead of result-row counts.
 - Annotated VCF export is only offered for VCF queries, in the React UI and enforced at the HTTP boundary, matching the Streamlit application.
 - The results table is cleared whenever the dataset or any execution configuration changes, so a stale result can no longer be displayed as if it belonged to a new run.
 - Single-position queries (no end column) now map to one-base intervals via an explicit "None (single positions)" end-column sentinel instead of silently using a positional column.
+- Changing the declared coordinate system of an already-loaded file now invalidates that side's dataset (locally, server-side, and the file picker) and requires a re-upload under the new declaration, instead of silently re-running the stale, already-normalized table (final-gate finding N2).
+- While an annotation run is in flight all configuration controls are locked, and a superseded run's response can no longer land in the UI: an `/api/execute` response is applied only if no invalidating event happened after the run started (final-gate finding N3). The results header now states the operation mode and join the run actually used.
 
 ### Fixed
 - Single-position (end-column-less) queries no longer depend on which column happens to be third in the input table.

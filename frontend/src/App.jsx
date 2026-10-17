@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { formatCitation, formatCitationShort, copyCitation } from './citation';
 import { 
   Dna, 
@@ -173,6 +173,11 @@ export default function App() {
   const [queryData, setQueryData] = useState(null);
   const [annotData, setAnnotData] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  // Review finding N2: bumping a side's upload key remounts its file input,
+  // so the browser's file picker cannot silently reuse the invalidated file
+  // on re-upload.
+  const [queryUploadKey, setQueryUploadKey] = useState(0);
+  const [annotUploadKey, setAnnotUploadKey] = useState(0);
 
   // Configuration Parameters matching original Streamlit app exactly
   const [engine, setEngine] = useState('bedtools');
@@ -197,6 +202,14 @@ export default function App() {
 
   // Execution & Results
   const [isExecuting, setIsExecuting] = useState(false);
+  // Review finding N3: every invalidating event (and each run start) bumps
+  // this generation; an /api/execute response only lands if its generation
+  // still matches, so a stale run can never resurrect results for a newer
+  // configuration. activeExecGeneration tracks the newest run started, so a
+  // superseded run clearing isExecuting cannot re-enable the button while a
+  // newer run is still in flight.
+  const runGeneration = useRef(0);
+  const activeExecGeneration = useRef(0);
   const [execResult, setExecResult] = useState(null);
   const [resultFilter, setResultFilter] = useState('all'); // 'all', 'matched', 'unmatched'
   const [statusMessage, setStatusMessage] = useState(null);
@@ -213,8 +226,37 @@ export default function App() {
   // the currently displayed results, so a stale table can never appear to
   // belong to the new configuration.
   const clearResults = () => {
+    runGeneration.current += 1;
     setExecResult(null);
     setResultFilter('all');
+  };
+
+  // Review finding N2: the declared coordinate system is baked into the
+  // parsed table at upload time (known formats) or at mapping time (custom
+  // tables). Changing the declaration afterwards therefore invalidates the
+  // stored dataset for that side, locally and on the server, and forces a
+  // re-upload under the new declaration instead of silently re-running the
+  // stale, already-normalized table.
+  const invalidateDataset = (role) => {
+    const loaded = role === 'query' ? queryData : annotData;
+    if (!loaded) return;
+    if (role === 'query') {
+      setQueryData(null);
+      setMappingRequired(false);
+      setQueryUploadKey((k) => k + 1);
+    } else {
+      setAnnotData(null);
+      setAnnotUploadKey((k) => k + 1);
+    }
+    setStatusMessage({
+      type: 'info',
+      text: `Coordinate system changed. Re-upload the ${role} file so it is parsed under the new declaration.`,
+    });
+    fetch('/api/dataset/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }).catch(() => {});
   };
 
   // Initial loading
@@ -336,6 +378,8 @@ export default function App() {
   // Execute Pipeline
   const handleExecute = async () => {
     if (!queryData || !annotData) return;
+    const generation = ++runGeneration.current;
+    activeExecGeneration.current = generation;
     setIsExecuting(true);
     setStatusMessage({ type: 'info', text: 'Executing high-throughput annotation pipeline...' });
     try {
@@ -354,6 +398,9 @@ export default function App() {
         }),
       });
       const data = await res.json();
+      // Review finding N3: if an invalidating event (or a newer run) happened
+      // after this run started, its response is stale and must not land.
+      if (runGeneration.current !== generation) return;
       if (res.ok) {
         setExecResult(data);
         setStatusMessage({ 
@@ -365,10 +412,11 @@ export default function App() {
         setStatusMessage({ type: 'error', text: data.detail || 'Execution failed' });
       }
     } catch {
+      if (runGeneration.current !== generation) return;
       clearResults();
       setStatusMessage({ type: 'error', text: 'Network execution error' });
     } finally {
-      setIsExecuting(false);
+      if (activeExecGeneration.current === generation) setIsExecuting(false);
     }
   };
 
@@ -510,22 +558,24 @@ export default function App() {
               </label>
               <div className="flex flex-col gap-1.5 mt-0.5">
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                  <input 
-                    type="radio" 
-                    name="engine" 
-                    value="bedtools" 
-                    checked={engine === 'bedtools'} 
+                  <input
+                    type="radio"
+                    name="engine"
+                    value="bedtools"
+                    checked={engine === 'bedtools'}
+                    disabled={isExecuting}
                     onChange={() => { setEngine('bedtools'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Bedtools</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                  <input 
-                    type="radio" 
-                    name="engine" 
-                    value="polars-bio" 
-                    checked={engine === 'polars-bio'} 
+                  <input
+                    type="radio"
+                    name="engine"
+                    value="polars-bio"
+                    checked={engine === 'polars-bio'}
+                    disabled={isExecuting}
                     onChange={() => { setEngine('polars-bio'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
@@ -542,10 +592,11 @@ export default function App() {
               <label className="font-semibold text-slate-800 flex items-center gap-1">
                 Operation <HelpCircle className="w-3 h-3 text-slate-400" />
               </label>
-              <select 
-                value={mode} 
+              <select
+                value={mode}
+                disabled={isExecuting}
                 onChange={(e) => { setMode(e.target.value); clearResults(); }}
-                className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-blue-500 capitalize"
+                className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-blue-500 capitalize disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <option value="overlap">Overlap</option>
                 <option value="contains">Contains</option>
@@ -567,22 +618,24 @@ export default function App() {
               </label>
               <div className="flex flex-col gap-1.5 mt-0.5">
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                  <input 
-                    type="radio" 
-                    name="join" 
-                    value="left" 
-                    checked={join === 'left'} 
+                  <input
+                    type="radio"
+                    name="join"
+                    value="left"
+                    checked={join === 'left'}
+                    disabled={isExecuting}
                     onChange={() => { setJoin('left'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
                   <span>Keep all query rows (left join)</span>
                 </label>
                 <label className="flex items-center gap-2 cursor-pointer font-medium text-slate-700">
-                  <input 
-                    type="radio" 
-                    name="join" 
-                    value="inner" 
-                    checked={join === 'inner'} 
+                  <input
+                    type="radio"
+                    name="join"
+                    value="inner"
+                    checked={join === 'inner'}
+                    disabled={isExecuting}
                     onChange={() => { setJoin('inner'); clearResults(); }}
                     className="accent-red-600 w-3.5 h-3.5"
                   />
@@ -599,10 +652,11 @@ export default function App() {
                 <label className="font-semibold text-slate-800 flex items-center gap-1 mb-1">
                   Query coordinates <HelpCircle className="w-3 h-3 text-slate-400" />
                 </label>
-                <select 
-                  value={coordSystem} 
-                  onChange={(e) => { setCoordSystem(e.target.value); clearResults(); }}
-                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700"
+                <select
+                  value={coordSystem}
+                  disabled={isExecuting}
+                  onChange={(e) => { setCoordSystem(e.target.value); clearResults(); invalidateDataset('query'); }}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Auto-detect">Auto-detect</option>
                   <option value="0-based (BED)">0-based (BED)</option>
@@ -614,10 +668,11 @@ export default function App() {
                 <label className="font-semibold text-slate-800 flex items-center gap-1 mb-1">
                   Annotation coordinates <HelpCircle className="w-3 h-3 text-slate-400" />
                 </label>
-                <select 
-                  value={annotSystem} 
-                  onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); }}
-                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700"
+                <select
+                  value={annotSystem}
+                  disabled={isExecuting}
+                  onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); invalidateDataset('annot'); }}
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Auto-detect">Auto-detect</option>
                   <option value="0-based (BED)">0-based (BED)</option>
@@ -630,10 +685,11 @@ export default function App() {
                   <span className="flex items-center gap-1">Genome assembly <HelpCircle className="w-3 h-3 text-slate-400" /></span>
                   <span className="text-[10px] text-slate-400">{meta?.assemblies?.length || 64} species catalog</span>
                 </label>
-                <select 
-                  value={genomeAssembly} 
+                <select
+                  value={genomeAssembly}
+                  disabled={isExecuting}
                   onChange={(e) => { setGenomeAssembly(e.target.value); clearResults(); }}
-                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Auto-detect">Select genome assembly (Auto-detect)</option>
                   {meta?.assemblies?.map(a => (
@@ -653,10 +709,11 @@ export default function App() {
                 <label className="font-semibold text-slate-800 flex items-center gap-1 mb-1">
                   Chromosome naming <HelpCircle className="w-3 h-3 text-slate-400" />
                 </label>
-                <select 
-                  value={chrHandling} 
+                <select
+                  value={chrHandling}
+                  disabled={isExecuting}
                   onChange={(e) => { setChrHandling(e.target.value); clearResults(); }}
-                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs"
+                  className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   {meta?.naming_options?.map(n => (
                     <option key={String(n.key)} value={n.key || 'Keep original names'}>
@@ -684,9 +741,10 @@ export default function App() {
               {showAdvanced && (
                 <div className="p-3 bg-white border-t border-slate-200 flex flex-col gap-3">
                   <label className="flex items-start gap-2 cursor-pointer text-slate-700 leading-tight">
-                    <input 
-                      type="checkbox" 
-                      checked={useStrand} 
+                    <input
+                      type="checkbox"
+                      checked={useStrand}
+                      disabled={isExecuting}
                       onChange={(e) => { setUseStrand(e.target.checked); clearResults(); }}
                       className="rounded text-red-600 focus:ring-red-500 w-3.5 h-3.5 mt-0.5 cursor-pointer"
                     />
@@ -699,14 +757,15 @@ export default function App() {
                         <span>Minimum overlap fraction</span>
                         <span className="text-red-600 font-mono text-[11px] font-bold">{minOverlap.toFixed(2)}</span>
                       </div>
-                      <input 
-                        type="range" 
-                        min="0" 
-                        max="1" 
+                      <input
+                        type="range"
+                        min="0"
+                        max="1"
                         step="0.05"
                         value={minOverlap}
+                        disabled={isExecuting}
                         onChange={(e) => { setMinOverlap(parseFloat(e.target.value)); clearResults(); }}
-                        className="w-full accent-red-600 cursor-pointer"
+                        className="w-full accent-red-600 cursor-pointer disabled:cursor-not-allowed"
                       />
                     </div>
                   )}
@@ -718,8 +777,9 @@ export default function App() {
                         <button
                           key={ft}
                           type="button"
+                          disabled={isExecuting}
                           onClick={() => toggleFeature(ft)}
-                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer ${
+                          className={`text-[10px] px-2 py-0.5 rounded-full border transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                             selectedFeatures.includes(ft)
                               ? 'bg-blue-100/80 border-blue-400 text-[#004e92] font-semibold'
                               : 'bg-white border-slate-200 text-slate-600'
@@ -763,10 +823,12 @@ export default function App() {
                       ✓ {queryData.format?.toUpperCase()} ({queryData.total_rows?.toLocaleString()} rows)
                     </span>
                   )}
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'query')} 
+                  <input
+                    key={`query-upload-${queryUploadKey}`}
+                    type="file"
+                    className="hidden"
+                    disabled={isUploading || isExecuting}
+                    onChange={(e) => handleFileUpload(e, 'query')}
                     accept=".bed,.vcf,.csv,.tsv,.txt"
                   />
                 </label>
@@ -789,10 +851,12 @@ export default function App() {
                       ✓ {annotData.format?.toUpperCase()} ({annotData.total_rows?.toLocaleString()} rows)
                     </span>
                   )}
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    onChange={(e) => handleFileUpload(e, 'annot')} 
+                  <input
+                    key={`annot-upload-${annotUploadKey}`}
+                    type="file"
+                    className="hidden"
+                    disabled={isUploading || isExecuting}
+                    onChange={(e) => handleFileUpload(e, 'annot')}
                     accept=".gff,.gff3,.gtf,.bed,.csv,.tsv,.txt"
                   />
                 </label>
@@ -809,30 +873,33 @@ export default function App() {
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
                   <div>
                     <label className="font-semibold block mb-1">Chromosome</label>
-                    <select 
-                      value={chrCol} 
+                    <select
+                      value={chrCol}
+                      disabled={isExecuting}
                       onChange={(e) => setChrCol(e.target.value)}
-                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs"
+                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       {queryData?.columns?.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="font-semibold block mb-1">Start Position</label>
-                    <select 
-                      value={startCol} 
+                    <select
+                      value={startCol}
+                      disabled={isExecuting}
                       onChange={(e) => setStartCol(e.target.value)}
-                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs"
+                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       {queryData?.columns?.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div>
                     <label className="font-semibold block mb-1">End Position</label>
-                    <select 
-                      value={endCol} 
+                    <select
+                      value={endCol}
+                      disabled={isExecuting}
                       onChange={(e) => setEndCol(e.target.value)}
-                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs"
+                      className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       <option value={NO_END_COLUMN}>{NO_END_COLUMN}</option>
                       {queryData?.columns?.map(c => <option key={c} value={c}>{c}</option>)}
@@ -841,7 +908,8 @@ export default function App() {
                   <div className="flex items-end">
                     <button
                       onClick={handleApplyMapping}
-                      className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold p-1.5 rounded-md cursor-pointer"
+                      disabled={isExecuting}
+                      className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold p-1.5 rounded-md cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       Apply Mapping
                     </button>
@@ -881,9 +949,17 @@ export default function App() {
             <div className="border-b border-slate-100 pb-2 flex items-center justify-between">
               <h2 className="text-xl font-bold text-slate-900 tracking-tight">3. Results</h2>
               {execResult && (
-                <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  Executed in {execResult.stats.elapsed_seconds}s via {execResult.stats.engine.toUpperCase()}
-                </span>
+                <>
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    Executed in {execResult.stats.elapsed_seconds}s via {execResult.stats.engine.toUpperCase()}
+                  </span>
+                  {/* Review finding N3: the results header states the exact
+                      operation and join the run used, so a stale or
+                      mis-attributed table is visible at a glance. */}
+                  <span className="text-xs font-semibold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-600 border border-slate-200 capitalize">
+                    {execResult.stats.mode} / {execResult.stats.join}
+                  </span>
+                </>
               )}
             </div>
 

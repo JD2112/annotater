@@ -1,4 +1,4 @@
-"""Task 14.7a (review findings F2, F3, F4, F5) — React source regressions.
+"""Review findings F2, F3, F4, F5, N2, N3 — React source regressions.
 
 These guard the frontend half of the reviewed fixes. There is no JS test
 runner in this repo, and the existing parity suite already asserts on
@@ -70,3 +70,45 @@ def test_f5_stale_results_cleared_on_relevant_changes():
         assert change in APP_SOURCE, change
     # Loading a new dataset or a new upload starts from no results.
     assert APP_SOURCE.count("clearResults()") >= 12
+
+
+def test_n2_coord_system_change_invalidates_the_loaded_dataset():
+    # The declared coordinate system is baked into the parsed table at upload
+    # time, so changing the declaration afterwards must invalidate the stored
+    # dataset for that side (locally and server-side) and force a re-upload,
+    # not silently re-run the stale table (final-gate finding N2).
+    assert "const invalidateDataset = (role) => {" in APP_SOURCE
+    # The F5 wiring above is preserved with the invalidation appended.
+    assert (
+        "setCoordSystem(e.target.value); clearResults(); invalidateDataset('query')"
+        in APP_SOURCE
+    )
+    assert (
+        "setAnnotSystem(e.target.value); clearResults(); invalidateDataset('annot')"
+        in APP_SOURCE
+    )
+    # The server-side copy is cleared too ...
+    assert "/api/dataset/clear" in APP_SOURCE
+    # ... and the file input is remounted so the browser's picker cannot
+    # silently reuse the invalidated file on re-upload.
+    assert "setQueryUploadKey((k) => k + 1)" in APP_SOURCE
+    assert "setAnnotUploadKey((k) => k + 1)" in APP_SOURCE
+    assert 'key={`query-upload-${queryUploadKey}`}' in APP_SOURCE
+    assert 'key={`annot-upload-${annotUploadKey}`}' in APP_SOURCE
+
+
+def test_n3_stale_execute_responses_are_discarded_and_controls_locked():
+    # An in-flight /api/execute response only lands if no invalidating event
+    # happened after the run started, so a stale run can never resurrect
+    # results for a newer configuration (final-gate finding N3).
+    assert "const runGeneration = useRef(0);" in APP_SOURCE
+    assert "const generation = ++runGeneration.current;" in APP_SOURCE
+    assert "if (runGeneration.current !== generation) return;" in APP_SOURCE
+    # A superseded run finishing must not re-enable the button while a newer
+    # run is still in flight.
+    assert "const activeExecGeneration = useRef(0);" in APP_SOURCE
+    assert "if (activeExecGeneration.current === generation) setIsExecuting(false);" in APP_SOURCE
+    # While a run is in flight the configuration controls are locked ...
+    assert APP_SOURCE.count("disabled={isExecuting}") >= 13
+    # ... and the results header states the operation the run actually used.
+    assert "{execResult.stats.mode} / {execResult.stats.join}" in APP_SOURCE
