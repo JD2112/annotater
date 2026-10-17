@@ -7,6 +7,7 @@ and coordinate normalizers, serving REST endpoints for the modern React frontend
 from __future__ import annotations
 
 import io
+import logging
 import os
 import shutil
 import tempfile
@@ -21,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from streamlit_app.api_sessions import (
+    SECURE_SESSION_COOKIE_NAME,
     SESSION_COOKIE_NAME,
     Session,
     SessionStore,
@@ -62,6 +64,8 @@ from streamlit_app.core.execution import (
 from streamlit_app.core.vcf_contigs import ChromosomeContigCollisionError
 from streamlit_app.utils import get_example_data_path
 
+_logger = logging.getLogger(__name__)
+
 app = FastAPI(
     title="AnnotateR API",
     version=Settings.VERSION,
@@ -78,9 +82,22 @@ def _cors_allow_origins() -> List[str]:
     reflected back (review finding F8). Set ``ANNOTATER_CORS_ORIGINS``
     (comma-separated) only for deployments that genuinely need cross-origin
     access; listed origins are the only ones that receive CORS headers.
+
+    A bare ``*`` entry is rejected (review finding N6): with
+    ``allow_credentials=True`` a wildcard allowlist makes the middleware
+    reflect the request Origin of every site, which credentialed-CORSes the
+    whole internet. List concrete origins instead.
     """
     raw = os.environ.get("ANNOTATER_CORS_ORIGINS", "")
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    rejected = [origin for origin in origins if origin == "*"]
+    if rejected:
+        _logger.warning(
+            "ANNOTATER_CORS_ORIGINS contains a bare wildcard '*', which is "
+            "rejected: with credentialed CORS it would reflect every "
+            "request Origin. List concrete origins instead."
+        )
+    return [origin for origin in origins if origin != "*"]
 
 
 app.add_middleware(
@@ -110,31 +127,63 @@ def _cookie_is_secure(request: Request) -> bool:
     return request.url.scheme == "https"
 
 
+def _session_cookie_name(request: Request) -> str:
+    """The session cookie name honoured on this request's transport.
+
+    Over HTTPS only the ``__Host-`` prefixed cookie is read (and issued):
+    browsers scope it to the exact host, require Secure + Path=/ and no
+    Domain attribute, so a token planted under a sibling subdomain cannot be
+    presented to this host (review finding N1). Over plain HTTP — local
+    development only — the unprefixed name is used, because browsers reject
+    Secure cookies on cleartext connections.
+    """
+    if _cookie_is_secure(request):
+        return SECURE_SESSION_COOKIE_NAME
+    return SESSION_COOKIE_NAME
+
+
 def get_session(request: Request) -> Session:
-    """Resolve (or lazily create) the session owned by this request's cookie.
+    """Resolve the session owned by this request's cookie.
 
-    The session is keyed only by the server-issued token in the cookie; no
-    endpoint accepts a session identifier as input, so a request can never
-    address another user's state.
+    The session is keyed only by the server-issued token in the transport's
+    cookie name; no endpoint accepts a session identifier as input, so a
+    request can never address another user's state, and a cookie planted
+    under the other transport's name (e.g. an unprefixed cookie presented
+    over HTTPS) is ignored rather than honoured (review finding N1).
 
-    State-less reads (GET requests with no valid cookie) are served by a
-    throwaway, never-stored session, so anonymous traffic consumes no
-    session capacity, receives no cookie, and cannot evict a real user's
-    state from the bounded store (review finding F7).
+    This never allocates a stored session. A request with no valid cookie is
+    served by a throwaway, never-stored session; capacity is consumed only
+    when an endpoint actually stores state via :func:`_materialize_session`
+    (review findings F7, N4).
     """
     existing = getattr(request.state, "session", None)
     if existing is not None:
         return existing
-    session = store.get(request.cookies.get(SESSION_COOKIE_NAME))
+    session = store.get(request.cookies.get(_session_cookie_name(request)))
     if session is None:
-        if request.method == "GET":
-            session = anonymous_session()
-        else:
-            session = store.create()
-            # The middleware below attaches the cookie once the response exists.
-            request.state.new_session_token = session.token
+        session = anonymous_session()
     request.state.session = session
     return session
+
+
+def _materialize_session(request: Request, session: Session) -> Session:
+    """Upgrade a throwaway session into a stored one, on first state write.
+
+    Session capacity is consumed only by requests that actually store state
+    (review finding N4): an anonymous request that fails validation — or
+    that only reads — never allocates a slot in the bounded store, so
+    anonymous traffic cannot evict a real user's state. Call this
+    immediately before the first ``session.data[...]`` write and use the
+    returned session for the write; the response middleware attaches the
+    cookie.
+    """
+    if session.token:
+        return session
+    stored = store.create()
+    request.state.session = stored
+    # The middleware below attaches the cookie once the response exists.
+    request.state.new_session_token = stored.token
+    return stored
 
 
 @app.middleware("http")
@@ -144,7 +193,7 @@ async def _issue_session_cookie(request: Request, call_next):
     token = getattr(request.state, "new_session_token", None)
     if token:
         response.set_cookie(
-            key=SESSION_COOKIE_NAME,
+            key=_session_cookie_name(request),
             value=token,
             max_age=_SESSION_TTL_SECONDS,
             httponly=True,
@@ -302,7 +351,11 @@ def list_sample_datasets():
 
 
 @app.post("/api/load-sample")
-def load_sample(sample_id: str = Form(...), session: Session = Depends(get_session)):
+def load_sample(
+    request: Request,
+    sample_id: str = Form(...),
+    session: Session = Depends(get_session),
+):
     """Loads a pre-bundled sample dataset into the active working state."""
     samples = {
         "gene_overlap": ("example_coordinates.bed", "example_annotations.gff3"),
@@ -324,6 +377,9 @@ def load_sample(sample_id: str = Form(...), session: Session = Depends(get_sessi
     a_fmt = FormatDetector.detect(str(a_path))
     a_df = parse_and_normalize(str(a_path), fmt=a_fmt)
 
+    # First state write: consume a session slot (anonymous requests that
+    # never stored state did not, review finding N4).
+    session = _materialize_session(request, session)
     # Store in this session only
     session.data["query"] = {
         "filename": q_name,
@@ -362,6 +418,7 @@ def load_sample(sample_id: str = Form(...), session: Session = Depends(get_sessi
 
 @app.post("/api/upload")
 async def upload_file(
+    request: Request,
     file: UploadFile = File(...),
     role: str = Form(...),  # 'query' or 'annot'
     coord_system: Optional[str] = Form(None),
@@ -415,6 +472,9 @@ async def upload_file(
             df = parse_and_normalize(str(temp_path), fmt=fmt, declared_system=declared)
             needs_mapping = False
 
+        # First state write: consume a session slot (a failed upload did
+        # not, review finding N4).
+        session = _materialize_session(request, session)
         session.data[role] = {
             "filename": file.filename,
             "format": fmt,

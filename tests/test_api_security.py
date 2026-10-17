@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from streamlit_app import api_server
 from streamlit_app.api_server import app
 from streamlit_app.api_sessions import (
+    SECURE_SESSION_COOKIE_NAME,
     SESSION_COOKIE_NAME,
     SessionStore,
     safe_extension,
@@ -35,6 +36,12 @@ def fresh_store(monkeypatch):
 @pytest.fixture()
 def client():
     return TestClient(app)
+
+
+@pytest.fixture()
+def https_client():
+    """A client speaking TLS end-to-end (cookie jar honours Secure)."""
+    return TestClient(app, base_url="https://testserver")
 
 
 # ---------------------------------------------------------------------------
@@ -80,6 +87,89 @@ def test_session_token_is_unpredictable_and_not_reused(client):
 
 
 # ---------------------------------------------------------------------------
+# __Host- session cookie over HTTPS (review finding N1)
+# ---------------------------------------------------------------------------
+
+
+def test_https_issues_host_prefixed_secure_cookie(https_client):
+    response = https_client.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    assert response.status_code == 200
+
+    raw = response.headers["set-cookie"]
+    # Exactly one cookie is issued, under the __Host- name (the unprefixed
+    # name must not ride along on the TLS path).
+    assert raw.split("=", 1)[0] == SECURE_SESSION_COOKIE_NAME
+    lowered = raw.lower()
+    assert "secure" in lowered
+    assert "httponly" in lowered
+    assert "samesite=lax" in lowered
+    assert "path=/" in lowered
+    # __Host- cookies must carry no Domain attribute.
+    assert "domain=" not in lowered
+
+
+def test_https_ignores_unprefixed_cookie_even_with_live_token(https_client):
+    # A page served from a sibling subdomain over HTTPS (or any off-origin
+    # content that somehow learned the token) can present the token under
+    # the unprefixed cookie name. Over TLS the server must not read it, so
+    # the request cannot be fixated on the victim's session.
+    owner = TestClient(app, base_url="https://testserver")
+    created = owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    assert created.status_code == 200
+    assert owner.post("/api/execute", json={}).status_code == 200
+    live_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
+    assert live_token
+
+    intruder = TestClient(app, base_url="https://testserver")
+    intruder.cookies.set(SESSION_COOKIE_NAME, live_token)
+    response = intruder.get("/api/results/data")
+    assert response.status_code == 404
+    assert response.headers.get("set-cookie") is None
+
+    # The planted cookie touched neither the store nor the victim's state.
+    assert len(api_server.store) == 1
+    assert owner.get("/api/results/data").status_code == 200
+
+
+def test_https_write_with_only_unprefixed_cookie_gets_fresh_session(https_client):
+    # The review's required regression: under HTTPS a request whose only
+    # cookie is the unprefixed name receives a fresh __Host- session, never
+    # the session that name identifies.
+    owner = TestClient(app, base_url="https://testserver")
+    owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    owner_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
+    assert owner_token
+
+    https_client.cookies.set(SESSION_COOKIE_NAME, owner_token)
+    created = https_client.post("/api/load-sample", data={"sample_id": "stranded_features"})
+    assert created.status_code == 200
+
+    issued = https_client.cookies.get(SECURE_SESSION_COOKIE_NAME)
+    assert issued and issued != owner_token
+    assert https_client.cookies.get(SESSION_COOKIE_NAME) == owner_token  # still the planted one
+    assert len(api_server.store) == 2
+    # Both sessions remain independent: the fresh session can execute on its
+    # own data, and the owner's is untouched.
+    assert https_client.post("/api/execute", json={}).status_code == 200
+    assert owner.post("/api/execute", json={}).status_code == 200
+
+
+def test_host_cookie_presented_over_http_is_not_honoured(client):
+    # Symmetry: the server must not honour the __Host- cookie over cleartext
+    # either, so a stolen token value cannot be replayed on an HTTP origin.
+    owner = TestClient(app, base_url="https://testserver")
+    owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    owner.post("/api/execute", json={})
+    live_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
+    assert live_token
+
+    client.cookies.set(SECURE_SESSION_COOKIE_NAME, live_token)
+    assert client.get("/api/results/data").status_code == 404
+    assert len(api_server.store) == 1
+    assert owner.get("/api/results/data").status_code == 200
+
+
+# ---------------------------------------------------------------------------
 # Session state isolation
 # ---------------------------------------------------------------------------
 
@@ -106,9 +196,14 @@ def test_two_clients_do_not_share_state():
     assert b.get("/api/results/data").status_code == 404
     assert b.get("/api/export/csv").status_code == 404
 
+    # Anonymous (cookie-less) requests never allocate a stored session or
+    # receive a cookie: capacity is consumed only on the first state write
+    # (review finding N4).
+    assert b.cookies.get(SESSION_COOKIE_NAME) is None
+    assert len(api_server.store) == 1
+
     token_a = a.cookies.get(SESSION_COOKIE_NAME)
-    token_b = b.cookies.get(SESSION_COOKIE_NAME)
-    assert token_a and token_b and token_a != token_b
+    assert token_a
 
     assert a.post("/api/execute", json={}).status_code == 200
     rows_before = a.get("/api/results/data").json()["total_rows"]
@@ -118,6 +213,8 @@ def test_two_clients_do_not_share_state():
         b.post("/api/load-sample", data={"sample_id": "closest_variants"}).status_code
         == 200
     )
+    token_b = b.cookies.get(SESSION_COOKIE_NAME)
+    assert token_b and token_b != token_a
     assert b.post("/api/execute", json={"mode": "closest"}).status_code == 200
 
     assert a.get("/api/results/data").json()["total_rows"] == rows_before

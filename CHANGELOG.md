@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 - `GET /api/results/data` page size is bounded to 10,000 rows per request.
 - Unauthenticated read requests are served by throwaway sessions: they consume no session capacity, receive no session cookie, and can no longer evict a real user's state from the bounded session store.
-- CORS no longer reflects arbitrary request origins; cross-origin access requires an explicit allowlist via the `ANNOTATER_CORS_ORIGINS` environment variable (default: none).
+- Session capacity is now consumed lazily on the first state write: anonymous or forged-cookie requests — including failed writes such as oversized or invalid uploads — allocate no session slot and can no longer exhaust the store or evict a real user's session (final-gate finding N4).
+- Over HTTPS the session cookie is issued and honoured only under the `__Host-` prefixed name `__Host-annotater_session` (Secure, `Path=/`, no `Domain`), scoped to the exact issuing host: an unprefixed `annotater_session` cookie — even one carrying a live token planted by a sibling subdomain — is ignored over TLS, closing the session-fixation path (final-gate finding N1). Plain-HTTP local development keeps the unprefixed name.
+- CORS no longer reflects arbitrary request origins; cross-origin access requires an explicit allowlist via the `ANNOTATER_CORS_ORIGINS` environment variable (default: none). A bare `*` entry is rejected because, with credentialed CORS, it would reflect every request origin (final-gate finding N6).
 
 ## [0.1.0-rc2] - 2026-10-02
 

@@ -110,6 +110,46 @@ class TestStatelessReads:
         assert response.headers.get("set-cookie") is not None
         assert len(api_server.store) == 1
 
+    # Review finding N4: session capacity is consumed on the first state
+    # write, so anonymous requests that fail validation (or only read) can
+    # never evict a real user's session from the bounded store.
+
+    def test_anonymous_failed_writes_cannot_exhaust_the_store(self, monkeypatch, client):
+        monkeypatch.setattr(api_server, "store", SessionStore(max_sessions=8))
+        token = _seed_result(client, [{"coord_chr": "c", "coord_start": 1}])
+
+        flood = TestClient(app)
+        for _ in range(20):
+            assert flood.post("/api/execute", json={}).status_code == 400
+            assert flood.cookies.get(SESSION_COOKIE_NAME) is None
+
+        assert len(api_server.store) == 1
+        assert api_server.store.get(token) is not None
+        assert client.get("/api/results/data").status_code == 200
+
+    def test_failed_upload_does_not_allocate_a_session(self, client, monkeypatch):
+        monkeypatch.setattr(
+            api_server.Settings, "get_max_file_size_bytes", classmethod(lambda cls: 8)
+        )
+        response = client.post(
+            "/api/upload",
+            files={"file": ("q.bed", b"0123456789")},
+            data={"role": "query"},
+        )
+        assert response.status_code == 413
+        assert response.headers.get("set-cookie") is None
+        assert len(api_server.store) == 0
+
+    def test_invalid_role_upload_does_not_allocate_a_session(self, client):
+        response = client.post(
+            "/api/upload",
+            files={"file": ("q.bed", b"chr1\t10\t20\n")},
+            data={"role": "admin"},
+        )
+        assert response.status_code == 400
+        assert response.headers.get("set-cookie") is None
+        assert len(api_server.store) == 0
+
     def test_get_with_valid_cookie_still_reads_state(self, client):
         _seed_result(client, [{"coord_chr": "c", "coord_start": 1}])
         response = client.get("/api/results/data")
@@ -159,6 +199,15 @@ class TestCorsAllowlist:
         assert _cors_allow_origins() == []
         monkeypatch.delenv("ANNOTATER_CORS_ORIGINS", raising=False)
         assert _cors_allow_origins() == []
+
+    def test_bare_wildcard_is_rejected(self, monkeypatch):
+        # With allow_credentials=True a bare "*" would make the middleware
+        # reflect every request Origin (review finding N6), so it must be
+        # dropped rather than honoured.
+        monkeypatch.setenv("ANNOTATER_CORS_ORIGINS", "*")
+        assert _cors_allow_origins() == []
+        monkeypatch.setenv("ANNOTATER_CORS_ORIGINS", "*, https://a.example")
+        assert _cors_allow_origins() == ["https://a.example"]
 
     def test_listed_origin_is_approved_and_others_are_not(self, client):
         cors = _cors_middleware()

@@ -20,9 +20,26 @@ The session token is generated server-side with ``secrets.token_urlsafe(32)``
 parameter, path segment or body field. A request can therefore only ever
 reach the state that its own cookie identifies. The token is not a signed
 claim and no data is stored client-side; the token is a pure lookup key.
-An unknown or expired token yields a fresh, empty session (and a new cookie)
-rather than an error, so a stale cookie cannot be used to read anyone else's
-data.
+
+Session capacity is consumed lazily, on the first state write: a request
+with no valid cookie (or with an unknown/expired token) is served by a
+throwaway, never-stored session, so anonymous traffic — including failed
+writes — allocates no session slot and cannot evict a real user's state
+from the bounded store (review findings F7, N4).
+
+Transport binding
+-----------------
+Over HTTPS the token rides in the ``__Host-`` prefixed cookie
+(:data:`SECURE_SESSION_COOKIE_NAME`), which browsers only accept when it is
+``Secure``, has ``Path=/`` and no ``Domain`` attribute, and which is scoped
+to the exact issuing host. A token planted under a sibling subdomain — or
+by a same-site page over a different host — cannot be presented to this
+host, so the session cannot be fixedated from off-origin content (review
+finding N1). Over plain HTTP (local development only) the unprefixed
+:data:`SESSION_COOKIE_NAME` is used, because browsers reject ``Secure``
+cookies on cleartext connections. The two names are never mixed within one
+transport: over HTTPS only the prefixed cookie is read, over HTTP only the
+unprefixed one.
 
 Transport notes
 ---------------
@@ -56,8 +73,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-#: Cookie name carrying the opaque session token.
+#: Cookie name carrying the opaque session token (plain-HTTP transport,
+#: i.e. local development).
 SESSION_COOKIE_NAME = "annotater_session"
+
+#: Cookie name carrying the opaque session token over HTTPS. The ``__Host-``
+#: prefix makes browsers enforce Secure + Path=/ + no Domain attribute and
+#: scope the cookie to the exact issuing host, so off-origin or
+#: sibling-subdomain content cannot present (or fixate) a session token
+#: (review finding N1).
+SECURE_SESSION_COOKIE_NAME = "__Host-annotater_session"
 
 #: Idle timeout for a session's server-side state.
 DEFAULT_SESSION_TTL_SECONDS = 60 * 60
