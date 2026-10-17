@@ -146,6 +146,18 @@ def _clean_df_for_json(df: pd.DataFrame, max_rows: int = 500) -> List[Dict[str, 
 # no second implementation.
 # ---------------------------------------------------------------------------
 
+@app.get("/health")
+def health() -> Dict[str, str]:
+    """Lightweight liveness probe for the container and any orchestrator.
+
+    Deliberately does no filesystem or engine work (unlike ``/api/meta``,
+    which loads the assembly catalog and probes the engines): it reports only
+    that the process is up and serving. The image HEALTHCHECK, the compose
+    healthcheck and the deployment readiness probe use this endpoint.
+    """
+    return {"status": "ok", "version": Settings.VERSION}
+
+
 @app.get("/api/meta")
 def get_metadata():
     """Returns application metadata, available engines, and operation presets."""
