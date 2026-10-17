@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -24,6 +24,7 @@ from streamlit_app.api_sessions import (
     SESSION_COOKIE_NAME,
     Session,
     SessionStore,
+    anonymous_session,
     open_private_storage,
 )
 
@@ -68,9 +69,23 @@ app = FastAPI(
 )
 
 
+def _cors_allow_origins() -> List[str]:
+    """Cross-origin origins allowed to call this API (comma-separated env).
+
+    The SPA is served from the same origin in production and through the Vite
+    proxy in development, so the default is an empty list: no cross-origin
+    request is allowed and, in particular, no request Origin is ever
+    reflected back (review finding F8). Set ``ANNOTATER_CORS_ORIGINS``
+    (comma-separated) only for deployments that genuinely need cross-origin
+    access; listed origins are the only ones that receive CORS headers.
+    """
+    raw = os.environ.get("ANNOTATER_CORS_ORIGINS", "")
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allow_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -101,15 +116,23 @@ def get_session(request: Request) -> Session:
     The session is keyed only by the server-issued token in the cookie; no
     endpoint accepts a session identifier as input, so a request can never
     address another user's state.
+
+    State-less reads (GET requests with no valid cookie) are served by a
+    throwaway, never-stored session, so anonymous traffic consumes no
+    session capacity, receives no cookie, and cannot evict a real user's
+    state from the bounded store (review finding F7).
     """
     existing = getattr(request.state, "session", None)
     if existing is not None:
         return existing
     session = store.get(request.cookies.get(SESSION_COOKIE_NAME))
     if session is None:
-        session = store.create()
-        # The middleware below attaches the cookie once the response exists.
-        request.state.new_session_token = session.token
+        if request.method == "GET":
+            session = anonymous_session()
+        else:
+            session = store.create()
+            # The middleware below attaches the cookie once the response exists.
+            request.state.new_session_token = session.token
     request.state.session = session
     return session
 
@@ -137,6 +160,11 @@ def _clean_df_for_json(df: pd.DataFrame, max_rows: int = 500) -> List[Dict[str, 
     subset = df.head(max_rows).copy()
     subset = subset.replace({float("nan"): None, float("inf"): None, float("-inf"): None})
     return subset.to_dict(orient="records")
+
+
+#: Hard ceiling for ``/api/results/data`` page size (review finding F6): a
+#: client can no longer request the entire result frame in one JSON response.
+MAX_PAGE_SIZE = 10_000
 
 
 #: Placeholder tokens some writers emit where no name exists (for example the
@@ -666,8 +694,8 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
 @app.get("/api/results/data")
 def get_results_data(
     filter_type: str = "all",
-    page: int = 1,
-    page_size: int = 50,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     session: Session = Depends(get_session),
 ):
     """Fetches paginated results with filter support (all, matched, unmatched)."""

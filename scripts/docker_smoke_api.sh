@@ -81,6 +81,9 @@ contains "$META" 'bedtools' || fail "/api/meta missing engine list"
 ok "/api/meta ok"
 
 # --- 6. two independent sessions -----------------------------------------
+# Stateless reads (no cookie) are served by throwaway sessions: they return
+# 404 and are issued NO cookie, so anonymous traffic cannot consume session
+# capacity (review finding F7). Only state-changing requests create a session.
 curl -fsS -c "$JAR_A" -b "$JAR_A" -X POST "$BASE/api/load-sample" \
     -d 'sample_id=gene_overlap' -o /dev/null || fail "session A load-sample failed"
 TOKEN_A="$(cookie_token "$JAR_A")"
@@ -88,10 +91,15 @@ TOKEN_A="$(cookie_token "$JAR_A")"
 
 [ "$(code -c "$JAR_B" -b "$JAR_B" "$BASE/api/results/data")" = "404" ] \
     || fail "session B unexpectedly saw results before doing anything"
+[ -z "$(cookie_token "$JAR_B" || true)" ] \
+    || fail "stateless read was issued a session cookie"
+
+curl -fsS -c "$JAR_B" -b "$JAR_B" -X POST "$BASE/api/load-sample" \
+    -d 'sample_id=gene_overlap' -o /dev/null || fail "session B load-sample failed"
 TOKEN_B="$(cookie_token "$JAR_B")"
-[ -n "$TOKEN_B" ] || fail "session B received no session cookie"
+[ -n "$TOKEN_B" ] || fail "session B received no session cookie after a write"
 [ "$TOKEN_A" != "$TOKEN_B" ] || fail "two clients were issued the same session token"
-ok "two independent sessions (distinct tokens)"
+ok "two independent sessions (distinct tokens; stateless reads cookie-free)"
 
 # --- 7. Bedtools execution + session isolation ---------------------------
 EXEC_BEDTOOLS='{"engine":"bedtools","mode":"overlap","join":"left","feature_types":["gene"]}'

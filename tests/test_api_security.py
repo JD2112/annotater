@@ -43,8 +43,10 @@ def client():
 
 
 def test_session_cookie_is_httponly_samesite_lax_over_http(client):
-    response = client.get("/api/results/data")
-    assert response.status_code == 404
+    # A state-changing request creates the session (stateless reads do not,
+    # review finding F7).
+    response = client.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    assert response.status_code == 200
 
     raw = response.headers.get("set-cookie")
     assert raw is not None
@@ -56,18 +58,21 @@ def test_session_cookie_is_httponly_samesite_lax_over_http(client):
 
 
 def test_session_cookie_is_secure_behind_tls_proxy(client):
-    response = client.get(
-        "/api/results/data", headers={"x-forwarded-proto": "https"}
+    response = client.post(
+        "/api/load-sample",
+        data={"sample_id": "gene_overlap"},
+        headers={"x-forwarded-proto": "https"},
     )
+    assert response.status_code == 200
     assert "secure" in response.headers["set-cookie"].lower()
 
 
 def test_session_token_is_unpredictable_and_not_reused(client):
-    client.get("/api/results/data")
+    client.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     first = client.cookies.get(SESSION_COOKIE_NAME)
     other = TestClient(app)
     other.cookies.pop(SESSION_COOKIE_NAME, None)
-    other.get("/api/results/data")
+    other.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     second = other.cookies.get(SESSION_COOKIE_NAME)
     assert first and second
     assert first != second
@@ -119,11 +124,22 @@ def test_two_clients_do_not_share_state():
 
 
 def test_unknown_cookie_token_is_ignored_and_replaced(client):
+    from streamlit_app import api_server
+
     client.cookies.set(SESSION_COOKIE_NAME, "forged-token-value")
+    # A stateless read with an unknown token reads nothing and, under the
+    # stateless-read contract (review finding F7), must not allocate a
+    # stored session or issue a replacement cookie.
     response = client.get("/api/results/data")
     assert response.status_code == 404
+    assert response.headers.get("set-cookie") is None
+    assert len(api_server.store) == 0
 
-    issued = response.headers.get("set-cookie")
+    # A state-changing request with the forged token gets a fresh session
+    # that replaces the forged cookie.
+    created = client.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    assert created.status_code == 200
+    issued = created.headers.get("set-cookie")
     assert issued is not None
     assert "forged-token-value" not in issued
 

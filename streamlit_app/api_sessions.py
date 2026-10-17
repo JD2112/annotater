@@ -121,6 +121,18 @@ class Session:
     data: Dict[str, Any] = field(default_factory=dict)
 
 
+def anonymous_session() -> Session:
+    """A state-less session for reads that carry no valid cookie.
+
+    It is never registered in a :class:`SessionStore`, so anonymous traffic
+    consumes no session capacity and cannot evict a real user's state from
+    the bounded store (review finding F7). Endpoints must treat it as
+    read-only: nothing written to it is visible to any later request.
+    """
+    moment = time.monotonic()
+    return Session(token="", created_at=moment, last_seen=moment)
+
+
 class SessionStore:
     """Bounded, thread-safe, in-memory store of per-session request state."""
 
