@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatCitation, formatCitationShort, copyCitation } from './citation';
 import { 
   Dna, 
   Upload, 
@@ -204,7 +205,7 @@ export default function App() {
   const [execResult, setExecResult] = useState(null);
   const [resultFilter, setResultFilter] = useState('all'); // 'all', 'matched', 'unmatched'
   const [statusMessage, setStatusMessage] = useState(null);
-  const [copiedCitation, setCopiedCitation] = useState(false);
+  const [citationStatus, setCitationStatus] = useState('idle'); // 'idle' | 'copied' | 'error'
 
   // Custom column mapping modal
   const [mappingRequired, setMappingRequired] = useState(false);
@@ -372,11 +373,10 @@ export default function App() {
   };
 
   // Copy Citation
-  const copyCitationText = () => {
-    const citation = "Das, J. & Volpe, M. AnnotateR: High-performance genomic coordinate annotation and interval overlap analysis suite. 2026. https://github.com/pyrevo/annotater";
-    navigator.clipboard.writeText(citation);
-    setCopiedCitation(true);
-    setTimeout(() => setCopiedCitation(false), 2500);
+  const copyCitationText = async () => {
+    const ok = await copyCitation(formatCitation());
+    setCitationStatus(ok ? 'copied' : 'error');
+    setTimeout(() => setCitationStatus('idle'), 2500);
   };
 
   // Results display filtering
@@ -1084,12 +1084,12 @@ export default function App() {
                 onClick={copyCitationText}
                 className="text-[10px] flex items-center gap-1 font-semibold text-[#004e92] hover:text-[#003768] transition-colors cursor-pointer"
               >
-                {copiedCitation ? <Check className="w-3 h-3 text-emerald-600" /> : <Copy className="w-3 h-3" />}
-                {copiedCitation ? 'Copied' : 'Copy'}
+                {citationStatus === 'copied' ? <Check className="w-3 h-3 text-emerald-600" /> : citationStatus === 'error' ? <AlertCircle className="w-3 h-3 text-rose-600" /> : <Copy className="w-3 h-3" />}
+                {citationStatus === 'copied' ? 'Copied' : citationStatus === 'error' ? 'Copy failed' : 'Copy'}
               </button>
             </div>
             <p className="text-[11px] text-slate-500 leading-normal md:text-right font-mono">
-              Das, J. & Volpe, M. (2026). <em>AnnotateR</em>. v0.1.0.
+              {formatCitationShort()}
             </p>          
           </div>
 

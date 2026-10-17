@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "oxlint",
-    "test": "oxlint && vite build",
+    "test": "oxlint && node --test src/citation.test.js && vite build",
     "preview": "vite preview"
   },
   "dependencies": {
