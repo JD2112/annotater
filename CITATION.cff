@@ -9,10 +9,10 @@ authors:
   - family-names: Volpe
     given-names: Massimiliano
 repository-code: "https://github.com/pyrevo/annotater"
-description: >-
+abstract: >-
   Genomic coordinate annotation tool: annotate query coordinates
   (BED/VCF/tabular) against annotation features (GFF/GTF/BED/tabular)
-  with a Streamlit interface. Bedtools and Polars-Bio are interchangeable
+  with a web interface. Bedtools and Polars-Bio are interchangeable
   execution backends producing identical canonical results for overlap,
   contains, within, and closest matching, with optional minimum-overlap
   and strand-aware filtering.
