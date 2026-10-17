@@ -28,8 +28,9 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 
 - **Docker** (Docker Desktop on macOS/Windows, or the Docker Engine on
   Linux) with build support. On Apple Silicon hosts the image is built for
-  `linux/amd64` (below) and Docker transparently uses QEMU emulation; the
-  build is slower but functional.
+  `linux/amd64` (below) and runs under x86 emulation: Docker Desktop uses
+  Rosetta when that option is enabled (the default in recent releases) and
+  QEMU otherwise. The build is slower but functional.
 - For Serve deployment: a Docker Hub account or a GitHub account (for
   GHCR), and a SciLifeLab Serve account.
 - No other system dependencies are needed to *build or run* the image:
@@ -537,7 +538,7 @@ the React/FastAPI image has not been deployed.
 
 | Symptom | Likely cause / fix |
 |---|---|
-| `docker build` fails in `pip install` on an Apple Silicon host | Building arm64-native. Build with `--platform linux/amd64` (the `Dockerfile` already pins amd64; use Docker Desktop with the x86 emulation enabled). |
+| `docker build` fails in `pip install` on an Apple Silicon host | Building arm64-native. Build with `--platform linux/amd64` (the `Dockerfile` already pins amd64; on Apple Silicon enable amd64 emulation in Docker Desktop — Rosetta when available — for the faster path). |
 | Serve keeps serving an old version | Reused an image tag. Publish a **new unique tag** and update the Image field. |
 | Serve app never becomes available | Image tag not pulled (private GHCR package, image deleted, or typo in the Image field). The image must stay publicly available at all times. |
 | Uploads above ~100 MB are rejected on Serve | Platform upload limit (Streamlit apps). When running the image yourself, the limit is Streamlit's 200 MB default; change it with `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (see [Upload size](#upload-size)). |
