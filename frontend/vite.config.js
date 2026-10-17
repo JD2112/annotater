@@ -17,4 +17,10 @@ export default defineConfig({
       },
     },
   },
+  test: {
+    environment: 'jsdom',
+    // .jsx only: src/citation.test.js runs under `node --test` (node:test)
+    // and is not a vitest suite.
+    include: ['src/**/*.test.jsx'],
+  },
 })

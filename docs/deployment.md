@@ -376,21 +376,30 @@ defaults in [Environment / configuration](#environment-configuration).
 
 ## Environment / configuration
 
-The application uses exactly one AnnotateR-specific environment
-variable, `TEMP_DIR`. The React/FastAPI image's entrypoint additionally reads
-`PORT` and `FORWARDED_ALLOW_IPS`. The published Streamlit generation instead
-sets four `STREAMLIT_*` variables and reads
-`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` if it is set. All are optional.
+All environment variables are optional. The React/FastAPI image's
+entrypoint (`start-script.sh`) reads `PORT` and `FORWARDED_ALLOW_IPS`; the
+API reads `MAX_FILE_SIZE_MB` and `ANNOTATER_CORS_ORIGINS`. The published
+Streamlit generation instead sets four `STREAMLIT_*` variables, reads
+`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` if it is set, and uses `TEMP_DIR`
+through its file helpers.
 
 **React/FastAPI image (this branch):**
 
 | Variable | Default | Effect |
 |---|---|---|
-| `TEMP_DIR` | `/tmp/annotator` | Directory for the temporary copy of each upload that is written for parsing (created if missing; the image creates it with world-writable permissions). The copy is deleted immediately after parsing, on success or failure. |
-| `MAX_FILE_SIZE_MB` | `500` | Per-file upload limit enforced by the API (`/api/upload`); see [Upload size](#upload-size). |
-| `CLEANUP_AFTER_HOURS` | `24` | Age after which the shared temp-directory cleanup helper removes stale files. |
 | `PORT` | `8000` | Port Uvicorn binds in `start-script.sh`. |
 | `FORWARDED_ALLOW_IPS` | `*` | Trusted proxy address(es) for `--forwarded-allow-ips`, so the TLS-terminating proxy's `X-Forwarded-Proto` is honoured and the session cookie is issued `Secure` over HTTPS. Override if the deployment topology differs. |
+| `MAX_FILE_SIZE_MB` | `500` | Per-file upload limit enforced by the API (`/api/upload`); see [Upload size](#upload-size). |
+| `ANNOTATER_CORS_ORIGINS` | unset (no cross-origin access) | Comma-separated origin allowlist for credentialed cross-origin API calls, e.g. `https://app.example.org,https://tools.example.org`. The default deployment (React app served from the same host) is same-origin and needs no configuration. A bare `*` entry is rejected at startup: with `allow_credentials=True` it would reflect every request origin. |
+
+The React/FastAPI upload path writes its temporary parsing copy under the
+**system** temporary directory (`tempfile.mkdtemp`) and deletes it
+immediately after parsing, on success or failure; it does not read
+`TEMP_DIR`. `TEMP_DIR` (default `/tmp/annotator`; the image creates it with
+world-writable permissions) and `CLEANUP_AFTER_HOURS` (age after which
+`cleanup_temp_files` would remove stale files) apply only to the
+Streamlit-generation helpers (`save_uploaded_file`, `cleanup_temp_files`),
+which the React/FastAPI image does not call.
 
 **Published Streamlit generation (reference):**
 
@@ -425,8 +434,10 @@ that generation there.
 ### Data handling
 
 - Uploaded files are processed by the running AnnotateR server.
-- A temporary copy is written under `TEMP_DIR` for parsing and deleted
-  immediately afterwards, whether parsing succeeds or fails.
+- In the React/FastAPI image a temporary copy of each upload is written
+  under the system temporary directory (`tempfile.mkdtemp`) for parsing and
+  deleted immediately afterwards, whether parsing succeeds or fails. In the
+  Streamlit generation the copy is written under `TEMP_DIR`.
 - Parsed data and results remain only in application memory for the
   active session; AnnotateR does not intentionally persist uploaded files
   or results after that lifecycle.
@@ -461,10 +472,15 @@ ergonomics (including the local Rerun control) are unchanged.
 ## Single-worker requirement
 
 The React/FastAPI image keeps each user's parsed data, options, and results in
-an **in-memory** session store, addressed by the `annotater_session` cookie
-(server-generated token; `HttpOnly`, `SameSite=Lax`, and `Secure` when the
-request arrives over HTTPS via the trusted proxy). Because the state lives in
-one process's memory, the app **must run exactly one Uvicorn worker**:
+an **in-memory** session store, addressed by the session cookie: the
+unprefixed `annotater_session` over plain HTTP, and — when the request
+arrives over HTTPS via the trusted proxy — the `__Host-` prefixed
+`__Host-annotater_session`. Both carry a server-generated token and are
+`HttpOnly` and `SameSite=Lax`; over TLS the cookie is additionally `Secure`
+with `Path=/` and no `Domain` (the `__Host-` prefix enforces exactly that),
+and the unprefixed cookie is never read, so a token planted by a sibling
+subdomain cannot fixate the session. Because the state lives in one
+process's memory, the app **must run exactly one Uvicorn worker**:
 
 - `start-script.sh` starts a single worker and deliberately passes no
   `--workers` flag;
@@ -490,11 +506,11 @@ one process's memory, the app **must run exactly one Uvicorn worker**:
   MB) need headroom for canonical frames held in memory — see
   [Limitations](limitations.md).
 - The filesystem is ephemeral except for the project *Mount path* (not
-  used). Each upload is written to a temporary file under `TEMP_DIR` for
-  parsing and deleted immediately afterwards; parsed data is held in
-  memory. Intermediate bedtools files are written by pybedtools to its
-  default temporary directory (`TMPDIR` / the system temp directory),
-  not to `TEMP_DIR`.
+  used). Each upload is written to a temporary file under the system
+  temporary directory (`tempfile.mkdtemp`) for parsing and deleted
+  immediately afterwards; parsed data is held in memory. Intermediate
+  bedtools files are likewise written by pybedtools to the system temp
+  directory (`TMPDIR` if set).
 
 ## Deployment verification
 
