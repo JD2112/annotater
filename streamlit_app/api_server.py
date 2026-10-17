@@ -32,6 +32,8 @@ from streamlit_app.core import (
     CanonicalSchemaError,
     CustomParser,
     FormatDetector,
+    VCFExportError,
+    build_annotated_vcf,
     coordinate_system_for,
     extension_authoritative_for,
     normalize_intervals,
@@ -56,6 +58,7 @@ from streamlit_app.core.execution import (
     AnnotationRequest,
     execute_annotation as execute_annotation_core,
 )
+from streamlit_app.core.vcf_contigs import ChromosomeContigCollisionError
 from streamlit_app.utils import get_example_data_path
 
 app = FastAPI(
@@ -135,94 +138,12 @@ def _clean_df_for_json(df: pd.DataFrame, max_rows: int = 500) -> List[Dict[str, 
     return subset.to_dict(orient="records")
 
 
-def _vcf_info_key(col_name: str) -> str:
-    key = col_name.upper()
-    cleaned = "".join(c if c.isalnum() or c == "_" else "_" for c in key)
-    return f"AN_{cleaned}" if not cleaned.startswith("AN_") else cleaned
-
-
-def _escape_vcf_info_value(val: str) -> str:
-    return str(val).replace(" ", "_").replace(";", "%3B").replace("=", "%3D").replace(",", "%2C")
-
-
-def _chrom_renames(before: pd.Series, after: pd.Series) -> Dict[str, str]:
-    renames = {}
-    for old_val, new_val in zip(before, after):
-        old_s, new_s = str(old_val), str(new_val)
-        if old_s != new_s and old_s not in renames:
-            renames[old_s] = new_s
-    return renames
-
-
-def convert_df_to_vcf(df: pd.DataFrame, original_header_lines=None, contig_renames=None) -> str:
-    lines = []
-    if original_header_lines:
-        for raw in original_header_lines:
-            line = str(raw).strip()
-            if not line:
-                continue
-            if contig_renames and line.startswith("##contig=<") and "ID=" in line:
-                for old_id, new_id in contig_renames.items():
-                    if f"ID={old_id}," in line or f"ID={old_id}>" in line:
-                        line = line.replace(f"ID={old_id},", f"ID={new_id},").replace(f"ID={old_id}>", f"ID={new_id}>")
-                        break
-            lines.append(line)
-    else:
-        lines.append("##fileformat=VCFv4.2")
-
-    annot_cols = [c for c in df.columns if c.startswith("annot_")]
-    if "distance" in df.columns and "distance" not in annot_cols:
-        annot_cols.append("distance")
-    if "has_overlap" in df.columns and "annot_has_overlap" not in annot_cols:
-        annot_cols.append("has_overlap")
-
-    for col in annot_cols:
-        key = _vcf_info_key(col)
-        lines.append(f'##INFO=<ID={key},Number=1,Type=String,Description="AnnotateR: {col}">')
-
-    sample_cols = [c for c in df.columns if c.startswith("coord_sample_")]
-    sample_names = [c.replace("coord_sample_", "") for c in sample_cols]
-
-    vcf_cols = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
-    if sample_cols:
-        vcf_cols.append("FORMAT")
-        vcf_cols.extend(sample_names)
-    lines.append("\t".join(vcf_cols))
-
-    for _, row in df.iterrows():
-        chrom = str(row.get("coord_chr", "."))
-        pos = str(int(row.get("coord_start", 0)) + 1)
-        id_val = str(row.get("coord_id", "."))
-        ref = str(row.get("coord_ref", "N"))
-        alt = str(row.get("coord_alt", "."))
-        qual = str(row.get("coord_qual", "."))
-        filt = str(row.get("coord_filter", "."))
-
-        orig_info = str(row.get("coord_info", "."))
-        info_parts = [orig_info] if orig_info != "." else []
-
-        for col in annot_cols:
-            val = row.get(col)
-            if val is not None and not pd.isna(val) and str(val).strip() not in ("", ".", "nan", "NA", "<NA>"):
-                k = _vcf_info_key(col)
-                v = _escape_vcf_info_value(str(val))
-                info_parts.append(f"{k}={v}")
-
-        info_str = ";".join(info_parts) if info_parts else "."
-        rec = [chrom, pos, id_val, ref, alt, qual, filt, info_str]
-
-        if sample_cols:
-            rec.append("GT")
-            for c in sample_cols:
-                rec.append(str(row.get(c, "./.")))
-
-        lines.append("\t".join(rec))
-
-    return "\n".join(lines) + "\n"
-
-
 # ---------------------------------------------------------------------------
 # API Routes
+#
+# VCF export is the shared, framework-independent writer in
+# streamlit_app.core.vcf_export (``build_annotated_vcf``); this module keeps
+# no second implementation.
 # ---------------------------------------------------------------------------
 
 @app.get("/api/meta")
@@ -756,11 +677,23 @@ def export_results(fmt: str, filter_type: str = "all", session: Session = Depend
             headers={"Content-Disposition": "attachment; filename=annotated_intervals.xlsx"},
         )
     elif fmt == "vcf":
-        vcf_str = convert_df_to_vcf(
-            export_df,
-            original_header_lines=res.get("vcf_header_lines"),
-            contig_renames=res.get("vcf_contig_renames"),
-        )
+        try:
+            vcf_str = build_annotated_vcf(
+                export_df,
+                original_header_lines=res.get("vcf_header_lines"),
+                contig_renames=res.get("vcf_contig_renames"),
+            )
+        except ChromosomeContigCollisionError:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "VCF export unavailable: some normalized chromosome "
+                    "names share contig metadata that conflicts. Choose a "
+                    "different source assembly for this input."
+                ),
+            )
+        except VCFExportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
         return Response(
             content=vcf_str,
             media_type="text/plain",
