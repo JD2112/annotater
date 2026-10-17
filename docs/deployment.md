@@ -120,7 +120,7 @@ Every published image is immutable and is tagged twice with the **same
 digest**:
 
 ```text
-ghcr.io/pyrevo/annotater:0.1.0-rc2     # release-candidate tag (pre-publication testing; latest published RC)
+ghcr.io/pyrevo/annotater:0.1.0-rc3     # release-candidate tag (pre-publication testing; latest published RC)
 ghcr.io/pyrevo/annotater:sha-<sha>     # per-commit tag of the exact published commit
 ```
 
@@ -153,7 +153,7 @@ Example publication (GitHub → Actions → `release-ghcr` → Run workflow):
 
 ```text
 branch: main
-image_tag: 0.1.0-rc2
+image_tag: 0.1.0-rc3
 ```
 
 ### Why `app.py`
