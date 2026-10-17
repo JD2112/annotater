@@ -89,7 +89,7 @@ Python dependencies are installed from the committed `uv.lock` (see
 [Dependency management](#dependency-management)), so the full resolved
 graph — including transitive dependencies — is the one recorded in the
 lock, not whatever is newest on PyPI at build time. The build is
-multi-stage: a `node:20-slim` stage runs `npm ci` and `npm run build`
+multi-stage: a `node:22-slim` stage runs `npm ci` and `npm run build`
 (so the build host needs access to the npm registry), and the runtime
 image then installs only the pinned Python dependencies. The remaining
 inputs are the base image `python:3.12-slim` (a moving tag; not

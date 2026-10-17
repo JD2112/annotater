@@ -1,7 +1,7 @@
 # AnnotateR production image.
 #
 # Multi-stage build:
-# Stage 1: Build the modern React frontend with Node 20
+# Stage 1: Build the modern React frontend with Node 22
 # Stage 2: Production Python image with FastAPI backend, bedtools, and Polars-Bio
 #
 # Platform: pinned to linux/amd64 by default (ARG PLATFORM). The pinned
@@ -10,7 +10,7 @@
 ARG PLATFORM=linux/amd64
 
 # --- Stage 1: Frontend Build ---
-FROM node:20-slim AS frontend-builder
+FROM node:22-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
