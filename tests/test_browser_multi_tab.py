@@ -16,6 +16,7 @@ tab B's datasets. Now both are visible conflicts in tab A.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import subprocess
@@ -163,6 +164,46 @@ def test_second_tab_cannot_make_first_tab_export_or_run_its_analysis(browser, ba
     downloads = _no_download(tab_b, lambda: tab_b.get_by_role("button", name="CSV", exact=True).click())
     assert downloads == []
     assert "Changed in another tab" in tab_b.get_by_role("alert").inner_text()
+    context.close()
+
+
+def test_upload_409_conflict_drops_the_stale_side_and_disables_run(browser, base_url, files):
+    """Issue #58: a superseded upload must reset the tab, not keep the old file.
+
+    With both sides loaded, the next query upload is answered with the 409
+    ``revision_conflict`` PR #57 returns when another tab wins the race. The
+    tab must drop the stale query card, keep the untouched annotation, show the
+    "Changed in another tab" warning and leave Run disabled until a re-upload.
+    """
+    context = browser.new_context(accept_downloads=True)
+    page = _open_tab(context, base_url)
+    assert "0 of 1 regions matched" in _load_and_run(page, files, one_based=False)
+    assert page.get_by_role("button", name="Run annotation").is_enabled()
+
+    page.route(
+        "**/api/upload",
+        lambda route: route.fulfill(
+            status=409,
+            content_type="application/json",
+            body=json.dumps({
+                "detail": {
+                    "code": "revision_conflict",
+                    "message": "This query upload was superseded by a newer upload or "
+                    "clear from another tab of this browser session; nothing was stored.",
+                    "stale": ["query"],
+                }
+            }),
+        ),
+    )
+    # A fresh filename, so the picker actually fires a change event.
+    superseded = files / "superseded.tsv"
+    superseded.write_text("chr1\t100\t200\tr1\n")
+    page.locator("input[type=file]").nth(0).set_input_files(superseded)
+
+    page.wait_for_selector("text=/Changed in another tab/")
+    assert page.locator("text=regions.tsv").count() == 0
+    assert page.locator("text=annot.bed").count() == 1
+    assert page.get_by_role("button", name="Run annotation").is_disabled()
     context.close()
 
 
