@@ -220,6 +220,56 @@ def test_custom_mapping_rejects_non_numeric_start_without_path_leak(client):
     assert "annotater-upload" not in detail
 
 
+def _map_while(client, monkeypatch, interleave):
+    """Apply a mapping, running ``interleave(client)`` mid-normalization.
+
+    Models the browser race in finding N2-R: ``/api/apply-mapping`` runs in
+    the threadpool while ``/api/dataset/clear`` (a coordinate-declaration
+    change) or a re-upload lands for the same session.
+    """
+    real = api_server.normalize_intervals
+
+    def racing(*args, **kwargs):
+        interleave(client)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(api_server, "normalize_intervals", racing)
+    response = client.post("/api/apply-mapping", json={
+        "chr_col": "Chromosome", "start_col": "Start", "end_col": "End",
+        "coord_system": "Auto-detect",
+    })
+    monkeypatch.setattr(api_server, "normalize_intervals", real)
+    return response
+
+
+def _session_data(client):
+    return api_server.store.get(client.cookies.get("annotater_session")).data
+
+
+def test_mapping_does_not_resurrect_a_query_cleared_mid_mapping(client, monkeypatch):
+    _custom_query(client)
+    response = _map_while(
+        client, monkeypatch,
+        lambda c: c.post("/api/dataset/clear", json={"role": "query"}),
+    )
+    # Previously a KeyError surfaced as HTTP 500; now a clean conflict, and
+    # the cleared side stays cleared.
+    assert response.status_code == 409
+    assert "query" not in _session_data(client)
+
+
+def test_mapping_never_overwrites_a_query_reuploaded_mid_mapping(client, monkeypatch):
+    _custom_query(client)
+    response = _map_while(
+        client, monkeypatch,
+        lambda c: _upload(c, "new.bed", b"chr9\t1\t2\n", "query", coord_system="1-based (GFF/GTF/VCF)"),
+    )
+    assert response.status_code == 409
+    stored = _session_data(client)["query"]
+    assert stored["filename"] == "new.bed"
+    assert stored["df"]["chr"].tolist() == ["chr9"]
+
+
 # ---------------------------------------------------------------------------
 # Feature filtering uses the shared expansion
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -67,6 +68,12 @@ from streamlit_app.core.vcf_contigs import ChromosomeContigCollisionError
 from streamlit_app.utils import get_example_data_path
 
 _logger = logging.getLogger(__name__)
+
+#: Serialises replacements/removals of a session's stored datasets. Mapping
+#: runs in the threadpool and commits only if the query entry it read is still
+#: the stored one, so a concurrent clear or re-upload can never be overwritten
+#: by (or resurrected from) a mapping of the superseded table (finding N2-R).
+_dataset_lock = threading.Lock()
 
 app = FastAPI(
     title="AnnotateR API",
@@ -494,15 +501,16 @@ async def upload_file(
         # First state write: consume a session slot (a failed upload did
         # not, review finding N4).
         session = _materialize_session(request, session)
-        session.data[role] = {
-            "filename": file.filename,
-            "format": fmt,
-            "df": df,
-            "rows": len(df),
-            "columns": list(df.columns),
-            "needs_mapping": needs_mapping,
-            "vcf_header_lines": df.attrs.get("vcf_header_lines"),
-        }
+        with _dataset_lock:
+            session.data[role] = {
+                "filename": file.filename,
+                "format": fmt,
+                "df": df,
+                "rows": len(df),
+                "columns": list(df.columns),
+                "needs_mapping": needs_mapping,
+                "vcf_header_lines": df.attrs.get("vcf_header_lines"),
+            }
 
         return {
             "status": "success",
@@ -546,11 +554,12 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
     """
     if req.role not in ("query", "annot"):
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
-    was_loaded = req.role in session.data
-    session.data.pop(req.role, None)
-    # A stored result is always derived from the current datasets, so it is
-    # stale the moment one of them is discarded (finding F5).
-    session.data.pop("result", None)
+    with _dataset_lock:
+        was_loaded = req.role in session.data
+        session.data.pop(req.role, None)
+        # A stored result is always derived from the current datasets, so it
+        # is stale the moment one of them is discarded (finding F5).
+        session.data.pop("result", None)
     return {"status": "success", "cleared": req.role, "was_loaded": was_loaded}
 
 
@@ -589,7 +598,8 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
     if "query" not in session.data:
         raise HTTPException(status_code=400, detail="No query dataset loaded")
 
-    raw_df = session.data["query"]["df"]
+    entry = session.data["query"]
+    raw_df = entry["df"]
     columns = list(raw_df.columns)
     end_col = req.end_col or None
     strand_col = req.strand_col or None
@@ -629,10 +639,22 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
     except (CanonicalSchemaError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=f"Column mapping failed: {exc}")
 
-    session.data["query"]["df"] = mapped_df
-    session.data["query"]["needs_mapping"] = False
-    session.data["query"]["columns"] = list(mapped_df.columns)
-    session.data["query"]["rows"] = len(mapped_df)
+    with _dataset_lock:
+        if session.data.get("query") is not entry:
+            # Cleared or re-uploaded while this mapping ran (e.g. the
+            # coordinate declaration changed): never write the superseded
+            # table back (finding N2-R).
+            raise HTTPException(
+                status_code=409,
+                detail="The query dataset changed while the mapping was applied; re-upload it and map again.",
+            )
+        session.data["query"] = {
+            **entry,
+            "df": mapped_df,
+            "needs_mapping": False,
+            "columns": list(mapped_df.columns),
+            "rows": len(mapped_df),
+        }
     return {
         "status": "success",
         "total_rows": len(mapped_df),
