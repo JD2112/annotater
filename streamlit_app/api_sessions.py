@@ -48,6 +48,15 @@ normalises names: browsers do not apply ``__Host-`` rules to a name such as
 reopen the sibling-subdomain fixation path. Such aliases, and a duplicated
 session cookie, are rejected outright (review finding N1-R).
 
+Revisions
+---------
+All tabs of one browser present the same cookie and so share one session.
+Each stored dataset and result therefore carries an opaque revision from
+:func:`new_revision`; the API requires clients to state the revisions they
+display and answers 409 when they no longer match, so one tab can never run
+on, read or export state another tab replaced (release-gate finding F1).
+:attr:`Session.lock` serialises those checks with the state transitions.
+
 Transport notes
 ---------------
 - ``HttpOnly`` hides the token from JavaScript (XSS cannot read it).
@@ -198,6 +207,22 @@ class Session:
     created_at: float
     last_seen: float
     data: Dict[str, Any] = field(default_factory=dict)
+    #: Serialises revision checks and state transitions on ``data`` (one tab's
+    #: request must never interleave a check-then-write with another tab's).
+    lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+
+
+def new_revision() -> str:
+    """An opaque, server-issued revision identifier for stored state.
+
+    Every stored dataset and execution result carries one; clients echo the
+    revisions they are displaying so the server can refuse (HTTP 409) to act
+    on, or serve, state that another tab of the same session has replaced.
+    128 bits of CSPRNG output makes accidental collisions and guessing
+    impractical. A revision is not a credential: it never grants access
+    beyond what the session cookie already does.
+    """
+    return secrets.token_urlsafe(16)
 
 
 def anonymous_session() -> Session:

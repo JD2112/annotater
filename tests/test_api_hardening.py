@@ -12,7 +12,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import (
@@ -20,7 +20,7 @@ from streamlit_app.api_server import (
     _cors_allow_origins,
     app,
 )
-from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
+from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore, new_revision
 
 
 @pytest.fixture(autouse=True)
@@ -30,13 +30,15 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def _seed_result(client, rows) -> str:
     session = api_server.store.create()
-    session.data["result"] = {"df": pd.DataFrame(rows)}
+    session.data["result"] = {"df": pd.DataFrame(rows), "rev": new_revision()}
     client.cookies.set(SESSION_COOKIE_NAME, session.token)
+    # The seeded result is the one this "tab" displays.
+    client.revisions["result"] = session.data["result"]["rev"]
     return session.token
 
 
@@ -96,7 +98,7 @@ class TestStatelessReads:
         token = _seed_result(client, [{"coord_chr": "c", "coord_start": 1}])
 
         # Far more anonymous reads than the store can hold.
-        flood = TestClient(app)
+        flood = RevisionClient(app)
         for _ in range(3 * 256):
             assert flood.get("/api/results/data").status_code == 404
 
@@ -118,7 +120,7 @@ class TestStatelessReads:
         monkeypatch.setattr(api_server, "store", SessionStore(max_sessions=8))
         token = _seed_result(client, [{"coord_chr": "c", "coord_start": 1}])
 
-        flood = TestClient(app)
+        flood = RevisionClient(app)
         for _ in range(20):
             assert flood.post("/api/execute", json={}).status_code == 400
             assert flood.cookies.get(SESSION_COOKIE_NAME) is None

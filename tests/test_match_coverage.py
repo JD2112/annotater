@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
@@ -136,7 +136,7 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def test_api_match_rate_is_query_based_and_bounded(client):

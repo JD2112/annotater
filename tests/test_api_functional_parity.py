@@ -20,7 +20,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
@@ -45,7 +45,7 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def _upload(client, name, content, role, coord_system=None, media="text/plain"):
@@ -176,7 +176,7 @@ def test_custom_mapping_single_position_both_systems(client):
     assert (row["chr"], row["start"], row["end"], row["name"]) == ("chr2", 49, 50, "s1")
 
     api_server.store = SessionStore()
-    other = TestClient(app)
+    other = RevisionClient(app)
     _custom_query(other, one_based, "s.tsv")
     response = other.post("/api/apply-mapping", json={
         "chr_col": "chrom", "start_col": "pos", "end_col": None,
@@ -418,8 +418,8 @@ def test_upload_error_does_not_leak_private_paths(client):
 
 def test_session_isolation_holds_after_a_full_run():
     _require_bedtools()
-    first = TestClient(app)
-    second = TestClient(app)
+    first = RevisionClient(app)
+    second = RevisionClient(app)
 
     _load_sample(first)
     assert first.post("/api/execute", json=FRONTEND_DEFAULT).status_code == 200

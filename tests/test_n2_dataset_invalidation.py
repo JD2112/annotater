@@ -9,7 +9,7 @@ declaration changes, forcing a re-upload under the new declaration.
 """
 
 import pytest
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
@@ -28,7 +28,7 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def _upload_query(client, coord_system):

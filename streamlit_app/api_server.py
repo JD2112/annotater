@@ -11,7 +11,6 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,7 +19,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from streamlit_app.api_sessions import (
     SECURE_SESSION_COOKIE_NAME,
@@ -29,6 +28,7 @@ from streamlit_app.api_sessions import (
     Session,
     SessionStore,
     anonymous_session,
+    new_revision,
     open_private_storage,
     session_token_from_cookie_headers,
 )
@@ -69,11 +69,65 @@ from streamlit_app.utils import get_example_data_path
 
 _logger = logging.getLogger(__name__)
 
-#: Serialises replacements/removals of a session's stored datasets. Mapping
-#: runs in the threadpool and commits only if the query entry it read is still
-#: the stored one, so a concurrent clear or re-upload can never be overwritten
-#: by (or resurrected from) a mapping of the superseded table (finding N2-R).
-_dataset_lock = threading.Lock()
+#: Longest client-echoed revision accepted (server revisions are 22 chars).
+_REVISION_MAX_LENGTH = 64
+
+# ---------------------------------------------------------------------------
+# Revisions (multi-tab consistency, release-gate finding F1)
+#
+# All tabs of one browser share the session cookie, but each tab keeps its
+# own UI state. Every stored dataset and result therefore carries an opaque
+# server-issued revision (``api_sessions.new_revision``). Clients echo the
+# revisions they display: execution and mapping state which dataset
+# revisions they act on, result reads and exports state which result
+# revision they show. Contract, uniformly:
+#
+# * nothing stored and no revision claimed -> 400/404 (unchanged);
+# * state stored but no revision claimed   -> 428 (never a silent fallback);
+# * claimed revision absent or different   -> 409 ``revision_conflict``.
+#
+# Checks and the state transitions they guard happen under ``session.lock``.
+# ---------------------------------------------------------------------------
+
+
+def _revision_conflict(message: str, stale: List[str]) -> HTTPException:
+    """HTTP 409 for state another tab (or an expiry) replaced."""
+    return HTTPException(
+        status_code=409,
+        detail={"code": "revision_conflict", "message": message, "stale": stale},
+    )
+
+
+def _revision_required(names: str) -> HTTPException:
+    return HTTPException(
+        status_code=428,
+        detail=(
+            f"{names} required: state which revision this request is for "
+            "(returned when the dataset was loaded or the annotation was run)."
+        ),
+    )
+
+
+_RESULT_REPLACED = (
+    "The results shown in this tab were replaced or discarded by another tab "
+    "of this browser session (or the session expired). Nothing was "
+    "exported. Re-run the annotation in this tab."
+)
+
+
+def _bound_result(session: Session, result_rev: Optional[str], missing: str) -> Dict[str, Any]:
+    """The stored result, only if it is the revision the client displays."""
+    with session.lock:
+        result = session.data.get("result")
+    if result is None:
+        if result_rev:
+            raise _revision_conflict(_RESULT_REPLACED, ["result"])
+        raise HTTPException(status_code=404, detail=missing)
+    if not result_rev:
+        raise _revision_required("result_rev is")
+    if result.get("rev") != result_rev:
+        raise _revision_conflict(_RESULT_REPLACED, ["result"])
+    return result
 
 app = FastAPI(
     title="AnnotateR API",
@@ -406,26 +460,31 @@ def load_sample(
     # First state write: consume a session slot (anonymous requests that
     # never stored state did not, review finding N4).
     session = _materialize_session(request, session)
+    q_rev, a_rev = new_revision(), new_revision()
     # Store in this session only
-    session.data["query"] = {
-        "filename": q_name,
-        "format": q_fmt,
-        "df": q_df,
-        "rows": len(q_df),
-        "columns": list(q_df.columns),
-        "vcf_header_lines": q_df.attrs.get("vcf_header_lines"),
-    }
-    session.data["annot"] = {
-        "filename": a_name,
-        "format": a_fmt,
-        "df": a_df,
-        "rows": len(a_df),
-        "columns": list(a_df.columns),
-    }
+    with session.lock:
+        session.data["query"] = {
+            "rev": q_rev,
+            "filename": q_name,
+            "format": q_fmt,
+            "df": q_df,
+            "rows": len(q_df),
+            "columns": list(q_df.columns),
+            "vcf_header_lines": q_df.attrs.get("vcf_header_lines"),
+        }
+        session.data["annot"] = {
+            "rev": a_rev,
+            "filename": a_name,
+            "format": a_fmt,
+            "df": a_df,
+            "rows": len(a_df),
+            "columns": list(a_df.columns),
+        }
 
     return {
         "status": "success",
         "query": {
+            "revision": q_rev,
             "filename": q_name,
             "format": q_fmt,
             "total_rows": len(q_df),
@@ -433,6 +492,7 @@ def load_sample(
             "preview": _clean_df_for_json(q_df, 50),
         },
         "annot": {
+            "revision": a_rev,
             "filename": a_name,
             "format": a_fmt,
             "total_rows": len(a_df),
@@ -501,8 +561,10 @@ async def upload_file(
         # First state write: consume a session slot (a failed upload did
         # not, review finding N4).
         session = _materialize_session(request, session)
-        with _dataset_lock:
+        revision = new_revision()
+        with session.lock:
             session.data[role] = {
+                "rev": revision,
                 "filename": file.filename,
                 "format": fmt,
                 "df": df,
@@ -515,6 +577,7 @@ async def upload_file(
         return {
             "status": "success",
             "role": role,
+            "revision": revision,
             "filename": file.filename,
             "format": fmt,
             "total_rows": len(df),
@@ -536,6 +599,10 @@ async def upload_file(
 
 class DatasetClearRequest(BaseModel):
     role: str
+    # The revision the client means to discard. When given and the stored
+    # dataset is a different revision (another tab replaced it), nothing is
+    # cleared and 409 is returned, so one tab cannot wipe another's upload.
+    revision: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
 
 
 @app.post("/api/dataset/clear")
@@ -549,17 +616,29 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
     the user changes the coordinate-system selector of an already-loaded
     side, which forces a re-upload under the new declaration.
 
+    With ``revision``, only that revision is cleared (409 otherwise), so a
+    tab cannot discard a dataset another tab of the session uploaded since.
+
     This is a state *removal*: it never allocates a session, so an anonymous
     request that has nothing stored clears nothing (finding N4).
     """
     if req.role not in ("query", "annot"):
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
-    with _dataset_lock:
-        was_loaded = req.role in session.data
+    with session.lock:
+        entry = session.data.get(req.role)
+        if req.revision is not None and entry is not None and entry.get("rev") != req.revision:
+            raise _revision_conflict(
+                f"Not cleared: the stored {req.role} dataset is a newer revision "
+                "(replaced in another tab of this browser session).",
+                [req.role],
+            )
+        was_loaded = entry is not None
         session.data.pop(req.role, None)
-        # A stored result is always derived from the current datasets, so it
-        # is stale the moment one of them is discarded (finding F5).
-        session.data.pop("result", None)
+        # A result derived from the discarded dataset is stale the moment it
+        # is discarded (finding F5).
+        result = session.data.get("result")
+        if result is not None and entry is not None and result.get(f"{req.role}_rev") == entry.get("rev"):
+            session.data.pop("result", None)
     return {"status": "success", "cleared": req.role, "was_loaded": was_loaded}
 
 
@@ -572,6 +651,8 @@ class ColumnMappingRequest(BaseModel):
     end_col: Optional[str] = None
     strand_col: Optional[str] = None
     coord_system: str = "0-based"
+    # Revision of the uploaded (unmapped) query this mapping is for.
+    query_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
 
 
 def _declared_coordinate_system(option: Optional[str]) -> str:
@@ -595,10 +676,25 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
     start, end (or single position) and optional strand are selected from the
     user's columns; every other column is preserved as metadata.
     """
-    if "query" not in session.data:
+    with session.lock:
+        entry = session.data.get("query")
+    if entry is None:
+        if req.query_rev:
+            raise _revision_conflict(
+                "The query file this mapping is for is no longer loaded (cleared "
+                "or replaced in another tab of this browser session, or the "
+                "session expired). Re-upload it.",
+                ["query"],
+            )
         raise HTTPException(status_code=400, detail="No query dataset loaded")
-
-    entry = session.data["query"]
+    if not req.query_rev:
+        raise _revision_required("query_rev is")
+    if entry.get("rev") != req.query_rev:
+        raise _revision_conflict(
+            "The query dataset was replaced in another tab of this browser "
+            "session; this mapping was not applied. Re-upload the query file.",
+            ["query"],
+        )
     raw_df = entry["df"]
     columns = list(raw_df.columns)
     end_col = req.end_col or None
@@ -639,17 +735,20 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
     except (CanonicalSchemaError, ValueError, KeyError) as exc:
         raise HTTPException(status_code=400, detail=f"Column mapping failed: {exc}")
 
-    with _dataset_lock:
+    revision = new_revision()
+    with session.lock:
         if session.data.get("query") is not entry:
             # Cleared or re-uploaded while this mapping ran (e.g. the
-            # coordinate declaration changed): never write the superseded
-            # table back (finding N2-R).
-            raise HTTPException(
-                status_code=409,
-                detail="The query dataset changed while the mapping was applied; re-upload it and map again.",
+            # coordinate declaration changed, here or in another tab): never
+            # write the superseded table back (finding N2-R).
+            raise _revision_conflict(
+                "The query dataset changed while the mapping was applied; "
+                "re-upload it and map again.",
+                ["query"],
             )
         session.data["query"] = {
             **entry,
+            "rev": revision,
             "df": mapped_df,
             "needs_mapping": False,
             "columns": list(mapped_df.columns),
@@ -657,6 +756,7 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
         }
     return {
         "status": "success",
+        "revision": revision,
         "total_rows": len(mapped_df),
         "columns": list(mapped_df.columns),
         "preview": _clean_df_for_json(mapped_df, 50),
@@ -672,6 +772,9 @@ class ExecutionRequest(BaseModel):
     min_overlap: float = 0.0
     assembly: Optional[str] = None
     chr_naming: Optional[str] = None
+    # Revisions of the datasets the client displays and means to run on.
+    query_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
+    annot_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
 
 
 @app.post("/api/execute")
@@ -683,11 +786,26 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     uses). This endpoint maps the request onto that service and serializes the
     outcome; it contains no scientific logic of its own.
     """
-    if "query" not in session.data or "annot" not in session.data:
+    claimed = {"query": req.query_rev, "annot": req.annot_rev}
+    with session.lock:
+        stored = {"query": session.data.get("query"), "annot": session.data.get("annot")}
+    stale = [role for role in ("query", "annot")
+             if claimed[role] and (stored[role] is None or stored[role].get("rev") != claimed[role])]
+    if not stale and any(stored[r] is None and not claimed[r] for r in ("query", "annot")):
         raise HTTPException(status_code=400, detail="Both query and annotation datasets must be loaded")
-
-    query = session.data["query"]
-    annot = session.data["annot"]
+    if not stale and not all(claimed.values()):
+        raise _revision_required("query_rev and annot_rev are")
+    if stale:
+        names = " and ".join("annotation" if r == "annot" else r for r in stale)
+        plural = len(stale) > 1
+        raise _revision_conflict(
+            f"The {names} {'datasets' if plural else 'dataset'} shown in this tab "
+            f"{'are' if plural else 'is'} no longer loaded in this browser session "
+            "(replaced or cleared in another tab, or the session expired). "
+            f"Nothing was run. Re-upload {'them' if plural else 'it'} in this tab.",
+            stale,
+        )
+    query, annot = stored["query"], stored["annot"]
 
     request = AnnotationRequest(
         query=query["df"],
@@ -729,7 +847,11 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     # Store result in this session only. The scientific report fields below
     # are ones the previous response contract could not carry; they are kept
     # for the results/export endpoints and surfaced to the client.
-    session.data["result"] = {
+    result_rev = new_revision()
+    result_entry = {
+        "rev": result_rev,
+        "query_rev": query["rev"],
+        "annot_rev": annot["rev"],
         "df": result_df,
         "coord_format": query.get("format"),
         "vcf_header_lines": outcome.vcf_header_lines,
@@ -749,6 +871,19 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
         "join": outcome.join,
         "mode": outcome.mode,
     }
+    with session.lock:
+        # The engine ran outside the lock; commit only if neither dataset was
+        # replaced meanwhile (e.g. another tab re-uploaded during the run).
+        moved = [role for role, entry in (("query", query), ("annot", annot))
+                 if session.data.get(role) is not entry]
+        if moved:
+            raise _revision_conflict(
+                "The datasets changed in another tab of this browser session "
+                "while this run was executing; its result was discarded. "
+                "Re-upload and run again.",
+                moved,
+            )
+        session.data["result"] = result_entry
 
     # Generate Chart Data
     chr_dist = []
@@ -774,6 +909,9 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
 
     return {
         "status": "success",
+        "result_revision": result_rev,
+        "query_revision": query["rev"],
+        "annot_revision": annot["rev"],
         "stats": {
             "query_count": query_count,
             "result_count": len(result_df),
@@ -825,13 +963,11 @@ def get_results_data(
     filter_type: str = "all",
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
+    result_rev: Optional[str] = Query(None, max_length=_REVISION_MAX_LENGTH),
     session: Session = Depends(get_session),
 ):
     """Fetches paginated results with filter support (all, matched, unmatched)."""
-    if "result" not in session.data:
-        raise HTTPException(status_code=404, detail="No execution results available")
-
-    df = session.data["result"]["df"]
+    df = _bound_result(session, result_rev, "No execution results available")["df"]
     if filter_type == "matched" and "has_overlap" in df.columns:
         filtered = df[df["has_overlap"] == True]
     elif filter_type == "unmatched" and "has_overlap" in df.columns:
@@ -874,7 +1010,10 @@ def _gene_list_payload(df: pd.DataFrame) -> Dict[str, Any]:
 
 
 @app.get("/api/results/gene-list")
-def get_gene_list(session: Session = Depends(get_session)):
+def get_gene_list(
+    result_rev: Optional[str] = Query(None, max_length=_REVISION_MAX_LENGTH),
+    session: Session = Depends(get_session),
+):
     """Frequency table of the matched annotation gene/feature names.
 
     Restores the "Charts and gene list" panel of the original Streamlit app
@@ -882,19 +1021,19 @@ def get_gene_list(session: Session = Depends(get_session)):
     such as g:Profiler/Enrichr/DAVID/STRING). This is a frequency table over
     the existing result; no enrichment is computed here.
     """
-    if "result" not in session.data:
-        raise HTTPException(status_code=404, detail="No execution results available")
-
-    return _gene_list_payload(session.data["result"]["df"])
+    result = _bound_result(session, result_rev, "No execution results available")
+    return _gene_list_payload(result["df"])
 
 
 @app.get("/api/export/{fmt}")
-def export_results(fmt: str, filter_type: str = "all", session: Session = Depends(get_session)):
+def export_results(
+    fmt: str,
+    filter_type: str = "all",
+    result_rev: Optional[str] = Query(None, max_length=_REVISION_MAX_LENGTH),
+    session: Session = Depends(get_session),
+):
     """Downloads results in CSV, TSV, Excel, or VCF format."""
-    if "result" not in session.data:
-        raise HTTPException(status_code=404, detail="No results found to export")
-
-    res = session.data["result"]
+    res = _bound_result(session, result_rev, "No results found to export")
     df = res["df"]
     if filter_type == "matched" and "has_overlap" in df.columns:
         export_df = df[df["has_overlap"] == True]

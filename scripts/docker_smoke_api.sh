@@ -16,6 +16,11 @@
 #   5. API metadata                11. VCF export
 #   6. two independent sessions    12. restart behavior (no session leak)
 #   7. upload + temp cleanup       13. temp-storage bounding
+#                                  14. revision binding (multi-tab, F1)
+#
+# Like the React frontend, it echoes the dataset/result revisions the API
+# returns (query_rev/annot_rev on execute and mapping, result_rev on result
+# reads and exports).
 #
 # Exits non-zero on the first failure.
 set -euo pipefail
@@ -39,6 +44,16 @@ trap cleanup EXIT
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 contains() { grep -F -- "$2" <<<"$1" >/dev/null; }
 cookie_token() { grep annotater_session "$1" | awk '{print $NF}' | tail -n1; }
+# jget KEY.PATH <json  -> prints the value at KEY.PATH
+jget() { python3 -c 'import json, sys
+d = json.load(sys.stdin)
+for k in sys.argv[1].split("."):
+    d = d[k]
+print(d)' "$1"; }
+# exec_body JSON_OPTIONS QUERY_REV ANNOT_REV -> execute body with revisions
+exec_body() { python3 -c 'import json, sys
+b = json.loads(sys.argv[1]); b.update(query_rev=sys.argv[2], annot_rev=sys.argv[3])
+print(json.dumps(b))' "$1" "$2" "$3"; }
 
 wait_health() {
     for _ in $(seq 1 180); do
@@ -84,8 +99,10 @@ ok "/api/meta ok"
 # Stateless reads (no cookie) are served by throwaway sessions: they return
 # 404 and are issued NO cookie, so anonymous traffic cannot consume session
 # capacity (review finding F7). Only state-changing requests create a session.
-curl -fsS -c "$JAR_A" -b "$JAR_A" -X POST "$BASE/api/load-sample" \
-    -d 'sample_id=gene_overlap' -o /dev/null || fail "session A load-sample failed"
+LOAD_A="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -X POST "$BASE/api/load-sample" \
+    -d 'sample_id=gene_overlap')" || fail "session A load-sample failed"
+QREV_A="$(jget query.revision <<<"$LOAD_A")"
+AREV_A="$(jget annot.revision <<<"$LOAD_A")"
 TOKEN_A="$(cookie_token "$JAR_A")"
 [ -n "$TOKEN_A" ] || fail "session A received no session cookie"
 
@@ -104,19 +121,24 @@ ok "two independent sessions (distinct tokens; stateless reads cookie-free)"
 # --- 7. Bedtools execution + session isolation ---------------------------
 EXEC_BEDTOOLS='{"engine":"bedtools","mode":"overlap","join":"left","feature_types":["gene"]}'
 RESP_A="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
-    -d "$EXEC_BEDTOOLS" "$BASE/api/execute")" || fail "bedtools execute request failed"
+    -d "$(exec_body "$EXEC_BEDTOOLS" "$QREV_A" "$AREV_A")" "$BASE/api/execute")" \
+    || fail "bedtools execute request failed"
 contains "$RESP_A" '"status":"success"' || fail "bedtools execute not successful: $RESP_A"
 contains "$RESP_A" '"result_count":6' || fail "bedtools execute returned unexpected row count"
+RREV_A="$(jget result_revision <<<"$RESP_A")"
 
 [ "$(code -c "$JAR_B" -b "$JAR_B" "$BASE/api/results/data")" = "404" ] \
     || fail "session B saw session A's results (isolation breach)"
-[ "$(code -c "$JAR_A" -b "$JAR_A" "$BASE/api/results/data")" = "200" ] \
+# Knowing A's revision grants nothing in another session.
+[ "$(code -c "$JAR_B" -b "$JAR_B" "$BASE/api/results/data?result_rev=$RREV_A")" = "409" ] \
+    || fail "session B was served state for session A's result revision"
+[ "$(code -c "$JAR_A" -b "$JAR_A" "$BASE/api/results/data?result_rev=$RREV_A")" = "200" ] \
     || fail "session A lost its own results"
 ok "Bedtools execution + per-session isolation ok"
 
 # --- 8. Polars-Bio execution ---------------------------------------------
 RESP_PB="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
-    -d '{"engine":"polars-bio","mode":"overlap"}' "$BASE/api/execute")" \
+    -d "$(exec_body '{"engine":"polars-bio","mode":"overlap"}' "$QREV_A" "$AREV_A")" "$BASE/api/execute")" \
     || fail "polars-bio execute request failed"
 contains "$RESP_PB" '"status":"success"' || fail "polars-bio execute not successful"
 contains "$RESP_PB" '"result_count":6' || fail "polars-bio execute returned unexpected row count"
@@ -124,8 +146,8 @@ ok "Polars-Bio execution ok"
 
 # --- 9. bundled chromosome normalization ---------------------------------
 RESP_NORM="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
-    -d '{"engine":"bedtools","mode":"overlap","assembly":"GRCh38","chr_naming":"ensembl"}' "$BASE/api/execute")" \
-    || fail "chromosome-normalization execute failed"
+    -d "$(exec_body '{"engine":"bedtools","mode":"overlap","assembly":"GRCh38","chr_naming":"ensembl"}' "$QREV_A" "$AREV_A")" \
+    "$BASE/api/execute")" || fail "chromosome-normalization execute failed"
 contains "$RESP_NORM" '"chromosome_normalization":{' \
     || fail "expected a non-null chromosome_normalization report"
 ok "bundled chromosome normalization ok"
@@ -142,25 +164,40 @@ ok "upload + temporary-storage cleanup ok"
 
 # --- 10. custom chromosome mapping ---------------------------------------
 printf 'seq,begin,finish\nchr1,10,20\nchr1,30,40\n' >"$WORK/custom.csv"
-curl -fsS -c "$JAR_B" -b "$JAR_B" -F "file=@$WORK/custom.csv" -F "role=query" \
-    "$BASE/api/upload" -o /dev/null || fail "custom upload failed"
+UP_CUSTOM="$(curl -fsS -c "$JAR_B" -b "$JAR_B" -F "file=@$WORK/custom.csv" -F "role=query" \
+    "$BASE/api/upload")" || fail "custom upload failed"
+QREV_CUSTOM="$(jget revision <<<"$UP_CUSTOM")"
 RESP_MAP="$(curl -fsS -c "$JAR_B" -b "$JAR_B" -H 'Content-Type: application/json' \
-    -d '{"chr_col":"seq","start_col":"begin","end_col":"finish","coord_system":"0-based"}' \
+    -d "{\"chr_col\":\"seq\",\"start_col\":\"begin\",\"end_col\":\"finish\",\"coord_system\":\"0-based\",\"query_rev\":\"$QREV_CUSTOM\"}" \
     "$BASE/api/apply-mapping")" || fail "apply-mapping request failed"
 contains "$RESP_MAP" '"status":"success"' || fail "apply-mapping not successful: $RESP_MAP"
 ok "custom chromosome mapping ok"
 
 # --- 11. VCF export -------------------------------------------------------
-curl -fsS -c "$JAR_A" -b "$JAR_A" -X POST "$BASE/api/load-sample" \
-    -d 'sample_id=closest_variants' -o /dev/null || fail "VCF sample load failed"
-curl -fsS -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
-    -d '{"engine":"bedtools","mode":"overlap"}' "$BASE/api/execute" -o /dev/null \
-    || fail "execute for VCF export failed"
-curl -fsS -c "$JAR_A" -b "$JAR_A" "$BASE/api/export/vcf" -o "$WORK/out.vcf" \
+LOAD_VCF="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -X POST "$BASE/api/load-sample" \
+    -d 'sample_id=closest_variants')" || fail "VCF sample load failed"
+RESP_VCF="$(curl -fsS -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
+    -d "$(exec_body '{"engine":"bedtools","mode":"overlap"}' \
+        "$(jget query.revision <<<"$LOAD_VCF")" "$(jget annot.revision <<<"$LOAD_VCF")")" \
+    "$BASE/api/execute")" || fail "execute for VCF export failed"
+RREV_VCF="$(jget result_revision <<<"$RESP_VCF")"
+curl -fsS -c "$JAR_A" -b "$JAR_A" "$BASE/api/export/vcf?result_rev=$RREV_VCF" -o "$WORK/out.vcf" \
     || fail "VCF export request failed"
 head -n1 "$WORK/out.vcf" | grep -q '^##fileformat=VCF' || fail "VCF export is not a VCF"
 grep -q '^#CHROM' "$WORK/out.vcf" || fail "VCF export has no column header line"
 ok "VCF export ok"
+
+# --- 14. revision binding (two tabs of one browser share session A) -------
+# A "tab" still holding the first run's revisions must get a conflict, never
+# the newer run's datasets or result (release-gate finding F1).
+[ "$(code -c "$JAR_A" -b "$JAR_A" "$BASE/api/export/csv?result_rev=$RREV_A")" = "409" ] \
+    || fail "stale tab was served another tab's result"
+[ "$(code -c "$JAR_A" -b "$JAR_A" -H 'Content-Type: application/json' \
+    -d "$(exec_body '{"engine":"bedtools","mode":"overlap"}' "$QREV_A" "$AREV_A")" "$BASE/api/execute")" = "409" ] \
+    || fail "stale tab ran on another tab's datasets"
+[ "$(code -c "$JAR_A" -b "$JAR_A" "$BASE/api/export/csv")" = "428" ] \
+    || fail "export without a result revision was not refused"
+ok "revision binding: stale tab gets 409, missing revision 428"
 
 # --- 3b/12. unhealthy + restart behavior ---------------------------------
 kill "$APP_PID" 2>/dev/null || true
@@ -175,6 +212,8 @@ ok "unhealthy behavior: /health fails when the app is stopped"
 start_app
 [ "$(code -b "$JAR_A" "$BASE/api/results/data")" = "404" ] \
     || fail "restart leaked or reassigned session state"
+[ "$(code -b "$JAR_A" "$BASE/api/results/data?result_rev=$RREV_VCF")" = "409" ] \
+    || fail "restart served a result for a pre-restart revision"
 ok "restart resets session state (no leak)"
 
 echo "API SMOKE PASS"

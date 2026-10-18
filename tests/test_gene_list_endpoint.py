@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import (
@@ -22,7 +22,7 @@ from streamlit_app.api_server import (
     _gene_list_payload,
     app,
 )
-from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
+from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore, new_revision
 from streamlit_app.core.engine_registry import engine_available
 from tests.test_shared_vcf_export import ANNOT_GFF, QUERY_VCF, _REQUEST, _upload
 
@@ -93,13 +93,15 @@ class TestGeneListPayload:
 @pytest.fixture()
 def client(monkeypatch):
     monkeypatch.setattr(api_server, "store", SessionStore())
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def _seed_result(client, df: pd.DataFrame):
     session = api_server.store.create()
-    session.data["result"] = {"df": df}
+    session.data["result"] = {"df": df, "rev": new_revision()}
     client.cookies.set(SESSION_COOKIE_NAME, session.token)
+    # The seeded result is the one this "tab" displays.
+    client.revisions["result"] = session.data["result"]["rev"]
 
 
 class TestGeneListEndpoint:
@@ -129,7 +131,7 @@ class TestExecuteGeneList:
     def test_execute_response_includes_gene_list(self, monkeypatch):
         _require_bedtools()
         monkeypatch.setattr(api_server, "store", SessionStore())
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "query.vcf", QUERY_VCF, "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         response = client.post("/api/execute", json=_REQUEST)
@@ -144,7 +146,7 @@ class TestExecuteGeneList:
     def test_gene_list_derives_from_result_frame_not_query(self, monkeypatch):
         _require_bedtools()
         monkeypatch.setattr(api_server, "store", SessionStore())
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "q.bed", b"chr1\t0\t200\t\n", "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         response = client.post("/api/execute", json=_REQUEST)

@@ -17,15 +17,17 @@ APP_SOURCE = (ROOT / "frontend" / "src" / "App.jsx").read_text("utf-8")
 
 
 def test_f2_vcf_export_control_only_renders_for_vcf_queries():
-    # The VCF download anchor must stay inside the VCF-query condition; the
+    # The VCF download control must stay inside the VCF-query condition; the
     # server-side gate (test_shared_vcf_export.TestVcfExportGating) is the
-    # enforcement, this is the UI half of the same contract.
+    # enforcement, this is the UI half of the same contract. (Exports are
+    # fetched with the result revision since finding F1.)
+    control = "downloadExport('vcf')"
     assert "queryData?.format?.toLowerCase() === 'vcf'" in APP_SOURCE
-    assert "/api/export/vcf?filter_type=" in APP_SOURCE
-    # The guard must come before the anchor in the source.
+    assert APP_SOURCE.count(control) == 1
+    # The guard must come before the control in the source.
     assert (
         APP_SOURCE.index("queryData?.format?.toLowerCase() === 'vcf'")
-        < APP_SOURCE.index("/api/export/vcf?filter_type=")
+        < APP_SOURCE.index(control)
     )
 
 

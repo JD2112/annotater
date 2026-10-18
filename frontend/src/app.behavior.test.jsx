@@ -500,3 +500,181 @@ describe('N7: annotation-side coordinate declaration', () => {
     expect(backend.uploads[2]).toMatchObject({ role: 'annot', coordSystem: ONE_BASED });
   });
 });
+
+// ---------------------------------------------------------------------------
+// F1: tabs of one browser share the server session; revisions bind each tab
+// to the datasets and result it displays.
+// ---------------------------------------------------------------------------
+
+const CONFLICT = (stale, message) => ({
+  ok: false,
+  status: 409,
+  json: async () => ({ detail: { code: 'revision_conflict', stale, message } }),
+});
+
+// A backend issuing revisions, recording what the tab sends; `next` lets a
+// test script the response of the next call to an endpoint.
+const revisionBackend = () => {
+  const sent = { execute: [], mapping: [], exports: [], clears: [] };
+  const next = {};
+  let counter = 0;
+  const rev = (tag) => `${tag}-rev-${++counter}`;
+  const fetchStub = vi.fn((url, options) => {
+    const u = String(url);
+    const scripted = next[u.split('?')[0]];
+    if (scripted) {
+      delete next[u.split('?')[0]];
+      if (u.startsWith('/api/export/')) sent.exports.push(u);
+      return Promise.resolve(scripted);
+    }
+    if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/upload') {
+      const role = options.body.get('role');
+      const name = options.body.get('file').name;
+      const mapping = name.endsWith('.csv');
+      return Promise.resolve(jsonResponse({
+        ...dataset(name, mapping ? 'custom' : 'bed', 1),
+        ...(mapping ? { columns: ['c', 'p', 'e'], needs_mapping: true } : {}),
+        role,
+        revision: rev(role),
+      }));
+    }
+    if (u === '/api/apply-mapping') {
+      sent.mapping.push(JSON.parse(options.body));
+      return Promise.resolve(jsonResponse({
+        revision: rev('mapped'), total_rows: 1, columns: ['chr', 'start', 'end'], preview: [],
+      }));
+    }
+    if (u === '/api/execute') {
+      const body = JSON.parse(options.body);
+      sent.execute.push(body);
+      return Promise.resolve(jsonResponse({
+        ...EXEC_RESULT,
+        result_revision: rev('result'),
+        query_revision: body.query_rev,
+        annot_revision: body.annot_rev,
+      }));
+    }
+    if (u.startsWith('/api/export/')) {
+      sent.exports.push(u);
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: { get: () => 'attachment; filename=annotated_intervals.csv' },
+        blob: async () => new Blob(['chr,start\n']),
+      });
+    }
+    if (u === '/api/dataset/clear') {
+      sent.clears.push(JSON.parse(options.body));
+      return Promise.resolve(jsonResponse({ status: 'success' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  vi.stubGlobal('fetch', fetchStub);
+  return { sent, next };
+};
+
+// jsdom has no object URLs; record downloads instead.
+const stubObjectUrls = () => {
+  const createObjectURL = vi.fn(() => 'blob:export');
+  URL.createObjectURL = createObjectURL;
+  URL.revokeObjectURL = vi.fn();
+  return createObjectURL;
+};
+
+afterEach(() => {
+  delete URL.createObjectURL;
+  delete URL.revokeObjectURL;
+});
+
+const uploadBoth = async () => {
+  chooseFile('query', 'q.bed');
+  await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
+  chooseFile('annot', 'a.bed');
+  await waitFor(() => expect(screen.getByText('a.bed')).toBeTruthy());
+};
+
+const runOnce = async () => {
+  fireEvent.click(runButton());
+  await waitFor(() => expect(screen.getByText(/executed in/i)).toBeTruthy());
+};
+
+describe('F1: one tab never runs on, shows or exports another tab’s state', () => {
+  it('executes with the dataset revisions this tab displays, including after mapping', async () => {
+    const { sent } = revisionBackend();
+    await renderApp();
+    chooseFile('query', 'custom.csv');
+    await waitFor(() => expect(screen.getByText(/column mapping required/i)).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: 'Apply Mapping' }));
+    await waitFor(() => expect(screen.getByText(/column mapping applied/i)).toBeTruthy());
+    expect(sent.mapping[0].query_rev).toBe('query-rev-1');
+    chooseFile('annot', 'a.bed');
+    await waitFor(() => expect(screen.getByText('a.bed')).toBeTruthy());
+
+    await runOnce();
+    expect(sent.execute[0]).toMatchObject({ query_rev: 'mapped-rev-2', annot_rev: 'annot-rev-3' });
+  });
+
+  it('a 409 on execute visibly reports the other tab and drops the stale side', async () => {
+    const { next } = revisionBackend();
+    await renderApp();
+    await uploadBoth();
+
+    next['/api/execute'] = CONFLICT(['query'], 'The query dataset shown in this tab is no longer the one loaded (replaced in another tab).');
+    fireEvent.click(runButton());
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/changed in another tab/i);
+    expect(alert.textContent).toMatch(/replaced in another tab/i);
+    expect(screen.queryByText('q.bed')).toBeNull();
+    expect(screen.getByText('a.bed')).toBeTruthy();
+    expect(screen.getByText(/no results yet/i)).toBeTruthy();
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it('exports name the displayed result revision and download it', async () => {
+    const { sent } = revisionBackend();
+    const createObjectURL = stubObjectUrls();
+    await renderApp();
+    await uploadBoth();
+    await runOnce();
+
+    fireEvent.click(screen.getByRole('button', { name: /^CSV$/ }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const exported = new URL(sent.exports[0], 'http://x');
+    expect(exported.pathname).toBe('/api/export/csv');
+    expect(exported.searchParams.get('result_rev')).toBe('result-rev-3');
+    expect(exported.searchParams.get('filter_type')).toBe('all');
+  });
+
+  it('an export after another tab ran is a visible conflict, never a download', async () => {
+    const { sent, next } = revisionBackend();
+    const createObjectURL = stubObjectUrls();
+    await renderApp();
+    await uploadBoth();
+    await runOnce();
+
+    next['/api/export/csv'] = CONFLICT(['result'], 'The results shown in this tab were replaced by another tab. Nothing was exported.');
+    fireEvent.click(screen.getByRole('button', { name: /^CSV$/ }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/changed in another tab/i);
+    expect(alert.textContent).toMatch(/nothing was exported/i);
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(sent.exports).toHaveLength(1);
+    // The superseded results are no longer presented as this tab's.
+    expect(screen.getByText(/no results yet/i)).toBeTruthy();
+    // The tab's own datasets are still its own: it can simply re-run.
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(false);
+  });
+
+  it('invalidating a side clears only the revision this tab loaded', async () => {
+    const { sent } = revisionBackend();
+    await renderApp();
+    await uploadBoth();
+    fireEvent.change(coordSelects()[1], { target: { value: ONE_BASED } });
+    await waitFor(() => expect(sent.clears).toHaveLength(1));
+    expect(sent.clears[0]).toEqual({ role: 'annot', revision: 'annot-rev-2' });
+  });
+});

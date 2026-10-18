@@ -16,11 +16,11 @@ import time
 
 import pandas as pd
 import pytest
-from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
-from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
+from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore, new_revision
 from streamlit_app.config import Settings
 from streamlit_app.core.engine_registry import build_engine, engine_available
 from streamlit_app.core.normalization import normalize_intervals
@@ -274,15 +274,17 @@ class TestFailureContract:
     def test_malformed_export_error_is_bounded(self, monkeypatch):
         """The API returns a bounded 422 and never leaks private paths."""
         monkeypatch.setattr(api_server, "store", SessionStore())
-        client = TestClient(app)
+        client = RevisionClient(app)
         session = api_server.store.create()
         session.data["result"] = {
             "df": pd.DataFrame({"foo": [1, 2]}),
             "coord_format": "vcf",
             "vcf_header_lines": None,
             "vcf_contig_renames": {},
+            "rev": new_revision(),
         }
         client.cookies.set(SESSION_COOKIE_NAME, session.token)
+        client.revisions["result"] = session.data["result"]["rev"]
         response = client.get("/api/export/vcf")
         assert response.status_code == 422
         body = response.text
@@ -341,7 +343,7 @@ class TestFrontendEquivalence:
         monkeypatch.setattr(api_server, "store", SessionStore())
         monkeypatch.setenv("SOURCE_DATE_EPOCH", "0")
 
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "query.vcf", QUERY_VCF, "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         run = client.post("/api/execute", json=_REQUEST)
@@ -432,8 +434,8 @@ class TestSessionIsolation:
 
     def test_session_isolation_for_vcf_export(self):
         _require_bedtools()
-        a = TestClient(app)
-        b = TestClient(app)
+        a = RevisionClient(app)
+        b = RevisionClient(app)
         for client, qv, gv, qname, aname in (
             (a, VCF_A, GFF_A, "a.vcf", "a.gff"),
             (b, VCF_B, GFF_B, "b.vcf", "b.gff"),
@@ -447,7 +449,7 @@ class TestSessionIsolation:
         assert "snvA" in va and "snvA" not in vb
         assert "snvB" in vb and "snvB" not in va
         # A third, empty session never sees either.
-        c = TestClient(app)
+        c = RevisionClient(app)
         assert c.get("/api/export/vcf").status_code == 404
 
 
@@ -524,7 +526,7 @@ class TestVcfExportGating:
     def test_vcf_query_still_exports(self, monkeypatch):
         _require_bedtools()
         self._fresh(monkeypatch)
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "query.vcf", QUERY_VCF, "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         assert client.post("/api/execute", json=_REQUEST).status_code == 200
@@ -533,7 +535,7 @@ class TestVcfExportGating:
     def test_bed_query_vcf_export_is_rejected(self, monkeypatch):
         _require_bedtools()
         self._fresh(monkeypatch)
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "q.bed", b"chr1\t0\t200\tq1\n", "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         assert client.post("/api/execute", json=_REQUEST).status_code == 200
@@ -545,7 +547,7 @@ class TestVcfExportGating:
     def test_other_formats_still_available_for_non_vcf_query(self, monkeypatch):
         _require_bedtools()
         self._fresh(monkeypatch)
-        client = TestClient(app)
+        client = RevisionClient(app)
         _upload(client, "q.bed", b"chr1\t0\t200\tq1\n", "query")
         _upload(client, "annot.gff", ANNOT_GFF, "annot")
         assert client.post("/api/execute", json=_REQUEST).status_code == 200

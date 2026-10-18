@@ -248,12 +248,37 @@ export default function App() {
   // stored dataset for that side, locally and on the server, and forces a
   // re-upload under the new declaration instead of silently re-running the
   // stale, already-normalized table.
-  const clearServerDataset = (role) =>
+  // With a revision, the server clears only that revision of the dataset,
+  // so this tab can never discard what another tab of the same browser
+  // session uploaded since (release-gate finding F1).
+  const clearServerDataset = (role, revision) =>
     fetch('/api/dataset/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role }),
+      body: JSON.stringify(revision ? { role, revision } : { role }),
     }).catch(() => {});
+
+  // Release-gate finding F1: every tab of this browser shares one server
+  // session. The server issues a revision for each dataset and result, and
+  // refuses (409 revision_conflict) to run on or serve state that another
+  // tab replaced. The conflicting parts of this tab are dropped and the user
+  // is told why, instead of silently showing or exporting another tab's data.
+  const isRevisionConflict = (res, data) =>
+    res.status === 409 && data?.detail?.code === 'revision_conflict';
+
+  const handleRevisionConflict = (detail) => {
+    const stale = detail?.stale || [];
+    if (stale.includes('query')) resetSide('query');
+    if (stale.includes('annot')) resetSide('annot');
+    clearResults();
+    setStatusMessage({
+      type: 'warning',
+      text: `Changed in another tab: ${detail?.message || 'this tab is out of date.'}`,
+    });
+  };
+
+  const errorText = (data, fallback) =>
+    (typeof data?.detail === 'string' ? data.detail : data?.detail?.message) || fallback;
 
   // Drops one side's dataset locally and remounts its file picker.
   const resetSide = (role) => {
@@ -278,19 +303,23 @@ export default function App() {
       type: 'info',
       text: `Coordinate system changed. Re-upload the ${role} file so it is parsed under the new declaration.`,
     });
-    clearServerDataset(role);
+    clearServerDataset(role, loaded.revision);
   };
 
   // A superseded upload/mapping response may already have been stored
   // server-side (the clear sent on invalidation can overtake it), so the
   // stale copy is cleared again before the side is unlocked.
-  const discardStaleDataset = async (role) => {
+  // ``revision`` is what the stale request may have stored: the revision a
+  // successful response reported (only that revision is cleared), null when
+  // the request failed with an HTTP error (nothing stored, nothing to clear),
+  // or undefined when the outcome is unknown (network error: clear the side).
+  const discardStaleDataset = async (role, revision) => {
     resetSide(role);
     setStatusMessage({
       type: 'info',
       text: `Coordinate system changed while the ${role} file was being processed. Re-upload it so it is parsed under the new declaration.`,
     });
-    await clearServerDataset(role);
+    if (revision !== null) await clearServerDataset(role, revision);
   };
 
   // Initial loading
@@ -325,7 +354,7 @@ export default function App() {
         setMappingRequired(false);
         setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
       } else {
-        setStatusMessage({ type: 'error', text: data.detail || 'Failed to load sample dataset' });
+        setStatusMessage({ type: 'error', text: errorText(data, 'Failed to load sample dataset') });
       }
     } catch {
       setStatusMessage({ type: 'error', text: 'Network error loading sample' });
@@ -356,7 +385,7 @@ export default function App() {
       });
       const data = await res.json();
       if (!isCurrent()) {
-        await discardStaleDataset(role);
+        await discardStaleDataset(role, res.ok ? data.revision : null);
         return;
       }
       if (res.ok) {
@@ -375,7 +404,7 @@ export default function App() {
         }
         setStatusMessage({ type: 'success', text: `Parsed ${file.name} as ${data.format.toUpperCase()} (${data.total_rows.toLocaleString()} records)` });
       } else {
-        setStatusMessage({ type: 'error', text: data.detail || 'Upload parsing error' });
+        setStatusMessage({ type: 'error', text: errorText(data, 'Upload parsing error') });
       }
     } catch {
       if (!isCurrent()) {
@@ -406,16 +435,20 @@ export default function App() {
           start_col: startCol,
           end_col: endCol === NO_END_COLUMN ? null : endCol,
           coord_system: coordSystem,
+          query_rev: queryData?.revision,
         }),
       });
       const data = await res.json();
       if (!isCurrent()) {
-        await discardStaleDataset('query');
+        await discardStaleDataset('query', res.ok ? data.revision : null);
         return;
       }
-      if (res.ok) {
+      if (isRevisionConflict(res, data)) {
+        handleRevisionConflict(data.detail);
+      } else if (res.ok) {
         setQueryData(prev => ({
           ...prev,
+          revision: data.revision,
           total_rows: data.total_rows,
           columns: data.columns,
           preview: data.preview,
@@ -425,7 +458,7 @@ export default function App() {
         clearResults();
         setStatusMessage({ type: 'success', text: 'Column mapping applied successfully.' });
       } else {
-        setStatusMessage({ type: 'error', text: data.detail || 'Mapping failed' });
+        setStatusMessage({ type: 'error', text: errorText(data, 'Mapping failed') });
       }
     } catch {
       if (!isCurrent()) {
@@ -462,13 +495,18 @@ export default function App() {
           min_overlap: minOverlap,
           assembly: genomeAssembly && genomeAssembly !== 'Auto-detect' ? genomeAssembly : null,
           chr_naming: chrHandling && chrHandling !== 'Keep original names' ? chrHandling : null,
+          // The exact datasets this tab displays (release-gate finding F1).
+          query_rev: queryData.revision,
+          annot_rev: annotData.revision,
         }),
       });
       const data = await res.json();
       // Review finding N3: if an invalidating event (or a newer run) happened
       // after this run started, its response is stale and must not land.
       if (runGeneration.current !== generation) return;
-      if (res.ok) {
+      if (isRevisionConflict(res, data)) {
+        handleRevisionConflict(data.detail);
+      } else if (res.ok) {
         setExecResult(data);
         setStatusMessage({ 
           type: 'success', 
@@ -476,7 +514,7 @@ export default function App() {
         });
       } else {
         clearResults();
-        setStatusMessage({ type: 'error', text: data.detail || 'Execution failed' });
+        setStatusMessage({ type: 'error', text: errorText(data, 'Execution failed') });
       }
     } catch {
       if (runGeneration.current !== generation) return;
@@ -521,6 +559,37 @@ export default function App() {
     anchor.click();
     anchor.remove();
     URL.revokeObjectURL(url);
+  };
+
+  // Exports are fetched (not plain links) so they can name the result
+  // revision this tab displays and surface a 409 as a visible conflict
+  // instead of downloading another tab's result (release-gate finding F1).
+  const downloadExport = async (fmt) => {
+    const resultRevision = execResult?.result_revision;
+    if (!resultRevision) return;
+    const params = new URLSearchParams({ filter_type: resultFilter, result_rev: resultRevision });
+    try {
+      const res = await fetch(`/api/export/${fmt}?${params}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (isRevisionConflict(res, data)) handleRevisionConflict(data.detail);
+        else setStatusMessage({ type: 'error', text: errorText(data, 'Export failed') });
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get('Content-Disposition') || '';
+      const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] || `annotated_intervals.${fmt}`;
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      setStatusMessage({ type: 'error', text: 'Network error during export' });
+    }
   };
 
   const copyGeneListText = async () => {
@@ -597,13 +666,15 @@ export default function App() {
 
       {/* Global Status Banner */}
       {statusMessage && (
-        <div className={`px-4 py-2.5 text-xs flex items-center justify-between transition-all ${
+        <div role={statusMessage.type === 'error' || statusMessage.type === 'warning' ? 'alert' : 'status'} className={`px-4 py-2.5 text-xs flex items-center justify-between transition-all ${
           statusMessage.type === 'error' ? 'bg-rose-50 text-rose-800 border-b border-rose-200' :
           statusMessage.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-b border-emerald-200' :
+          statusMessage.type === 'warning' ? 'bg-amber-50 text-amber-900 border-b border-amber-300' :
           'bg-blue-50 text-blue-800 border-b border-blue-200'
         }`}>
           <div className="w-[94%] mx-auto flex items-center gap-2">
             {statusMessage.type === 'error' ? <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" /> :
+             statusMessage.type === 'warning' ? <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" /> :
              statusMessage.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> :
              <Clock className="w-4 h-4 text-blue-600 shrink-0 animate-spin" />}
             <span className="font-medium">{statusMessage.text}</span>
@@ -1251,35 +1322,35 @@ export default function App() {
                 {/* Export Buttons */}
                 <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-slate-100">
                   <span className="text-xs font-bold text-slate-700">Download Results:</span>
-                  <a
-                    href={`/api/export/csv?filter_type=${resultFilter}`}
-                    download
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
+                  <button
+                    type="button"
+                    onClick={() => downloadExport('csv')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5 text-[#004e92]" /> CSV
-                  </a>
-                  <a
-                    href={`/api/export/tsv?filter_type=${resultFilter}`}
-                    download
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadExport('tsv')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5 text-[#006FB7]" /> TSV
-                  </a>
-                  <a
-                    href={`/api/export/xlsx?filter_type=${resultFilter}`}
-                    download
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => downloadExport('xlsx')}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
                   >
                     <Download className="w-3.5 h-3.5 text-emerald-600" /> Excel
-                  </a>
+                  </button>
                   {queryData?.format?.toLowerCase() === 'vcf' && (
-                    <a
-                      href={`/api/export/vcf?filter_type=${resultFilter}`}
-                      download
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700"
+                    <button
+                      type="button"
+                      onClick={() => downloadExport('vcf')}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 hover:border-[#004e92] hover:bg-blue-50/40 text-xs font-semibold text-slate-700 cursor-pointer"
                     >
                       <Download className="w-3.5 h-3.5 text-purple-600" /> VCF
-                    </a>
+                    </button>
                   )}
                 </div>
               </div>

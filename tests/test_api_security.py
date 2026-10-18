@@ -13,6 +13,7 @@ import anyio
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
@@ -37,13 +38,13 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 @pytest.fixture()
 def https_client():
     """A client speaking TLS end-to-end (cookie jar honours Secure)."""
-    return TestClient(app, base_url="https://testserver")
+    return RevisionClient(app, base_url="https://testserver")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +80,7 @@ def test_session_cookie_is_secure_behind_tls_proxy(client):
 def test_session_token_is_unpredictable_and_not_reused(client):
     client.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     first = client.cookies.get(SESSION_COOKIE_NAME)
-    other = TestClient(app)
+    other = RevisionClient(app)
     other.cookies.pop(SESSION_COOKIE_NAME, None)
     other.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     second = other.cookies.get(SESSION_COOKIE_NAME)
@@ -115,14 +116,14 @@ def test_https_ignores_unprefixed_cookie_even_with_live_token(https_client):
     # content that somehow learned the token) can present the token under
     # the unprefixed cookie name. Over TLS the server must not read it, so
     # the request cannot be fixated on the victim's session.
-    owner = TestClient(app, base_url="https://testserver")
+    owner = RevisionClient(app, base_url="https://testserver")
     created = owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     assert created.status_code == 200
     assert owner.post("/api/execute", json={}).status_code == 200
     live_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
     assert live_token
 
-    intruder = TestClient(app, base_url="https://testserver")
+    intruder = RevisionClient(app, base_url="https://testserver")
     intruder.cookies.set(SESSION_COOKIE_NAME, live_token)
     response = intruder.get("/api/results/data")
     assert response.status_code == 404
@@ -137,7 +138,7 @@ def test_https_write_with_only_unprefixed_cookie_gets_fresh_session(https_client
     # The review's required regression: under HTTPS a request whose only
     # cookie is the unprefixed name receives a fresh __Host- session, never
     # the session that name identifies.
-    owner = TestClient(app, base_url="https://testserver")
+    owner = RevisionClient(app, base_url="https://testserver")
     owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     owner_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
     assert owner_token
@@ -159,7 +160,7 @@ def test_https_write_with_only_unprefixed_cookie_gets_fresh_session(https_client
 def test_host_cookie_presented_over_http_is_not_honoured(client):
     # Symmetry: the server must not honour the __Host- cookie over cleartext
     # either, so a stolen token value cannot be replayed on an HTTP origin.
-    owner = TestClient(app, base_url="https://testserver")
+    owner = RevisionClient(app, base_url="https://testserver")
     owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     owner.post("/api/execute", json={})
     live_token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
@@ -196,7 +197,7 @@ def _raw_request(method, path, cookie_headers, *, https=True, **kwargs):
 
 def _victim_with_results():
     """An HTTPS user with executed results; returns (client, live token)."""
-    owner = TestClient(app, base_url="https://testserver")
+    owner = RevisionClient(app, base_url="https://testserver")
     assert owner.post("/api/load-sample", data={"sample_id": "gene_overlap"}).status_code == 200
     assert owner.post("/api/execute", json={}).status_code == 200
     token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
@@ -218,8 +219,11 @@ def test_https_whitespace_prefixed_host_cookie_does_not_expose_victim(prefix):
     assert victim_csv.status_code == 200
 
     cookie = prefix + SECURE_SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
+    # Even with the victim's correct result revision: a revision is not a
+    # credential and never substitutes for the session cookie.
+    rev = owner.revisions["result"]
     for path in ("/api/export/csv", "/api/results/data", "/api/results/gene-list"):
-        response = _raw_request("GET", path, [cookie])
+        response = _raw_request("GET", f"{path}?result_rev={rev}", [cookie])
         assert response.status_code == 400, path
         assert "set-cookie" not in response.headers
         assert victim_csv.text not in response.text
@@ -242,24 +246,26 @@ def test_https_alias_alongside_genuine_cookie_fails_closed(prefix):
     load = _raw_request("POST", "/api/load-sample", [cookie], data={"sample_id": "closest_variants"})
     assert load.status_code == 400
     assert "set-cookie" not in load.headers
-    assert _raw_request("GET", "/api/results/data", [cookie]).status_code == 400
+    rev = attacker_owner.revisions["result"]
+    assert _raw_request("GET", f"/api/results/data?result_rev={rev}", [cookie]).status_code == 400
     assert len(api_server.store) == 2
     assert attacker_owner.get("/api/results/data").status_code == 200
 
 
 @pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
 def test_http_whitespace_prefixed_cookie_is_rejected(prefix):
-    owner = TestClient(app)
+    owner = RevisionClient(app)
     owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     owner.post("/api/execute", json={})
     token = owner.cookies.get(SESSION_COOKIE_NAME)
     assert token
 
     cookie = prefix + SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
-    assert _raw_request("GET", "/api/results/data", [cookie], https=False).status_code == 400
+    url = f"/api/results/data?result_rev={owner.revisions['result']}"
+    assert _raw_request("GET", url, [cookie], https=False).status_code == 400
     # Plain-HTTP development continuity with the exact name is unaffected.
     exact = SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
-    assert _raw_request("GET", "/api/results/data", [exact], https=False).status_code == 200
+    assert _raw_request("GET", url, [exact], https=False).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -278,7 +284,8 @@ def test_duplicate_session_cookie_fails_closed(headers):
     else:
         raw = [pair_a, pair_b]
 
-    assert _raw_request("GET", "/api/results/data", raw).status_code == 400
+    url = f"/api/results/data?result_rev={owner.revisions['result']}"
+    assert _raw_request("GET", url, raw).status_code == 400
     assert owner.get("/api/results/data").status_code == 200
 
 
@@ -287,9 +294,10 @@ def test_https_exact_raw_cookie_header_keeps_session_continuity():
     # browser sends it, with other unrelated cookies alongside) resolves the
     # session; the unprefixed name alongside is ignored over HTTPS, not
     # treated as ambiguous.
-    _, token = _victim_with_results()
+    owner, token = _victim_with_results()
     cookie = f"theme=dark; {SESSION_COOKIE_NAME}=other; {SECURE_SESSION_COOKIE_NAME}={token}"
-    assert _raw_request("GET", "/api/results/data", [cookie.encode()]).status_code == 200
+    url = f"/api/results/data?result_rev={owner.revisions['result']}"
+    assert _raw_request("GET", url, [cookie.encode()]).status_code == 200
 
 
 def test_session_token_reader_is_byte_exact():
@@ -336,8 +344,8 @@ def test_state_persists_across_requests_for_one_client(client):
 
 
 def test_two_clients_do_not_share_state():
-    a = TestClient(app)
-    b = TestClient(app)
+    a = RevisionClient(app)
+    b = RevisionClient(app)
 
     assert a.post("/api/load-sample", data={"sample_id": "gene_overlap"}).status_code == 200
 
@@ -392,8 +400,8 @@ def test_unknown_cookie_token_is_ignored_and_replaced(client):
 
 
 def test_sessions_loaded_for_different_samples_stay_distinct():
-    a = TestClient(app)
-    b = TestClient(app)
+    a = RevisionClient(app)
+    b = RevisionClient(app)
     a.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     b.post("/api/load-sample", data={"sample_id": "stranded_features"})
 
@@ -497,8 +505,8 @@ def test_upload_error_does_not_leak_server_paths(client):
 
 
 def test_uploaded_state_is_session_scoped():
-    a = TestClient(app)
-    b = TestClient(app)
+    a = RevisionClient(app)
+    b = RevisionClient(app)
     assert (
         a.post(
             "/api/upload",

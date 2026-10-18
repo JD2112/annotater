@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from tests.revision_client import RevisionClient
 
 from streamlit_app import api_server
 from streamlit_app.api_server import app
@@ -198,7 +199,7 @@ def fresh_store(monkeypatch):
 
 @pytest.fixture()
 def client():
-    return TestClient(app)
+    return RevisionClient(app)
 
 
 def _load_gene_sample(client: TestClient) -> None:
@@ -278,8 +279,8 @@ def test_execute_results_stay_in_their_own_session():
     if not engine_available("bedtools"):
         pytest.skip("bedtools binary unavailable")
 
-    first = TestClient(app)
-    second = TestClient(app)
+    first = RevisionClient(app)
+    second = RevisionClient(app)
 
     _load_gene_sample(first)
     # ``second`` has loaded nothing yet.

@@ -90,6 +90,16 @@ image without `bedtools` on PATH, or a restricted temporary directory.
 - There is no job queue: the run executes in your session. If a
   deployment imposes timeouts, reduce input size or change operation.
 
+## "Changed in another tab"
+
+All tabs of one browser share one AnnotateR session on the server. If you
+upload, load a sample or run in another tab, this tab can no longer run on,
+show more of, or export what it was displaying: AnnotateR refuses instead of
+silently using the other tab's data, shows **Changed in another tab**, and
+clears the affected file card or results. Re-upload the file (or re-run) in
+this tab to continue. To compare analyses side by side, use separate browser
+profiles or a private window, which get separate sessions.
+
 ## Results look wrong
 
 | Symptom | Usually |
