@@ -250,13 +250,24 @@ export default function App() {
   // stale, already-normalized table.
   // With a revision, the server clears only that revision of the dataset,
   // so this tab can never discard what another tab of the same browser
-  // session uploaded since (release-gate finding F1).
-  const clearServerDataset = (role, revision) =>
-    fetch('/api/dataset/clear', {
+  // session uploaded since (release-gate finding F1). Issue #51: the server
+  // refuses (428) a revision-less clear once a dataset is stored, so this
+  // helper never sends one -- with no revision to name, no request goes out.
+  const clearServerDataset = (role, revision) => {
+    if (!revision) return Promise.resolve();
+    return fetch('/api/dataset/clear', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(revision ? { role, revision } : { role }),
+      body: JSON.stringify({ role, revision }),
     }).catch(() => {});
+  };
+
+  // The revision this tab currently owns for a side (null when it displays
+  // none). It is read from the render that created the calling handler, so a
+  // cleanup after an await names what the tab displayed when the request
+  // started, never a newer response's revision.
+  const ownedRevision = (role) =>
+    (role === 'query' ? queryData : annotData)?.revision ?? null;
 
   // Release-gate finding F1: every tab of this browser shares one server
   // session. The server issues a revision for each dataset and result, and
@@ -294,11 +305,13 @@ export default function App() {
 
   const invalidateDataset = (role) => {
     // Always supersede an in-flight upload/mapping for this side, even when
-    // nothing is loaded yet (finding N2-R).
+    // nothing is loaded yet (finding N2-R). The picker is remounted in every
+    // case, so re-selecting the same filename after the declaration changed
+    // still fires a change event and re-uploads the file.
     datasetGeneration.current[role] += 1;
     const loaded = role === 'query' ? queryData : annotData;
-    if (!loaded) return;
     resetSide(role);
+    if (!loaded) return;
     setStatusMessage({
       type: 'info',
       text: `Coordinate system changed. Re-upload the ${role} file so it is parsed under the new declaration.`,
@@ -307,19 +320,22 @@ export default function App() {
   };
 
   // A superseded upload/mapping response may already have been stored
-  // server-side (the clear sent on invalidation can overtake it), so the
-  // stale copy is cleared again before the side is unlocked.
+  // server-side (the clear sent on invalidation can overtake it), so that
+  // stale copy is cleared -- but only the exact revision the request names.
+  // The side is deliberately NOT reset here: a newer request owns it, and
+  // resetting would tear down whatever that request installed (issue #51).
   // ``revision`` is what the stale request may have stored: the revision a
   // successful response reported (only that revision is cleared), null when
   // the request failed with an HTTP error (nothing stored, nothing to clear),
-  // or undefined when the outcome is unknown (network error: clear the side).
+  // or undefined when the outcome is unknown (a network error: clear only the
+  // revision this tab knew for the side, and send nothing if it knew none).
   const discardStaleDataset = async (role, revision) => {
-    resetSide(role);
     setStatusMessage({
       type: 'info',
       text: `Coordinate system changed while the ${role} file was being processed. Re-upload it so it is parsed under the new declaration.`,
     });
-    if (revision !== null) await clearServerDataset(role, revision);
+    if (revision === null) return;
+    await clearServerDataset(role, revision ?? ownedRevision(role));
   };
 
   // Initial loading
@@ -348,6 +364,10 @@ export default function App() {
     const isCurrent = () =>
       datasetGeneration.current.query === generation.query &&
       datasetGeneration.current.annot === generation.annot;
+    // Revisions this tab owns before the sample load, captured so a cleanup
+    // can name exactly what it is entitled to clear and never a guess
+    // (issue #51). A sample load writes both sides, so both are reconciled.
+    const owned = { query: ownedRevision('query'), annot: ownedRevision('annot') };
     setIsUploading(true);
     clearResults();
     setStatusMessage({ type: 'info', text: 'Loading bundled genomic sample datasets...' });
@@ -359,7 +379,17 @@ export default function App() {
         body: formData,
       });
       const data = await res.json();
-      if (!isCurrent()) return;
+      if (!isCurrent()) {
+        // Superseded in this tab: the sample may still have committed
+        // server-side. Clear only the revisions it reported (a newer dataset
+        // that replaced either side answers 409 and survives); a superseded
+        // HTTP error or conflict stored nothing, so no clear is sent.
+        if (res.ok) {
+          await clearServerDataset('query', data.query?.revision);
+          await clearServerDataset('annot', data.annot?.revision);
+        }
+        return;
+      }
       if (isRevisionConflict(res, data)) {
         // A newer write to either side (from this tab or another tab of the
         // same browser session) won the race: drop the stale sides instead of
@@ -374,8 +404,21 @@ export default function App() {
         setStatusMessage({ type: 'error', text: errorText(data, 'Failed to load sample dataset') });
       }
     } catch {
-      if (!isCurrent()) return;
-      setStatusMessage({ type: 'error', text: 'Network error loading sample' });
+      if (!isCurrent()) {
+        // Superseded and unknown: a newer request owns at least one side, so
+        // neither the local cards nor the server copy the sample may have
+        // stored are this tab's to remove. Leave them for the next write.
+        return;
+      }
+      // The outcome is unknown, so neither side can be trusted: drop them
+      // locally and clear only the revisions this tab owned. If it owned
+      // none, no clear is sent -- the server copy, if any, is left for the
+      // next write rather than guessed away.
+      resetSide('query');
+      resetSide('annot');
+      setStatusMessage({ type: 'error', text: 'Network error loading sample. Re-upload your files.' });
+      await clearServerDataset('query', owned.query);
+      await clearServerDataset('annot', owned.annot);
     } finally {
       setIsUploading(false);
     }
@@ -440,9 +483,14 @@ export default function App() {
       }
       // The server may or may not have stored the file; drop this side on
       // both ends so client and server cannot disagree about what is loaded.
+      // The clear names the last revision this tab owned -- the failed
+      // upload's own revision is unknown, and a revision this tab never owned
+      // must never be guessed away (issue #51). If it owned none, no clear is
+      // sent and the server copy, if any, is left for the next write.
+      const owned = ownedRevision(role);
       resetSide(role);
       setStatusMessage({ type: 'error', text: `Network error uploading file. Re-upload the ${role} file.` });
-      await clearServerDataset(role);
+      await clearServerDataset(role, owned);
     } finally {
       setIsUploading(false);
     }
@@ -493,10 +541,14 @@ export default function App() {
         return;
       }
       // Whether the server applied the mapping is unknown; re-mapping an
-      // already-mapped table would fail, so start this side over.
+      // already-mapped table would fail, so start this side over. The clear
+      // names the revision the query had before the mapping (the mapped
+      // revision is unknown); a revision this tab never owned is never
+      // guessed away (issue #51).
+      const owned = ownedRevision('query');
       resetSide('query');
       setStatusMessage({ type: 'error', text: 'Failed to apply column mapping. Re-upload the query file.' });
-      await clearServerDataset('query');
+      await clearServerDataset('query', owned);
     } finally {
       setIsMapping(false);
     }

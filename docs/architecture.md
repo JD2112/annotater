@@ -191,8 +191,8 @@ revision they act on:
 
 | State | Issued by (response field) | Required by |
 |---|---|---|
-| query dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`query.revision`), `POST /api/apply-mapping` (`revision`, a new one) | `POST /api/execute` (`query_rev`), `POST /api/apply-mapping` (`query_rev`), optional on `POST /api/dataset/clear` (`revision`) |
-| annotation dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`annot.revision`) | `POST /api/execute` (`annot_rev`), optional on clear |
+| query dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`query.revision`), `POST /api/apply-mapping` (`revision`, a new one) | `POST /api/execute` (`query_rev`), `POST /api/apply-mapping` (`query_rev`), `POST /api/dataset/clear` (`revision`, required when a dataset is stored) |
+| annotation dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`annot.revision`) | `POST /api/execute` (`annot_rev`), `POST /api/dataset/clear` (`revision`, required when stored) |
 | result | `POST /api/execute` (`result_revision`; also echoes `query_revision`/`annot_revision`) | `GET /api/results/data`, `GET /api/results/gene-list`, `GET /api/export/{fmt}` (`result_rev` query parameter) |
 
 Uniform contract: nothing stored and no revision stated → 400/404 as
@@ -204,7 +204,12 @@ The server never falls back to "whatever is stored now".
 Lifecycle: a dataset revision is replaced on every upload, sample load or
 mapping of that side and disappears when the side is cleared or the session
 expires. A result revision is created per successful execute; clearing a
-dataset discards the result derived from it. Revision checks and the state
+dataset discards the result derived from it (and only a result bound to the
+cleared revision, issue #52). A clear binds only the revision it names: a
+request that names a stale revision, or that names none while a dataset is
+stored, is refused without committing, so it cannot discard a newer dataset
+another tab stored — nor advance the write-order high-water mark and make an
+in-flight upload look superseded (issue #51). Revision checks and the state
 transitions they guard run under the session's lock; execute and mapping run
 the expensive work outside the lock and commit only if the datasets they
 read are still the stored ones (otherwise 409, nothing stored).

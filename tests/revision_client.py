@@ -40,6 +40,19 @@ class RevisionClient(TestClient):
                 body = dict(body)
                 body.setdefault("query_rev", self.revisions["query"])
                 kwargs["json"] = body
+        elif method == "POST" and path == "/api/dataset/clear":
+            # Issue #51: a clear that names no revision is refused (428) once a
+            # dataset is stored, so a tab must echo the revision it owns. This
+            # mirrors the frontend, which only ever clears a revision it
+            # received (and sends nothing when it knows none). Tests that need
+            # the missing-revision path use a client that never received one.
+            body = kwargs.get("json")
+            if isinstance(body, dict):
+                body = dict(body)
+                role = body.get("role")
+                if role in self.revisions:
+                    body.setdefault("revision", self.revisions[role])
+                kwargs["json"] = body
         elif method == "GET" and (path.startswith("/api/results/") or path.startswith("/api/export/")):
             if "result" in self.revisions and "result_rev=" not in str(url):
                 params = dict(kwargs.get("params") or {})

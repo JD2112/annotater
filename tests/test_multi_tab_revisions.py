@@ -320,7 +320,12 @@ def test_dataset_cleared_while_execute_runs_discards_the_result(monkeypatch):
     real = api_server.execute_annotation_core
 
     def racing(request):
-        tab_b.post("/api/dataset/clear", json={"role": "annot"})
+        # Issue #51: a clear must name the revision it owns; tab B shares the
+        # session and has seen A's annotation revision.
+        tab_b.post(
+            "/api/dataset/clear",
+            json={"role": "annot", "revision": tab_a.revisions["annot"]},
+        )
         return real(request)
 
     monkeypatch.setattr(api_server, "execute_annotation_core", racing)

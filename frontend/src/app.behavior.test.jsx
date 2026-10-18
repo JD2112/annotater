@@ -37,18 +37,21 @@ const META = {
   ],
 };
 
-const dataset = (filename, format, totalRows) => ({
+const dataset = (filename, format, totalRows, revision) => ({
   filename,
   format,
   total_rows: totalRows,
   columns: ['chr', 'start', 'end'],
   preview: [{ chr: 'chr1', start: 9, end: 20 }],
   needs_mapping: false,
+  // Every stored dataset the server returns carries a revision; issue #51
+  // makes the frontend clear only a revision it was given.
+  ...(revision ? { revision } : {}),
 });
 
 const SAMPLE = {
-  query: dataset('sample-query.bed', 'bed', 20),
-  annot: dataset('sample-annotation.gff3', 'gff3', 40),
+  query: dataset('sample-query.bed', 'bed', 20, 'sample-query-rev'),
+  annot: dataset('sample-annotation.gff3', 'gff3', 40, 'sample-annot-rev'),
 };
 
 const EXEC_RESULT = {
@@ -107,7 +110,7 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
         if (u === '/api/upload') {
-          return Promise.resolve(jsonResponse(dataset('q.tsv', 'bed', 2)));
+          return Promise.resolve(jsonResponse(dataset('q.tsv', 'bed', 2, 'query-rev-1')));
         }
         if (u === '/api/dataset/clear') {
           clearBodies.push(options?.body);
@@ -139,8 +142,11 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
     await waitFor(() => expect(screen.queryByText('q.tsv')).toBeNull());
     expect(screen.getByText(/re-upload the query file/i)).toBeTruthy();
 
-    // The server-side copy is invalidated with the right role.
-    expect(clearBodies).toEqual([JSON.stringify({ role: 'query' })]);
+    // The server-side copy is invalidated with the role and the exact
+    // revision this tab loaded (issue #51: never a revision-less clear).
+    expect(clearBodies).toEqual([
+      JSON.stringify({ role: 'query', revision: 'query-rev-1' }),
+    ]);
   });
 
   it('leaves the annot side untouched when the query declaration changes', async () => {
@@ -154,7 +160,11 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
           // Alternate responses by the role field in the form body.
           const role = String(options?.body?.get?.('role') ?? '');
           return Promise.resolve(
-            jsonResponse(role === 'annot' ? dataset('a.tsv', 'gff3', 3) : dataset('q.tsv', 'bed', 2)),
+            jsonResponse(
+              role === 'annot'
+                ? dataset('a.tsv', 'gff3', 3, 'annot-rev-1')
+                : dataset('q.tsv', 'bed', 2, 'query-rev-1'),
+            ),
           );
         }
         if (u === '/api/dataset/clear') {
@@ -183,7 +193,9 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
     await waitFor(() => expect(screen.queryByText('q.tsv')).toBeNull());
     // Only the query side was invalidated.
     expect(screen.getByText('a.tsv')).toBeTruthy();
-    expect(clearBodies).toEqual([JSON.stringify({ role: 'query' })]);
+    expect(clearBodies).toEqual([
+      JSON.stringify({ role: 'query', revision: 'query-rev-1' }),
+    ]);
   });
 });
 
@@ -257,6 +269,7 @@ const pendingBackend = () => {
   const uploads = [];
   const mappings = [];
   const clears = [];
+  const clearBodies = [];
   const fetchStub = vi.fn((url, options) => {
     const u = String(url);
     if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
@@ -276,13 +289,15 @@ const pendingBackend = () => {
       });
     }
     if (u === '/api/dataset/clear') {
-      clears.push(JSON.parse(options.body).role);
+      const body = JSON.parse(options.body);
+      clears.push(body.role);
+      clearBodies.push(body);
       return Promise.resolve(jsonResponse({ status: 'success' }));
     }
     return Promise.resolve(jsonResponse({}));
   });
   vi.stubGlobal('fetch', fetchStub);
-  return { uploads, mappings, clears };
+  return { uploads, mappings, clears, clearBodies };
 };
 
 const renderApp = async () => {
@@ -334,9 +349,12 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     const pickerBefore = fileInputs()[0];
 
     fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
-    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1, 'query-rev-1'))));
 
     await waitFor(() => expect(backend.clears).toEqual(['query']));
+    // Issue #51: the superseded success is cleaned up by exactly the revision
+    // it reported, never by a revision-less clear.
+    expect(backend.clearBodies).toEqual([{ role: 'query', revision: 'query-rev-1' }]);
     expect(screen.queryByText('q.bed')).toBeNull();
     expect(coordSelects()[0].value).toBe(ONE_BASED);
     expect(screen.getByText(/changed while the query file was being processed/i)).toBeTruthy();
@@ -347,7 +365,7 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     chooseFile('query', 'q.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(2));
     expect(backend.uploads[1].coordSystem).toBe(ONE_BASED);
-    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1, 'query-rev-2'))));
     await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
   });
 
@@ -360,7 +378,7 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
 
     chooseFile('query', 'old.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(1));
-    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('old.bed', 'bed', 1))));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('old.bed', 'bed', 1, 'query-rev-1'))));
     await waitFor(() => expect(screen.getByText('old.bed')).toBeTruthy());
 
     chooseFile('query', 'new.bed');
@@ -369,10 +387,15 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     await waitFor(() => expect(backend.clears).toEqual(['query']));
     expect(screen.queryByText('old.bed')).toBeNull();
 
-    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('new.bed', 'bed', 1))));
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('new.bed', 'bed', 1, 'query-rev-2'))));
     // The stale response is discarded, and the copy the server may have
-    // stored after the first clear is cleared again.
+    // stored after the first clear is cleared again -- each by its own
+    // revision (issue #51).
     await waitFor(() => expect(backend.clears).toEqual(['query', 'query']));
+    expect(backend.clearBodies).toEqual([
+      { role: 'query', revision: 'query-rev-1' },
+      { role: 'query', revision: 'query-rev-2' },
+    ]);
     expect(screen.queryByText('new.bed')).toBeNull();
     expect(screen.queryByText('old.bed')).toBeNull();
     expect(coordSelects()[0].disabled).toBe(false);
@@ -387,7 +410,7 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     chooseFile('annot', 'a.gff3');
     await waitFor(() => expect(backend.uploads).toHaveLength(1));
     fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
-    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('a.gff3', 'gff3', 1))));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('a.gff3', 'gff3', 1, 'annot-rev-1'))));
     await waitFor(() => expect(screen.getByText('a.gff3')).toBeTruthy());
     expect(backend.clears).toEqual([]);
 
@@ -397,10 +420,11 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     await waitFor(() => expect(backend.uploads).toHaveLength(2));
     expect(backend.uploads[1].coordSystem).toBe(ONE_BASED);
     fireEvent.change(coordSelects()[1], { target: { value: ONE_BASED } });
-    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1, 'query-rev-2'))));
     await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
     expect(screen.queryByText('a.gff3')).toBeNull();
     expect(backend.clears).toEqual(['annot']);
+    expect(backend.clearBodies).toEqual([{ role: 'annot', revision: 'annot-rev-1' }]);
   });
 
   it('mapping: locks the selectors while in flight and a stale mapping cannot resurrect the query', async () => {
@@ -411,7 +435,11 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     await waitFor(() => expect(backend.uploads).toHaveLength(1));
     await act(async () =>
       backend.uploads[0].resolve(
-        jsonResponse({ ...dataset('custom.tsv', 'custom', 1), columns: ['c', 'p', 'e'], needs_mapping: true }),
+        jsonResponse({
+          ...dataset('custom.tsv', 'custom', 1, 'query-rev-1'),
+          columns: ['c', 'p', 'e'],
+          needs_mapping: true,
+        }),
       ),
     );
     await waitFor(() => expect(screen.getByText(/column mapping required/i)).toBeTruthy());
@@ -426,9 +454,15 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
     await waitFor(() => expect(backend.clears).toEqual(['query']));
     await act(async () =>
-      backend.mappings[0].resolve(jsonResponse({ total_rows: 1, columns: ['chr', 'start', 'end'], preview: [] })),
+      backend.mappings[0].resolve(jsonResponse({
+        revision: 'mapped-rev-2', total_rows: 1, columns: ['chr', 'start', 'end'], preview: [],
+      })),
     );
     await waitFor(() => expect(backend.clears).toEqual(['query', 'query']));
+    expect(backend.clearBodies).toEqual([
+      { role: 'query', revision: 'query-rev-1' },
+      { role: 'query', revision: 'mapped-rev-2' },
+    ]);
     expect(screen.queryByText('custom.tsv')).toBeNull();
     expect(screen.queryByText(/column mapping applied/i)).toBeNull();
     expect(screen.queryByText(/✓/)).toBeNull();
@@ -441,7 +475,7 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
 
     chooseFile('query', 'q.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(1));
-    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1, 'query-rev-1'))));
     await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
 
     // A rejected upload (the server stores nothing) keeps the loaded file on
@@ -457,10 +491,13 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
 
     // A network failure leaves the server outcome unknown: the side is
     // dropped on both ends instead of showing a file the server may not hold.
+    // The clear names the last revision this tab owned (issue #51), so it can
+    // only ever remove that revision, never a newer one.
     chooseFile('query', 'net.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(3));
     await act(async () => backend.uploads[2].reject(new TypeError('network down')));
     await waitFor(() => expect(backend.clears).toEqual(['query']));
+    expect(backend.clearBodies).toEqual([{ role: 'query', revision: 'query-rev-1' }]);
     expect(screen.queryByText('q.bed')).toBeNull();
     expect(screen.queryByText('net.bed')).toBeNull();
     expect(coordSelects()[0].disabled).toBe(false);
@@ -474,10 +511,10 @@ describe('N7: annotation-side coordinate declaration', () => {
 
     chooseFile('query', 'q.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(1));
-    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 2))));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 2, 'query-rev-1'))));
     chooseFile('annot', 'a.gff3');
     await waitFor(() => expect(backend.uploads).toHaveLength(2));
-    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('a.gff3', 'gff3', 3))));
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('a.gff3', 'gff3', 3, 'annot-rev-2'))));
     await waitFor(() => expect(screen.getByText('a.gff3')).toBeTruthy());
     expect(screen.getByText('q.bed')).toBeTruthy();
     const annotPickerBefore = fileInputs()[1];
@@ -488,6 +525,7 @@ describe('N7: annotation-side coordinate declaration', () => {
     await waitFor(() => expect(screen.queryByText('a.gff3')).toBeNull());
     expect(screen.getByText(/re-upload the annot file/i)).toBeTruthy();
     expect(backend.clears).toEqual(['annot']);
+    expect(backend.clearBodies).toEqual([{ role: 'annot', revision: 'annot-rev-2' }]);
     // The query dataset, its picker and its declaration are untouched.
     expect(screen.getByText('q.bed')).toBeTruthy();
     expect(fileInputs()[0]).toBe(queryPickerBefore);
@@ -856,6 +894,152 @@ describe('#58: upload / sample-load revision conflicts drop the stale side', () 
     await waitFor(() => expect(screen.getByText('sample-query.bed')).toBeTruthy());
     expect(screen.getByText('sample-annotation.gff3')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(runButton().disabled).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #51 / #52: revision-safe cleanup. Every clear names a revision the tab owns,
+// so an unknown-outcome or superseded request can never remove a newer dataset
+// (here or in another tab of the same session). Guard-level tests: fireEvent
+// bypasses the disabled controls on purpose to drive the request-generation
+// guards; the opt-in real-browser suite (tests/test_browser_multi_tab.py)
+// proves the same recovery through genuinely enabled controls.
+// ---------------------------------------------------------------------------
+
+describe('#51/#52: revision-safe cleanup never wipes a newer dataset', () => {
+  it('an unknown-outcome upload error clears only the revision the tab owned', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    chooseFile('query', 'net.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () => backend.uploads[2].reject(new TypeError('network down')));
+
+    await waitFor(() => expect(backend.clears).toHaveLength(1));
+    // The clear names the last revision this tab owned, not the failed
+    // request's unknown revision -- and never a revision-less fallback.
+    expect(backend.clears[0]).toEqual({ role: 'query', revision: 'query-rev-1' });
+    // The query is dropped locally; the untouched annotation survives.
+    expect(screen.queryByText('q.bed')).toBeNull();
+    expect(screen.getByText('a.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it('an unknown-outcome upload error with nothing loaded sends no clear', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+
+    chooseFile('query', 'net.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    await act(async () => backend.uploads[0].reject(new TypeError('network down')));
+
+    await waitFor(() => expect(screen.getByText(/Network error uploading file/i)).toBeTruthy());
+    // No revision is known, so nothing is sent: the unknown server copy is
+    // left for the next write, never guessed away (issue #51).
+    expect(backend.clears).toEqual([]);
+    expect(screen.queryByText('net.bed')).toBeNull();
+  });
+
+  it('a superseded successful upload is cleaned up by its own returned revision', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    chooseFile('query', 'older.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(4));
+
+    const newer = backend.uploadResponse('newer.bed', 'query');
+    await act(async () => backend.uploads[3].resolve(jsonResponse(newer)));
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    const older = backend.uploadResponse('older.bed', 'query');
+    await act(async () => backend.uploads[2].resolve(jsonResponse(older)));
+
+    await waitFor(() => expect(backend.clears).toHaveLength(1));
+    expect(backend.clears[0]).toEqual({ role: 'query', revision: older.revision });
+    // The newer dataset this tab now displays is not torn down.
+    expect(screen.getByText('newer.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(false);
+  });
+
+  it('a superseded failed upload never triggers an unconditional clear', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    chooseFile('query', 'older.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(4));
+
+    await act(async () =>
+      backend.uploads[3].resolve(jsonResponse(backend.uploadResponse('newer.bed', 'query'))),
+    );
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    await act(async () =>
+      backend.uploads[2].resolve({ ok: false, status: 400, json: async () => ({ detail: 'bad file' }) }),
+    );
+
+    expect(backend.clears).toEqual([]);
+    expect(screen.getByText('newer.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(false);
+  });
+
+  it('a superseded sample-load success clears only the revisions it returned', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(backend.samples).toHaveLength(1));
+
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () =>
+      backend.uploads[2].resolve(jsonResponse(backend.uploadResponse('newer.bed', 'query'))),
+    );
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    await act(async () => backend.samples[0].resolve(jsonResponse(SAMPLE)));
+
+    // Only the sample's own revisions are cleared; a query replaced in this
+    // tab answers 409 server-side and the newer dataset survives.
+    await waitFor(() =>
+      expect(backend.clears).toEqual([
+        { role: 'query', revision: 'sample-query-rev' },
+        { role: 'annot', revision: 'sample-annot-rev' },
+      ]),
+    );
+    expect(screen.queryByText('sample-query.bed')).toBeNull();
+    expect(screen.getByText('newer.bed')).toBeTruthy();
+  });
+
+  it('a superseded sample-load network error keeps the newer dataset', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(backend.samples).toHaveLength(1));
+
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () =>
+      backend.uploads[2].resolve(jsonResponse(backend.uploadResponse('newer.bed', 'query'))),
+    );
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    await act(async () => backend.samples[0].reject(new TypeError('network down')));
+
+    // Superseded with an unknown outcome: no revision to name is this tab's
+    // to clear, and neither side is torn down.
+    expect(backend.clears).toEqual([]);
+    expect(screen.getByText('newer.bed')).toBeTruthy();
     expect(runButton().disabled).toBe(false);
   });
 });

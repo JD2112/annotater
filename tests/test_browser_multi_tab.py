@@ -207,6 +207,42 @@ def test_upload_409_conflict_drops_the_stale_side_and_disables_run(browser, base
     context.close()
 
 
+def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(browser, base_url, files):
+    """Issue #51: an unknown-outcome clean-up names only the revision it owns.
+
+    Tab A watches its next query upload die in flight, so the server's stored
+    revision for that upload is unknown. Tab B (same session) has since stored a
+    newer query under a new revision. Tab A's recovery must clear only the
+    revision it last owned; a blind revision-less clear would delete tab B's
+    newer dataset and break its export.
+    """
+    context = browser.new_context(accept_downloads=True)
+    tab_a = _open_tab(context, base_url)
+    assert "0 of 1 regions matched" in _load_and_run(tab_a, files, one_based=False)
+
+    # Tab B stores a newer query under a fresh revision and proves it runs.
+    tab_b = _open_tab(context, base_url)
+    assert "1 of 1 regions matched" in _load_and_run(tab_b, files, one_based=True)
+
+    # Tab A's next upload never reaches the server: outcome unknown, server
+    # revision unknown, so only tab A's last-known revision may be cleared.
+    tab_a.route("**/api/upload", lambda route: route.abort())
+    superseded = files / "superseded.tsv"
+    superseded.write_text("chr1\t100\t200\tr1\n")
+    tab_a.bring_to_front()
+    tab_a.locator("input[type=file]").nth(0).set_input_files(superseded)
+    tab_a.wait_for_selector("text=/Network error uploading file/")
+
+    # Tab B's newer dataset survived the clean-up: it still exports its own
+    # 1-based result (a wiped query would leave it with nothing to export).
+    tab_b.bring_to_front()
+    assert tab_b.locator("text=1 of 1 regions matched").count() == 1
+    with tab_b.expect_download() as info:
+        tab_b.get_by_role("button", name="CSV", exact=True).click()
+    assert MATCH_ROW in Path(info.value.path()).read_text()
+    context.close()
+
+
 def test_separate_browser_sessions_stay_independent(browser, base_url, files):
     one = browser.new_context(accept_downloads=True)
     two = browser.new_context(accept_downloads=True)  # a separate cookie jar
