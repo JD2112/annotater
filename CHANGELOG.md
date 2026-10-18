@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Single-position (end-column-less) queries no longer depend on which column happens to be third in the input table.
+- `POST /api/upload` no longer parses on the event loop: format detection, parsing and normalization now run in a worker thread (`anyio.to_thread.run_sync`), so a large upload can no longer freeze the single Uvicorn worker's loop and stall every other session's request and the `GET /health` readiness probe for the duration of the parse (#55). The upload's session commit remains a single locked critical section, so a concurrent clear or replacement still cannot expose a dataset and revision that do not match.
+- Parsing now borrows from a limiter dedicated to uploads (default 2 concurrent, `ANNOTATER_MAX_CONCURRENT_PARSES`) instead of AnyIO's shared default threadpool, so a burst of uploads can no longer exhaust the pool that synchronous endpoints such as `GET /health` run on and starve them (#55). Waiting uploads await a token on the event loop and never block it.
+- Same-session writes are ordered by request arrival: if an upload or sample load is superseded by a newer upload, sample load or clear that commits while the older request is still parsing, the older request is refused with `409 revision_conflict` and stores nothing, instead of silently overwriting the newer dataset — even across tabs of one browser session (#55). Clears carry the same ordering, so an in-flight upload cannot resurrect a side that was just cleared.
 
 ### Security
 - `GET /api/results/data` page size is bounded to 10,000 rows per request.

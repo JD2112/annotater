@@ -210,6 +210,55 @@ class Session:
     #: Serialises revision checks and state transitions on ``data`` (one tab's
     #: request must never interleave a check-then-write with another tab's).
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
+    #: Per-role ordering of concurrent writes to one dataset side (issue #55).
+    #: ``write_seq`` is the last *arrival-order* stamp handed out to a writer;
+    #: ``write_done`` is the highest stamp actually committed. A writer whose
+    #: stamp is below ``write_done`` was superseded by a later-started write and
+    #: must not replace it -- no matter which request finishes parsing first.
+    #: Both are touched only under ``lock``.
+    write_seq: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
+    write_done: Dict[str, int] = field(default_factory=dict, repr=False, compare=False)
+
+
+WRITE_ROLES = ("query", "annot")
+
+
+def reserve_write_order(session: Session, role: str) -> Optional[int]:
+    """Reserve the next arrival-order write stamp for one dataset side.
+
+    The stamp reflects request *arrival* order, not completion order, so a
+    later-started write outranks an earlier one even when the earlier one
+    finishes parsing first (issue #55). Returns ``None`` for a session that is
+    not yet stored: a brand-new session's first write has nothing to race with,
+    and reserving must not allocate a session (review finding N4).
+    """
+    if not session.token:
+        return None
+    with session.lock:
+        stamp = session.write_seq.get(role, 0) + 1
+        session.write_seq[role] = stamp
+        return stamp
+
+
+def write_order_superseded(session: Session, role: str, stamp: Optional[int]) -> bool:
+    """True if a later-started write already committed for ``role``.
+
+    The caller must hold ``session.lock`` so the check is atomic with the write
+    it guards. A ``None`` stamp (first write of a not-yet-stored session) is
+    never superseded.
+    """
+    if stamp is None:
+        return False
+    return stamp < session.write_done.get(role, 0)
+
+
+def record_write_committed(session: Session, role: str, stamp: Optional[int]) -> None:
+    """Advance ``role``'s committed high-water mark after a successful write.
+
+    The caller must hold ``session.lock``. A ``None`` stamp advances nothing.
+    """
+    if stamp is not None and stamp > session.write_done.get(role, 0):
+        session.write_done[role] = stamp
 
 
 def new_revision() -> str:

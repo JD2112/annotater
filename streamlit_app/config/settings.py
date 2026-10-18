@@ -27,6 +27,15 @@ class Settings:
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", 100000))
     MAX_WORKERS = int(os.getenv("MAX_WORKERS", 4))
     ENABLE_CACHING = os.getenv("ENABLE_CACHING", "true").lower() == "true"
+
+    # Cap on concurrent upload parses (issue #55). Parsing is CPU- and
+    # memory-heavy: a canonical frame can be several times the size of the
+    # uploaded file, and the documented Serve allocation is 2 vCPU / 4 GB
+    # (docs/deployment.md, "Expected startup and resources"). Kept small and
+    # deliberately separate from the *default* AnyIO thread pool that Starlette
+    # uses for synchronous endpoints, so a burst of uploads cannot starve
+    # GET /health or other lightweight requests.
+    MAX_CONCURRENT_PARSES = max(1, int(os.getenv("ANNOTATER_MAX_CONCURRENT_PARSES", "2")))
     
     # Temporary files
     TEMP_DIR = Path(os.getenv("TEMP_DIR", "/tmp/annotator"))

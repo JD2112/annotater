@@ -6,15 +6,20 @@ and coordinate normalizers, serving REST endpoints for the modern React frontend
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import shutil
 import tempfile
+import threading
+import weakref
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import anyio
 import pandas as pd
+from anyio import CapacityLimiter
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -24,13 +29,17 @@ from pydantic import BaseModel, Field
 from streamlit_app.api_sessions import (
     SECURE_SESSION_COOKIE_NAME,
     SESSION_COOKIE_NAME,
+    WRITE_ROLES,
     AmbiguousSessionCookie,
     Session,
     SessionStore,
     anonymous_session,
     new_revision,
     open_private_storage,
+    record_write_committed,
+    reserve_write_order,
     session_token_from_cookie_headers,
+    write_order_superseded,
 )
 
 from streamlit_app.config import Settings
@@ -180,6 +189,43 @@ app.add_middleware(
 #: the single-worker deployment constraint.
 store = SessionStore()
 _SESSION_TTL_SECONDS = int(store.ttl_seconds)
+
+# ---------------------------------------------------------------------------
+# Dedicated parsing capacity (issue #55)
+# ---------------------------------------------------------------------------
+#: Upload parsing runs in a worker thread, but on a limiter *dedicated* to
+#: parsing rather than AnyIO's default thread-pool limiter. Starlette runs
+#: synchronous endpoints (``/health``, ``/api/meta``, load-sample, clear) on
+#: that same default limiter, so sharing it would let a burst of uploads occupy
+#: every default token and starve them -- the exact availability failure the
+#: offload was meant to fix, just moved from the event loop to the thread pool.
+#:
+#: anyio's CapacityLimiter coordinates the tasks of the loop it was created on,
+#: so one limiter is kept per running event loop. Production has a single loop
+#: (single Uvicorn worker) and therefore a single limiter of
+#: ``Settings.MAX_CONCURRENT_PARSES`` tokens; Starlette's TestClient runs each
+#: request in its own short-lived loop, and a shared global limiter would
+#: deadlock across them.
+_PARSE_LIMITERS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, CapacityLimiter]" = (
+    weakref.WeakKeyDictionary()
+)
+_PARSE_LIMITERS_LOCK = threading.Lock()
+
+
+def _parse_limiter() -> CapacityLimiter:
+    """The parsing CapacityLimiter for the current event loop.
+
+    Bounds concurrent parses to :data:`Settings.MAX_CONCURRENT_PARSES`; waiting
+    uploads await a token on the loop (they do not block it) and do not touch
+    the default thread-pool tokens used by synchronous endpoints.
+    """
+    loop = asyncio.get_running_loop()
+    with _PARSE_LIMITERS_LOCK:
+        limiter = _PARSE_LIMITERS.get(loop)
+        if limiter is None:
+            limiter = CapacityLimiter(Settings.MAX_CONCURRENT_PARSES)
+            _PARSE_LIMITERS[loop] = limiter
+        return limiter
 
 
 def _cookie_is_secure(request: Request) -> bool:
@@ -445,6 +491,12 @@ def load_sample(
     if sample_id not in samples:
         raise HTTPException(status_code=404, detail="Sample dataset not found")
 
+    # Stamp both sides at arrival (issue #55), so a sample load cannot be
+    # overwritten by an upload that started earlier but finishes parsing later,
+    # and does not itself clobber a newer upload or clear.
+    query_stamp = reserve_write_order(session, "query")
+    annot_stamp = reserve_write_order(session, "annot")
+
     q_name, a_name = samples[sample_id]
     q_path = get_example_data_path(q_name)
     a_path = get_example_data_path(a_name)
@@ -461,25 +513,39 @@ def load_sample(
     # never stored state did not, review finding N4).
     session = _materialize_session(request, session)
     q_rev, a_rev = new_revision(), new_revision()
-    # Store in this session only
+    # Store in this session only. As with upload, a later-started write to
+    # either side that already committed while this sample was parsing makes
+    # this load stale: it is refused rather than replacing the newer dataset.
     with session.lock:
-        session.data["query"] = {
-            "rev": q_rev,
-            "filename": q_name,
-            "format": q_fmt,
-            "df": q_df,
-            "rows": len(q_df),
-            "columns": list(q_df.columns),
-            "vcf_header_lines": q_df.attrs.get("vcf_header_lines"),
-        }
-        session.data["annot"] = {
-            "rev": a_rev,
-            "filename": a_name,
-            "format": a_fmt,
-            "df": a_df,
-            "rows": len(a_df),
-            "columns": list(a_df.columns),
-        }
+        superseded = write_order_superseded(session, "query", query_stamp) or (
+            write_order_superseded(session, "annot", annot_stamp)
+        )
+        if not superseded:
+            session.data["query"] = {
+                "rev": q_rev,
+                "filename": q_name,
+                "format": q_fmt,
+                "df": q_df,
+                "rows": len(q_df),
+                "columns": list(q_df.columns),
+                "vcf_header_lines": q_df.attrs.get("vcf_header_lines"),
+            }
+            session.data["annot"] = {
+                "rev": a_rev,
+                "filename": a_name,
+                "format": a_fmt,
+                "df": a_df,
+                "rows": len(a_df),
+                "columns": list(a_df.columns),
+            }
+            record_write_committed(session, "query", query_stamp)
+            record_write_committed(session, "annot", annot_stamp)
+    if superseded:
+        raise _revision_conflict(
+            "This sample load was superseded by a newer upload or clear from "
+            "another tab of this browser session; nothing was stored.",
+            ["query", "annot"],
+        )
 
     return {
         "status": "success",
@@ -502,6 +568,43 @@ def load_sample(
     }
 
 
+def _detect_parse_and_normalize(
+    temp_path: str, role: str, declared: Optional[str]
+) -> Tuple[str, pd.DataFrame, bool]:
+    """Detect, parse and normalize an uploaded file, synchronously.
+
+    This is the CPU-bound half of :func:`upload_file`: format detection and
+    parsing are pure-Python/pandas work that can take seconds on a large
+    file. It is deliberately kept out of the endpoint coroutine and executed
+    through :func:`anyio.to_thread.run_sync` so the event loop can keep
+    answering ``/health`` probes and other sessions' requests while this
+    upload is parsed (a blocked loop would stall every co-tenant session and
+    the container healthcheck).
+
+    It touches only the on-disk temp file and returns a freshly built
+    DataFrame, so it shares no mutable state with the loop or any other
+    session and is safe to run concurrently on several worker threads.
+    Returns ``(fmt, df, needs_mapping)``.
+    """
+    fmt = FormatDetector.detect(temp_path)
+    if fmt == "custom":
+        df = CustomParser.parse(temp_path)
+        # A custom coordinate file always requires an explicit column
+        # mapping: the declared coordinate system cannot be inferred from
+        # the file (Streamlit behaves the same way). A custom annotation
+        # is normalized in place when it already exposes the canonical
+        # columns.
+        needs_mapping = role == "query" or not all(
+            c in df.columns for c in ("chr", "start", "end")
+        )
+        if not needs_mapping and role == "annot":
+            df = normalize_intervals(df, coordinate_system=declared or "0-based")
+    else:
+        df = parse_and_normalize(temp_path, fmt=fmt, declared_system=declared)
+        needs_mapping = False
+    return fmt, df, needs_mapping
+
+
 @app.post("/api/upload")
 async def upload_file(
     request: Request,
@@ -511,8 +614,14 @@ async def upload_file(
     session: Session = Depends(get_session),
 ):
     """Uploads and parses a genomic interval file."""
-    if role not in ("query", "annot"):
+    if role not in WRITE_ROLES:
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
+
+    # Stamp this upload with its arrival order for the role before the
+    # (possibly slow) parse, so a later upload or clear that commits first
+    # cannot be silently overwritten by this older request once it finishes
+    # parsing (issue #55). Reserving does not allocate a session (finding N4).
+    write_stamp = reserve_write_order(session, role)
 
     # The client filename is never used as a path component: the file is
     # stored under a server-generated name inside a private temp directory,
@@ -535,44 +644,63 @@ async def upload_file(
                     )
                 handle.write(chunk)
 
-        fmt = FormatDetector.detect(str(temp_path))
         declared = None
         if coord_system and "0-based" in coord_system:
             declared = "0-based"
         elif coord_system and "1-based" in coord_system:
             declared = "1-based"
 
-        if fmt == "custom":
-            df = CustomParser.parse(str(temp_path))
-            # A custom coordinate file always requires an explicit column
-            # mapping: the declared coordinate system cannot be inferred from
-            # the file (Streamlit behaves the same way). A custom annotation
-            # is normalized in place when it already exposes the canonical
-            # columns.
-            needs_mapping = role == "query" or not all(
-                c in df.columns for c in ("chr", "start", "end")
-            )
-            if not needs_mapping and role == "annot":
-                df = normalize_intervals(df, coordinate_system=declared or "0-based")
-        else:
-            df = parse_and_normalize(str(temp_path), fmt=fmt, declared_system=declared)
-            needs_mapping = False
+        # Detection, parsing and normalization are CPU-bound and, for large
+        # files, slow: run them on a worker thread so this coroutine does not
+        # block the event loop while it parses (see
+        # _detect_parse_and_normalize). The worker borrows a token from the
+        # parsing-specific limiter, NOT from AnyIO's default thread pool, so a
+        # burst of uploads cannot starve the synchronous endpoints (/health)
+        # that share the default pool. Waiting uploads await a limiter token on
+        # the event loop and do not block it.
+        #
+        # ``run_sync`` defaults to ``abandon_on_cancel=False``: if this task is
+        # cancelled while the parse runs (server shutdown; a client disconnect
+        # is not guaranteed to cancel the handler at all), the call waits for
+        # the worker to finish before the cancellation propagates, so the
+        # ``finally`` below never removes the temp file out from under it.
+        fmt, df, needs_mapping = await anyio.to_thread.run_sync(
+            _detect_parse_and_normalize,
+            str(temp_path),
+            role,
+            declared,
+            limiter=_parse_limiter(),
+        )
 
         # First state write: consume a session slot (a failed upload did
-        # not, review finding N4).
+        # not, review finding N4). The commit is a single locked critical
+        # section: the supersession check, the dataset and its revision are
+        # applied together, so a dataset is never published with a revision
+        # that does not match it. If a later-started write for this role has
+        # already committed while this upload was parsing, this older upload is
+        # refused instead of overwriting the newer dataset (issue #55).
         session = _materialize_session(request, session)
         revision = new_revision()
         with session.lock:
-            session.data[role] = {
-                "rev": revision,
-                "filename": file.filename,
-                "format": fmt,
-                "df": df,
-                "rows": len(df),
-                "columns": list(df.columns),
-                "needs_mapping": needs_mapping,
-                "vcf_header_lines": df.attrs.get("vcf_header_lines"),
-            }
+            superseded = write_order_superseded(session, role, write_stamp)
+            if not superseded:
+                session.data[role] = {
+                    "rev": revision,
+                    "filename": file.filename,
+                    "format": fmt,
+                    "df": df,
+                    "rows": len(df),
+                    "columns": list(df.columns),
+                    "needs_mapping": needs_mapping,
+                    "vcf_header_lines": df.attrs.get("vcf_header_lines"),
+                }
+                record_write_committed(session, role, write_stamp)
+        if superseded:
+            raise _revision_conflict(
+                f"This {role} upload was superseded by a newer upload or clear "
+                "from another tab of this browser session; nothing was stored.",
+                [role],
+            )
 
         return {
             "status": "success",
@@ -622,9 +750,21 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
     This is a state *removal*: it never allocates a session, so an anonymous
     request that has nothing stored clears nothing (finding N4).
     """
-    if req.role not in ("query", "annot"):
+    if req.role not in WRITE_ROLES:
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
+
+    # Arrival-order stamp (issue #55): a clear that started before a newer
+    # upload/clear committed must not delete that newer dataset, even when it
+    # carries no revision to compare (the frontend clears without one when a
+    # request's outcome is unknown).
+    write_stamp = reserve_write_order(session, req.role)
     with session.lock:
+        if write_order_superseded(session, req.role, write_stamp):
+            raise _revision_conflict(
+                f"Not cleared: a newer {req.role} dataset was stored while this "
+                "clear was in flight (another tab of this browser session).",
+                [req.role],
+            )
         entry = session.data.get(req.role)
         if req.revision is not None and entry is not None and entry.get("rev") != req.revision:
             raise _revision_conflict(
@@ -634,6 +774,9 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
             )
         was_loaded = entry is not None
         session.data.pop(req.role, None)
+        # The removal is itself a committed write for ordering purposes, so an
+        # older in-flight upload cannot resurrect a just-cleared side.
+        record_write_committed(session, req.role, write_stamp)
         # A result derived from the discarded dataset is stale the moment it
         # is discarded (finding F5).
         result = session.data.get("result")
