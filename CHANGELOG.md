@@ -30,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Single-position (end-column-less) queries no longer depend on which column happens to be third in the input table.
+- `POST /api/upload` no longer parses on the event loop: format detection, parsing and normalization now run in a worker thread (`anyio.to_thread.run_sync`), so a large upload can no longer freeze the single Uvicorn worker's loop and stall every other session's request and the `GET /health` readiness probe for the duration of the parse (#55). The upload's session commit remains a single locked critical section, so a concurrent clear or replacement still cannot expose a dataset and revision that do not match.
 
 ### Security
 - `GET /api/results/data` page size is bounded to 10,000 rows per request.

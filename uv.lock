@@ -49,6 +49,7 @@ name = "annotater"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anyio" },
     { name = "fastapi" },
     { name = "numpy" },
     { name = "openpyxl" },
@@ -72,6 +73,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = "==4.15.1" },
     { name = "black", marker = "extra == 'dev'", specifier = "==26.5.1" },
     { name = "fastapi", specifier = "==0.143.0" },
     { name = "httpx", marker = "extra == 'dev'", specifier = "==0.28.1" },

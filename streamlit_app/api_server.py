@@ -12,8 +12,9 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import anyio
 import pandas as pd
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -502,6 +503,43 @@ def load_sample(
     }
 
 
+def _detect_parse_and_normalize(
+    temp_path: str, role: str, declared: Optional[str]
+) -> Tuple[str, pd.DataFrame, bool]:
+    """Detect, parse and normalize an uploaded file, synchronously.
+
+    This is the CPU-bound half of :func:`upload_file`: format detection and
+    parsing are pure-Python/pandas work that can take seconds on a large
+    file. It is deliberately kept out of the endpoint coroutine and executed
+    through :func:`anyio.to_thread.run_sync` so the event loop can keep
+    answering ``/health`` probes and other sessions' requests while this
+    upload is parsed (a blocked loop would stall every co-tenant session and
+    the container healthcheck).
+
+    It touches only the on-disk temp file and returns a freshly built
+    DataFrame, so it shares no mutable state with the loop or any other
+    session and is safe to run concurrently on several worker threads.
+    Returns ``(fmt, df, needs_mapping)``.
+    """
+    fmt = FormatDetector.detect(temp_path)
+    if fmt == "custom":
+        df = CustomParser.parse(temp_path)
+        # A custom coordinate file always requires an explicit column
+        # mapping: the declared coordinate system cannot be inferred from
+        # the file (Streamlit behaves the same way). A custom annotation
+        # is normalized in place when it already exposes the canonical
+        # columns.
+        needs_mapping = role == "query" or not all(
+            c in df.columns for c in ("chr", "start", "end")
+        )
+        if not needs_mapping and role == "annot":
+            df = normalize_intervals(df, coordinate_system=declared or "0-based")
+    else:
+        df = parse_and_normalize(temp_path, fmt=fmt, declared_system=declared)
+        needs_mapping = False
+    return fmt, df, needs_mapping
+
+
 @app.post("/api/upload")
 async def upload_file(
     request: Request,
@@ -535,31 +573,29 @@ async def upload_file(
                     )
                 handle.write(chunk)
 
-        fmt = FormatDetector.detect(str(temp_path))
         declared = None
         if coord_system and "0-based" in coord_system:
             declared = "0-based"
         elif coord_system and "1-based" in coord_system:
             declared = "1-based"
 
-        if fmt == "custom":
-            df = CustomParser.parse(str(temp_path))
-            # A custom coordinate file always requires an explicit column
-            # mapping: the declared coordinate system cannot be inferred from
-            # the file (Streamlit behaves the same way). A custom annotation
-            # is normalized in place when it already exposes the canonical
-            # columns.
-            needs_mapping = role == "query" or not all(
-                c in df.columns for c in ("chr", "start", "end")
-            )
-            if not needs_mapping and role == "annot":
-                df = normalize_intervals(df, coordinate_system=declared or "0-based")
-        else:
-            df = parse_and_normalize(str(temp_path), fmt=fmt, declared_system=declared)
-            needs_mapping = False
+        # Detection, parsing and normalization are CPU-bound and, for large
+        # files, slow: run them on a worker thread so this coroutine does not
+        # block the event loop while it parses (see
+        # _detect_parse_and_normalize). ``run_sync`` defaults to
+        # ``abandon_on_cancel=False``, so a client that disconnects mid-parse
+        # does not cancel the worker mid-run: the parse finishes, the ``await``
+        # then reports the cancellation, and the ``finally`` below still
+        # removes the temp directory. No partial result is ever committed.
+        fmt, df, needs_mapping = await anyio.to_thread.run_sync(
+            _detect_parse_and_normalize, str(temp_path), role, declared
+        )
 
         # First state write: consume a session slot (a failed upload did
-        # not, review finding N4).
+        # not, review finding N4). The commit itself is a single locked
+        # critical section: the dataset and its revision are published
+        # together, so a concurrent clear or replacement can never observe a
+        # revision that does not match the stored table.
         session = _materialize_session(request, session)
         revision = new_revision()
         with session.lock:
