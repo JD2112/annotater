@@ -179,6 +179,42 @@ Responsibilities:
 
 The UI MUST NOT contain backend-specific scientific semantics.
 
+### Session state and revisions (React/FastAPI)
+
+The FastAPI backend keeps parsed datasets and the last result in an
+in-memory session addressed by the session cookie. Every tab of one browser
+sends the same cookie, so tabs share that server state while each keeps its
+own UI state. To keep what a tab shows, runs and exports scientifically
+consistent, every stored state carries an opaque server-issued **revision**
+(128-bit random, `api_sessions.new_revision`), and clients state which
+revision they act on:
+
+| State | Issued by (response field) | Required by |
+|---|---|---|
+| query dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`query.revision`), `POST /api/apply-mapping` (`revision`, a new one) | `POST /api/execute` (`query_rev`), `POST /api/apply-mapping` (`query_rev`), optional on `POST /api/dataset/clear` (`revision`) |
+| annotation dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`annot.revision`) | `POST /api/execute` (`annot_rev`), optional on clear |
+| result | `POST /api/execute` (`result_revision`; also echoes `query_revision`/`annot_revision`) | `GET /api/results/data`, `GET /api/results/gene-list`, `GET /api/export/{fmt}` (`result_rev` query parameter) |
+
+Uniform contract: nothing stored and no revision stated → 400/404 as
+before; state stored but no revision stated → **428**; a stated revision
+that is absent or different → **409** with
+`{"detail": {"code": "revision_conflict", "message": …, "stale": ["query" | "annot" | "result", …]}}`.
+The server never falls back to "whatever is stored now".
+
+Lifecycle: a dataset revision is replaced on every upload, sample load or
+mapping of that side and disappears when the side is cleared or the session
+expires. A result revision is created per successful execute; clearing a
+dataset discards the result derived from it. Revision checks and the state
+transitions they guard run under the session's lock; execute and mapping run
+the expensive work outside the lock and commit only if the datasets they
+read are still the stored ones (otherwise 409, nothing stored).
+
+Revisions are not credentials: they never grant access beyond the session
+cookie, and another session's revisions name nothing in yours. On a 409 the
+React UI drops the stale parts of the tab and shows a "Changed in another
+tab" warning; exports are fetched with the displayed `result_rev`, so a
+superseded result is never downloaded.
+
 ## 4. Coordinate model
 
 The target internal interval convention is 0-based, half-open `[start, end)`. Format-specific conversion belongs before backend execution. This model is compatible with BED/bedtools conventions and makes one-base boundary behavior explicit.
