@@ -41,6 +41,13 @@ cookies on cleartext connections. The two names are never mixed within one
 transport: over HTTPS only the prefixed cookie is read, over HTTP only the
 unprefixed one.
 
+The honoured name is matched byte-exactly against the raw ``Cookie`` header
+(:func:`session_token_from_cookie_headers`), never via a parser that
+normalises names: browsers do not apply ``__Host-`` rules to a name such as
+``"\xa0__Host-annotater_session"``, so a whitespace-stripping parser would
+reopen the sibling-subdomain fixation path. Such aliases, and a duplicated
+session cookie, are rejected outright (review finding N1-R).
+
 Transport notes
 ---------------
 - ``HttpOnly`` hides the token from JavaScript (XSS cannot read it).
@@ -71,7 +78,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Iterable, Optional, Tuple
 
 #: Cookie name carrying the opaque session token (plain-HTTP transport,
 #: i.e. local development).
@@ -91,6 +98,53 @@ DEFAULT_SESSION_TTL_SECONDS = 60 * 60
 #: session is evicted first so an unauthenticated flood cannot grow memory
 #: without bound.
 DEFAULT_MAX_SESSIONS = 256
+
+#: Optional whitespace around a cookie-pair in a ``Cookie`` header
+#: (RFC 6265 §4.2.1 / §5.4: SP and HTAB only).
+_COOKIE_OWS = b" \t"
+
+
+class AmbiguousSessionCookie(ValueError):
+    """The request carries more than one candidate session credential."""
+
+
+def session_token_from_cookie_headers(raw_headers: Iterable[bytes], name: str) -> Optional[str]:
+    """Read the session token for ``name`` from raw ``Cookie`` header bytes.
+
+    Starlette's ``request.cookies`` strips every Unicode whitespace character
+    (``str.strip``) from cookie names, so a cookie named
+    ``"\\xa0__Host-annotater_session"`` (or ``"\\x85…"``) is read as the
+    ``__Host-`` session cookie even though browsers do not apply ``__Host-``
+    protections to it — a sibling subdomain can set it with ``Domain=`` and
+    fixate the victim's session (review finding N1-R). This reader works on
+    the undecoded header bytes and honours only the byte-exact ``name``,
+    stripping nothing but the SP/HTAB that RFC 6265 permits around a pair.
+
+    Fails closed: raises :class:`AmbiguousSessionCookie` if ``name`` appears
+    more than once (across all ``Cookie`` headers) or if any other cookie
+    name would be normalised to ``name`` by a whitespace-stripping parser.
+    Returns ``None`` when the cookie is absent.
+    """
+    wanted = name.encode("ascii")
+    found = []
+    for header in raw_headers:
+        for pair in header.split(b";"):
+            pair = pair.strip(_COOKIE_OWS)
+            if b"=" not in pair:
+                continue
+            raw_name, value = pair.split(b"=", 1)
+            if raw_name == wanted:
+                found.append(value.strip(_COOKIE_OWS))
+            elif raw_name.decode("latin-1").strip() == name:
+                raise AmbiguousSessionCookie(
+                    f"cookie name {raw_name!r} aliases the session cookie {name!r}"
+                )
+    if len(found) > 1:
+        raise AmbiguousSessionCookie(f"session cookie {name!r} presented {len(found)} times")
+    if not found:
+        return None
+    return found[0].decode("latin-1")
+
 
 #: A safe single-component extension: a dot followed by 1-10 alphanumerics.
 #: Anything else (path separators, dots, spaces, non-ASCII, over-long) is

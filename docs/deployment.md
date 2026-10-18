@@ -479,7 +479,11 @@ arrives over HTTPS via the trusted proxy — the `__Host-` prefixed
 `HttpOnly` and `SameSite=Lax`; over TLS the cookie is additionally `Secure`
 with `Path=/` and no `Domain` (the `__Host-` prefix enforces exactly that),
 and the unprefixed cookie is never read, so a token planted by a sibling
-subdomain cannot fixate the session. Because the state lives in one
+subdomain cannot fixate the session. The cookie name is matched byte-exactly
+against the raw `Cookie` header: a request carrying a look-alike name (for
+example one prefixed with a non-ASCII whitespace byte, which browsers do not
+treat as `__Host-`) or the session cookie more than once is rejected with
+HTTP 400 rather than resolved; clearing the site's cookies recovers. Because the state lives in one
 process's memory, the app **must run exactly one Uvicorn worker**:
 
 - `start-script.sh` starts a single worker and deliberately passes no

@@ -9,6 +9,8 @@ These tests exercise the two Task 14.1 objectives at the HTTP boundary:
 import threading
 from pathlib import Path
 
+import anyio
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -167,6 +169,154 @@ def test_host_cookie_presented_over_http_is_not_honoured(client):
     assert client.get("/api/results/data").status_code == 404
     assert len(api_server.store) == 1
     assert owner.get("/api/results/data").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Byte-exact session cookie names (review finding N1-R)
+# ---------------------------------------------------------------------------
+
+
+def _raw_request(method, path, cookie_headers, *, https=True, **kwargs):
+    """Send ``cookie_headers`` to the app as undecoded bytes.
+
+    Starlette's ``TestClient`` re-encodes header values as UTF-8, so it cannot
+    put a raw ``0xA0``/``0x85`` byte on the wire the way a browser replaying a
+    server-set cookie does; ``httpx.ASGITransport`` passes bytes through.
+    """
+    headers = [("cookie", value) for value in cookie_headers]
+    base_url = "https://testserver" if https else "http://testserver"
+
+    async def send():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url=base_url) as raw:
+            return await raw.request(method, path, headers=headers, **kwargs)
+
+    return anyio.run(send)
+
+
+def _victim_with_results():
+    """An HTTPS user with executed results; returns (client, live token)."""
+    owner = TestClient(app, base_url="https://testserver")
+    assert owner.post("/api/load-sample", data={"sample_id": "gene_overlap"}).status_code == 200
+    assert owner.post("/api/execute", json={}).status_code == 200
+    token = owner.cookies.get(SECURE_SESSION_COOKIE_NAME)
+    assert token
+    return owner, token
+
+
+# U+00A0 (NBSP) and U+0085 (NEL) are str.isspace() but not cookie OWS:
+# browsers do not treat "\xa0__Host-…" as a __Host- cookie (so a sibling
+# subdomain can set it with Domain=), while Starlette's cookie parser strips
+# them and used to resolve the victim's session from it.
+_ALIAS_PREFIXES = [pytest.param(b"\xa0", id="U+00A0"), pytest.param(b"\x85", id="U+0085")]
+
+
+@pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
+def test_https_whitespace_prefixed_host_cookie_does_not_expose_victim(prefix):
+    owner, token = _victim_with_results()
+    victim_csv = owner.get("/api/export/csv")
+    assert victim_csv.status_code == 200
+
+    cookie = prefix + SECURE_SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
+    for path in ("/api/export/csv", "/api/results/data", "/api/results/gene-list"):
+        response = _raw_request("GET", path, [cookie])
+        assert response.status_code == 400, path
+        assert "set-cookie" not in response.headers
+        assert victim_csv.text not in response.text
+
+    # The rejected request neither touched the store nor the victim's state.
+    assert len(api_server.store) == 1
+    assert owner.get("/api/export/csv").text == victim_csv.text
+
+
+@pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
+def test_https_alias_alongside_genuine_cookie_fails_closed(prefix):
+    # The victim's own genuine __Host- cookie plus an attacker-planted alias
+    # carrying the attacker's token: ambiguous, so neither is resolved.
+    _, victim_token = _victim_with_results()
+    attacker_owner, attacker_token = _victim_with_results()
+    cookie = (
+        SECURE_SESSION_COOKIE_NAME.encode() + b"=" + victim_token.encode()
+        + b"; " + prefix + SECURE_SESSION_COOKIE_NAME.encode() + b"=" + attacker_token.encode()
+    )
+    load = _raw_request("POST", "/api/load-sample", [cookie], data={"sample_id": "closest_variants"})
+    assert load.status_code == 400
+    assert "set-cookie" not in load.headers
+    assert _raw_request("GET", "/api/results/data", [cookie]).status_code == 400
+    assert len(api_server.store) == 2
+    assert attacker_owner.get("/api/results/data").status_code == 200
+
+
+@pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
+def test_http_whitespace_prefixed_cookie_is_rejected(prefix):
+    owner = TestClient(app)
+    owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
+    owner.post("/api/execute", json={})
+    token = owner.cookies.get(SESSION_COOKIE_NAME)
+    assert token
+
+    cookie = prefix + SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
+    assert _raw_request("GET", "/api/results/data", [cookie], https=False).status_code == 400
+    # Plain-HTTP development continuity with the exact name is unaffected.
+    exact = SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
+    assert _raw_request("GET", "/api/results/data", [exact], https=False).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        pytest.param("same-header", id="one-header"),
+        pytest.param("split-headers", id="two-cookie-headers"),
+    ],
+)
+def test_duplicate_session_cookie_fails_closed(headers):
+    owner, token = _victim_with_results()
+    pair_a = f"{SECURE_SESSION_COOKIE_NAME}={token}".encode()
+    pair_b = f"{SECURE_SESSION_COOKIE_NAME}=planted-token".encode()
+    if headers == "same-header":
+        raw = [pair_a + b"; " + pair_b]
+    else:
+        raw = [pair_a, pair_b]
+
+    assert _raw_request("GET", "/api/results/data", raw).status_code == 400
+    assert owner.get("/api/results/data").status_code == 200
+
+
+def test_https_exact_raw_cookie_header_keeps_session_continuity():
+    # Legitimate continuity: the byte-exact __Host- name in a raw header (as a
+    # browser sends it, with other unrelated cookies alongside) resolves the
+    # session; the unprefixed name alongside is ignored over HTTPS, not
+    # treated as ambiguous.
+    _, token = _victim_with_results()
+    cookie = f"theme=dark; {SESSION_COOKIE_NAME}=other; {SECURE_SESSION_COOKIE_NAME}={token}"
+    assert _raw_request("GET", "/api/results/data", [cookie.encode()]).status_code == 200
+
+
+def test_session_token_reader_is_byte_exact():
+    from streamlit_app.api_sessions import (
+        AmbiguousSessionCookie,
+        session_token_from_cookie_headers,
+    )
+
+    name = SECURE_SESSION_COOKIE_NAME
+    read = session_token_from_cookie_headers
+    assert read([], name) is None
+    assert read([b"a=1"], name) is None
+    assert read([f"{name}=tok".encode()], name) == "tok"
+    assert read([f"a=1;\t{name}=tok ; b=2".encode()], name) == "tok"
+    # Names that are not byte-exact and that no whitespace-stripping parser
+    # would read as the session cookie are simply ignored.
+    assert read([f"__host-annotater_session=x; {name}x=y".encode()], name) is None
+    assert read([b"\xc2\xa0" + name.encode() + b"=x"], name) is None
+    for alias in (b"\xa0", b"\x85", b"\x0b", b"\x0c", b"\x1c", b"\xa0\xa0"):
+        with pytest.raises(AmbiguousSessionCookie):
+            read([alias + name.encode() + b"=x"], name)
+        with pytest.raises(AmbiguousSessionCookie):
+            read([name.encode() + alias + b"=x"], name)
+    with pytest.raises(AmbiguousSessionCookie):
+        read([f"{name}=a; {name}=b".encode()], name)
+    with pytest.raises(AmbiguousSessionCookie):
+        read([f"{name}=a".encode(), f"{name}=a".encode()], name)
 
 
 # ---------------------------------------------------------------------------

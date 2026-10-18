@@ -24,10 +24,12 @@ from pydantic import BaseModel
 from streamlit_app.api_sessions import (
     SECURE_SESSION_COOKIE_NAME,
     SESSION_COOKIE_NAME,
+    AmbiguousSessionCookie,
     Session,
     SessionStore,
     anonymous_session,
     open_private_storage,
+    session_token_from_cookie_headers,
 )
 
 from streamlit_app.config import Settings
@@ -151,6 +153,11 @@ def get_session(request: Request) -> Session:
     under the other transport's name (e.g. an unprefixed cookie presented
     over HTTPS) is ignored rather than honoured (review finding N1).
 
+    The cookie is read byte-exactly from the raw ``Cookie`` header(s); a
+    duplicated session cookie, or any cookie name that a whitespace-stripping
+    parser would read as the session cookie, is rejected with 400 rather
+    than resolved (fail closed, review finding N1-R).
+
     This never allocates a stored session. A request with no valid cookie is
     served by a throwaway, never-stored session; capacity is consumed only
     when an endpoint actually stores state via :func:`_materialize_session`
@@ -159,7 +166,19 @@ def get_session(request: Request) -> Session:
     existing = getattr(request.state, "session", None)
     if existing is not None:
         return existing
-    session = store.get(request.cookies.get(_session_cookie_name(request)))
+    # Read the raw header bytes, not ``request.cookies``: Starlette strips
+    # Unicode whitespace from cookie names, which turns a sibling-settable
+    # ``\xa0__Host-…`` cookie into the honoured name (review finding N1-R).
+    raw_cookies = [value for key, value in request.scope["headers"] if key == b"cookie"]
+    try:
+        token = session_token_from_cookie_headers(raw_cookies, _session_cookie_name(request))
+    except AmbiguousSessionCookie as exc:
+        _logger.warning("Rejected request with ambiguous session cookie: %s", exc)
+        raise HTTPException(
+            status_code=400,
+            detail="Ambiguous session cookie; clear this site's cookies and reload.",
+        ) from None
+    session = store.get(token)
     if session is None:
         session = anonymous_session()
     request.state.session = session
