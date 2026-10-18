@@ -480,10 +480,11 @@ arrives over HTTPS via the trusted proxy — the `__Host-` prefixed
 with `Path=/` and no `Domain` (the `__Host-` prefix enforces exactly that),
 and the unprefixed cookie is never read, so a token planted by a sibling
 subdomain cannot fixate the session. The cookie name is matched byte-exactly
-against the raw `Cookie` header: a request carrying a look-alike name (for
+against the raw `Cookie` header: a name that is not the exact name (for
 example one prefixed with a non-ASCII whitespace byte, which browsers do not
-treat as `__Host-`) or the session cookie more than once is rejected with
-HTTP 400 rather than resolved; clearing the site's cookies recovers. Because the state lives in one
+treat as `__Host-`) is ignored, so it can neither fixate nor deny service.
+Only the byte-exact session cookie presented more than once is rejected with
+HTTP 400 as genuinely ambiguous; clearing the site's cookies recovers. Because the state lives in one
 process's memory, the app **must run exactly one Uvicorn worker**:
 
 - `start-script.sh` starts a single worker and deliberately passes no

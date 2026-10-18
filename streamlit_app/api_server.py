@@ -260,10 +260,12 @@ def get_session(request: Request) -> Session:
     under the other transport's name (e.g. an unprefixed cookie presented
     over HTTPS) is ignored rather than honoured (review finding N1).
 
-    The cookie is read byte-exactly from the raw ``Cookie`` header(s); a
-    duplicated session cookie, or any cookie name that a whitespace-stripping
-    parser would read as the session cookie, is rejected with 400 rather
-    than resolved (fail closed, review finding N1-R).
+    The cookie is read byte-exactly from the raw ``Cookie`` header(s): a
+    cookie name that is not byte-exact (for example one prefixed with a
+    Unicode whitespace byte, which browsers do not treat as the ``__Host-``
+    name) is ignored rather than honoured, so it can neither fixate nor deny
+    service. Only a byte-exact session cookie presented more than once is
+    rejected with 400 as genuinely ambiguous (issue #53).
 
     This never allocates a stored session. A request with no valid cookie is
     served by a throwaway, never-stored session; capacity is consumed only

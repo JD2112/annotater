@@ -45,8 +45,12 @@ The honoured name is matched byte-exactly against the raw ``Cookie`` header
 (:func:`session_token_from_cookie_headers`), never via a parser that
 normalises names: browsers do not apply ``__Host-`` rules to a name such as
 ``"\xa0__Host-annotater_session"``, so a whitespace-stripping parser would
-reopen the sibling-subdomain fixation path. Such aliases, and a duplicated
-session cookie, are rejected outright (review finding N1-R).
+reopen the sibling-subdomain fixation path. Such an alias is treated as
+absent and ignored — it can never be issued by AnnotateR and honouring it
+would reopen fixation, while rejecting it would let the same sibling-settable
+alias deny service to the whole browser (review findings N1-R, issue #53).
+Genuine ambiguity is still rejected: presenting the byte-exact session cookie
+more than once is a genuine ambiguity and fails closed.
 
 Revisions
 ---------
@@ -129,10 +133,18 @@ def session_token_from_cookie_headers(raw_headers: Iterable[bytes], name: str) -
     the undecoded header bytes and honours only the byte-exact ``name``,
     stripping nothing but the SP/HTAB that RFC 6265 permits around a pair.
 
-    Fails closed: raises :class:`AmbiguousSessionCookie` if ``name`` appears
-    more than once (across all ``Cookie`` headers) or if any other cookie
-    name would be normalised to ``name`` by a whitespace-stripping parser.
-    Returns ``None`` when the cookie is absent.
+    Any name that is not byte-exact is treated as absent, so an alias such as
+    ``"\\xa0__Host-annotater_session"`` is neither promoted (which would reopen
+    fixation) nor rejected (which would let the sibling-settable alias deny
+    service to the whole browser, issue #53). AnnotateR only ever sets the
+    exact name, so no alias is ever legitimate. In particular the comparison
+    is on raw bytes: a name that a whitespace-stripping parser would normalise
+    to ``name`` simply fails the byte comparison and is ignored.
+
+    Fails closed only on genuine ambiguity: raises
+    :class:`AmbiguousSessionCookie` if the byte-exact ``name`` appears more
+    than once across all ``Cookie`` headers, since two credentials cannot be
+    reconciled. Returns ``None`` when the cookie is absent.
     """
     wanted = name.encode("ascii")
     found = []
@@ -144,10 +156,6 @@ def session_token_from_cookie_headers(raw_headers: Iterable[bytes], name: str) -
             raw_name, value = pair.split(b"=", 1)
             if raw_name == wanted:
                 found.append(value.strip(_COOKIE_OWS))
-            elif raw_name.decode("latin-1").strip() == name:
-                raise AmbiguousSessionCookie(
-                    f"cookie name {raw_name!r} aliases the session cookie {name!r}"
-                )
     if len(found) > 1:
         raise AmbiguousSessionCookie(f"session cookie {name!r} presented {len(found)} times")
     if not found:
