@@ -208,52 +208,83 @@ def _victim_with_results():
 # U+00A0 (NBSP) and U+0085 (NEL) are str.isspace() but not cookie OWS:
 # browsers do not treat "\xa0__Host-…" as a __Host- cookie (so a sibling
 # subdomain can set it with Domain=), while Starlette's cookie parser strips
-# them and used to resolve the victim's session from it.
+# them and used to resolve the victim's session from it. Treating the alias as
+# absent (ignoring it) closes that fixation path *and* the availability
+# regression the old fail-closed fix introduced: a sibling-planted alias can
+# neither fixate nor permanently 400 every request from that browser (#53).
 _ALIAS_PREFIXES = [pytest.param(b"\xa0", id="U+00A0"), pytest.param(b"\x85", id="U+0085")]
+
+# Edge bytes that Python's str.strip() (and therefore Starlette's cookie
+# parser) removes but that RFC 6265 cookie OWS does not. AnnotateR only ever
+# sets the exact name, so none of these aliases is ever legitimate.
+_ALIAS_PREFIX_BYTES = [
+    pytest.param(b"\xa0", id="nbsp"),
+    pytest.param(b"\x85", id="nel"),
+    pytest.param(b"\x0b", id="vtab"),
+    pytest.param(b"\x0c", id="formfeed"),
+    pytest.param(b"\x1c", id="file-sep"),
+    pytest.param(b"\x1d", id="group-sep"),
+    pytest.param(b"\x1e", id="record-sep"),
+    pytest.param(b"\x1f", id="unit-sep"),
+    pytest.param(b"\n", id="lf"),
+    pytest.param(b"\r", id="cr"),
+    pytest.param(b"\xa0\xa0", id="nbsp-nbsp"),
+]
 
 
 @pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
-def test_https_whitespace_prefixed_host_cookie_does_not_expose_victim(prefix):
+def test_https_whitespace_prefixed_host_cookie_is_ignored_not_fatal(prefix):
     owner, token = _victim_with_results()
     victim_csv = owner.get("/api/export/csv")
     assert victim_csv.status_code == 200
 
     cookie = prefix + SECURE_SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
     # Even with the victim's correct result revision: a revision is not a
-    # credential and never substitutes for the session cookie.
+    # credential and never substitutes for the session cookie. The alias is
+    # ignored, so the request is served by a throwaway anonymous session
+    # (no stored result + a claimed revision -> 409) and is *not* a fatal 400
+    # that would deny service for as long as the planted cookie persists.
     rev = owner.revisions["result"]
     for path in ("/api/export/csv", "/api/results/data", "/api/results/gene-list"):
         response = _raw_request("GET", f"{path}?result_rev={rev}", [cookie])
-        assert response.status_code == 400, path
+        assert response.status_code != 400, path
+        assert response.status_code == 409, path
         assert "set-cookie" not in response.headers
         assert victim_csv.text not in response.text
 
-    # The rejected request neither touched the store nor the victim's state.
+    # With no claimed revision the anonymous read is a plain 404.
+    assert _raw_request("GET", "/api/results/data", [cookie]).status_code == 404
+
+    # The ignored alias neither touched the store nor the victim's state.
     assert len(api_server.store) == 1
     assert owner.get("/api/export/csv").text == victim_csv.text
 
 
 @pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
-def test_https_alias_alongside_genuine_cookie_fails_closed(prefix):
+def test_https_alias_alongside_genuine_cookie_keeps_session(prefix):
     # The victim's own genuine __Host- cookie plus an attacker-planted alias
-    # carrying the attacker's token: ambiguous, so neither is resolved.
-    _, victim_token = _victim_with_results()
-    attacker_owner, attacker_token = _victim_with_results()
-    cookie = (
-        SECURE_SESSION_COOKIE_NAME.encode() + b"=" + victim_token.encode()
-        + b"; " + prefix + SECURE_SESSION_COOKIE_NAME.encode() + b"=" + attacker_token.encode()
-    )
-    load = _raw_request("POST", "/api/load-sample", [cookie], data={"sample_id": "closest_variants"})
-    assert load.status_code == 400
-    assert "set-cookie" not in load.headers
-    rev = attacker_owner.revisions["result"]
-    assert _raw_request("GET", f"/api/results/data?result_rev={rev}", [cookie]).status_code == 400
+    # carrying the attacker's token. The alias is ignored, never promoted, so
+    # it cannot fixate the session and cannot deny service: whichever order
+    # the two appear in, the byte-exact cookie resolves the victim's session.
+    owner, victim_token = _victim_with_results()
+    _, attacker_token = _victim_with_results()
+    rev = owner.revisions["result"]
+    exact = SECURE_SESSION_COOKIE_NAME.encode()
+    alias = prefix + exact
+    for raw in (
+        exact + b"=" + victim_token.encode() + b"; " + alias + b"=" + attacker_token.encode(),
+        alias + b"=" + attacker_token.encode() + b"; " + exact + b"=" + victim_token.encode(),
+    ):
+        response = _raw_request("GET", f"/api/results/data?result_rev={rev}", [raw])
+        # Only the victim's session holds this result revision, so a 200
+        # proves the byte-exact cookie was used and the alias ignored.
+        assert response.status_code == 200
+        assert response.json()["total_rows"] > 0
     assert len(api_server.store) == 2
-    assert attacker_owner.get("/api/results/data").status_code == 200
 
 
 @pytest.mark.parametrize("prefix", _ALIAS_PREFIXES)
-def test_http_whitespace_prefixed_cookie_is_rejected(prefix):
+def test_http_whitespace_prefixed_cookie_is_ignored(prefix):
     owner = RevisionClient(app)
     owner.post("/api/load-sample", data={"sample_id": "gene_overlap"})
     owner.post("/api/execute", json={})
@@ -262,7 +293,9 @@ def test_http_whitespace_prefixed_cookie_is_rejected(prefix):
 
     cookie = prefix + SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
     url = f"/api/results/data?result_rev={owner.revisions['result']}"
-    assert _raw_request("GET", url, [cookie], https=False).status_code == 400
+    # Ignored alias: anonymous session + claimed revision -> 409, never 400
+    # and never the victim's session.
+    assert _raw_request("GET", url, [cookie], https=False).status_code == 409
     # Plain-HTTP development continuity with the exact name is unaffected.
     exact = SESSION_COOKIE_NAME.encode() + b"=" + token.encode()
     assert _raw_request("GET", url, [exact], https=False).status_code == 200
@@ -312,19 +345,52 @@ def test_session_token_reader_is_byte_exact():
     assert read([b"a=1"], name) is None
     assert read([f"{name}=tok".encode()], name) == "tok"
     assert read([f"a=1;\t{name}=tok ; b=2".encode()], name) == "tok"
-    # Names that are not byte-exact and that no whitespace-stripping parser
-    # would read as the session cookie are simply ignored.
+    # Names that are not byte-exact are ignored, whether or not a
+    # whitespace-stripping parser would normalise them to the session name.
     assert read([f"__host-annotater_session=x; {name}x=y".encode()], name) is None
     assert read([b"\xc2\xa0" + name.encode() + b"=x"], name) is None
     for alias in (b"\xa0", b"\x85", b"\x0b", b"\x0c", b"\x1c", b"\xa0\xa0"):
-        with pytest.raises(AmbiguousSessionCookie):
-            read([alias + name.encode() + b"=x"], name)
-        with pytest.raises(AmbiguousSessionCookie):
-            read([name.encode() + alias + b"=x"], name)
+        assert read([alias + name.encode() + b"=x"], name) is None
+        assert read([name.encode() + alias + b"=x"], name) is None
+        # ...and the exact cookie is still honoured when an alias sits beside it.
+        assert read([alias + name.encode() + b"=other; " + name.encode() + b"=tok"], name) == "tok"
+    # Genuine ambiguity (the byte-exact name presented twice) still fails
+    # closed, whether the values agree or not.
     with pytest.raises(AmbiguousSessionCookie):
         read([f"{name}=a; {name}=b".encode()], name)
     with pytest.raises(AmbiguousSessionCookie):
         read([f"{name}=a".encode(), f"{name}=a".encode()], name)
+
+
+@pytest.mark.parametrize("prefix", _ALIAS_PREFIX_BYTES)
+def test_reader_ignores_every_whitespace_alias(prefix):
+    from streamlit_app.api_sessions import session_token_from_cookie_headers
+
+    exact = SECURE_SESSION_COOKIE_NAME.encode()
+    # Leading and trailing alias bytes are ignored, never promoted.
+    assert session_token_from_cookie_headers([prefix + exact + b"=x"], SECURE_SESSION_COOKIE_NAME) is None
+    assert session_token_from_cookie_headers([exact + prefix + b"=x"], SECURE_SESSION_COOKIE_NAME) is None
+    # The exact cookie beside an alias still resolves.
+    assert (
+        session_token_from_cookie_headers(
+            [prefix + exact + b"=other; " + exact + b"=tok"], SECURE_SESSION_COOKIE_NAME
+        )
+        == "tok"
+    )
+
+
+def test_expired_session_token_is_treated_as_absent_not_fatal(monkeypatch):
+    # A token that has aged out of the store is resolved as no session at all
+    # (anonymous read -> 404 here), never a 400: expiry must not deny service.
+    from streamlit_app.api_sessions import SessionStore
+
+    expired_store = SessionStore(ttl_seconds=-1)
+    monkeypatch.setattr(api_server, "store", expired_store)
+    token = expired_store.create().token
+
+    cookie = f"{SECURE_SESSION_COOKIE_NAME}={token}".encode()
+    assert _raw_request("GET", "/api/results/data", [cookie]).status_code == 404
+    assert _raw_request("GET", "/api/export/csv", [cookie]).status_code == 404
 
 
 # ---------------------------------------------------------------------------
