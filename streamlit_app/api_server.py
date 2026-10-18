@@ -729,9 +729,12 @@ async def upload_file(
 
 class DatasetClearRequest(BaseModel):
     role: str
-    # The revision the client means to discard. When given and the stored
-    # dataset is a different revision (another tab replaced it), nothing is
-    # cleared and 409 is returned, so one tab cannot wipe another's upload.
+    # The revision the client means to discard. When the stored dataset is a
+    # different revision (another tab replaced it), nothing is cleared and 409
+    # is returned, so one tab cannot wipe another's upload. When a dataset is
+    # stored but no revision is named, 428 is returned: a removal must name
+    # the revision it owns (issue #51), so it can never silently fall back to
+    # discarding whatever is currently stored.
     revision: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
 
 
@@ -746,19 +749,29 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
     the user changes the coordinate-system selector of an already-loaded
     side, which forces a re-upload under the new declaration.
 
-    With ``revision``, only that revision is cleared (409 otherwise), so a
-    tab cannot discard a dataset another tab of the session uploaded since.
+    Revision contract (release-gate finding F1; issue #51), checked under the
+    session lock together with the removal:
 
-    This is a state *removal*: it never allocates a session, so an anonymous
-    request that has nothing stored clears nothing (finding N4).
+    * nothing stored and no revision named -> 200 no-op (a state removal is
+      not a write, so it allocates no session, finding N4);
+    * a dataset stored and no revision named -> 428: the client must state
+      which revision it owns, so a clear can never silently discard a newer
+      dataset another tab stored (the unknown-outcome network path);
+    * a dataset stored and a matching revision named -> cleared;
+    * a dataset stored and a stale/incorrect revision named -> 409, leaving
+      the stored dataset untouched.
+
+    A rejected clear (409/428) commits nothing and does not advance the
+    write-order high-water mark, so it cannot make an in-flight upload look
+    superseded. A successful clear binds only the named revision, so a newer
+    upload from any tab survives it.
     """
     if req.role not in WRITE_ROLES:
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
 
     # Arrival-order stamp (issue #55): a clear that started before a newer
     # upload/clear committed must not delete that newer dataset, even when it
-    # carries no revision to compare (the frontend clears without one when a
-    # request's outcome is unknown).
+    # names no revision to compare.
     write_stamp = reserve_write_order(session, req.role)
     with session.lock:
         if write_order_superseded(session, req.role, write_stamp):
@@ -768,7 +781,11 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
                 [req.role],
             )
         entry = session.data.get(req.role)
-        if req.revision is not None and entry is not None and entry.get("rev") != req.revision:
+        if entry is not None and req.revision is None:
+            # State exists but the request does not say which revision it owns:
+            # never fall back to discarding whatever is stored (issue #51).
+            raise _revision_required(f"revision for the stored {req.role} dataset is")
+        if entry is not None and req.revision != entry.get("rev"):
             raise _revision_conflict(
                 f"Not cleared: the stored {req.role} dataset is a newer revision "
                 "(replaced in another tab of this browser session).",
@@ -780,7 +797,8 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
         # older in-flight upload cannot resurrect a just-cleared side.
         record_write_committed(session, req.role, write_stamp)
         # A result derived from the discarded dataset is stale the moment it
-        # is discarded (finding F5).
+        # is discarded (finding F5). A result derived from any other revision
+        # (or side) is left alone.
         result = session.data.get("result")
         if result is not None and entry is not None and result.get(f"{req.role}_rev") == entry.get("rev"):
             session.data.pop("result", None)
