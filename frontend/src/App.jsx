@@ -335,8 +335,19 @@ export default function App() {
 
   // Handle Sample Loading
   const handleLoadSample = async () => {
+    // A sample load writes both sides at once. Bump both generations and treat
+    // the pair as one unit: a response only lands if neither side has been
+    // superseded in this tab since the request was sent, so a stale sample
+    // response can never clobber a newer upload (same guard as handleFileUpload).
     datasetGeneration.current.query += 1;
     datasetGeneration.current.annot += 1;
+    const generation = {
+      query: datasetGeneration.current.query,
+      annot: datasetGeneration.current.annot,
+    };
+    const isCurrent = () =>
+      datasetGeneration.current.query === generation.query &&
+      datasetGeneration.current.annot === generation.annot;
     setIsUploading(true);
     clearResults();
     setStatusMessage({ type: 'info', text: 'Loading bundled genomic sample datasets...' });
@@ -348,7 +359,13 @@ export default function App() {
         body: formData,
       });
       const data = await res.json();
-      if (res.ok) {
+      if (!isCurrent()) return;
+      if (isRevisionConflict(res, data)) {
+        // A newer write to either side (from this tab or another tab of the
+        // same browser session) won the race: drop the stale sides instead of
+        // leaving them displayed as loaded.
+        handleRevisionConflict(data.detail);
+      } else if (res.ok) {
         setQueryData(data.query);
         setAnnotData(data.annot);
         setMappingRequired(false);
@@ -357,6 +374,7 @@ export default function App() {
         setStatusMessage({ type: 'error', text: errorText(data, 'Failed to load sample dataset') });
       }
     } catch {
+      if (!isCurrent()) return;
       setStatusMessage({ type: 'error', text: 'Network error loading sample' });
     } finally {
       setIsUploading(false);
@@ -385,10 +403,19 @@ export default function App() {
       });
       const data = await res.json();
       if (!isCurrent()) {
-        await discardStaleDataset(role, res.ok ? data.revision : null);
+        // A newer request for this side (or a coordinate invalidation)
+        // superseded this one. A superseded success may still have stored a
+        // copy, so discard it (finding N2-R); a superseded conflict carries no
+        // state this tab owns, so ignore it rather than tearing down the
+        // dataset the newer request installed.
+        if (!isRevisionConflict(res, data)) {
+          await discardStaleDataset(role, res.ok ? data.revision : null);
+        }
         return;
       }
-      if (res.ok) {
+      if (isRevisionConflict(res, data)) {
+        handleRevisionConflict(data.detail);
+      } else if (res.ok) {
         if (role === 'query') {
           setQueryData(data);
           if (data.needs_mapping) {

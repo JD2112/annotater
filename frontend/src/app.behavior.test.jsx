@@ -678,3 +678,184 @@ describe('F1: one tab never runs on, shows or exports another tab’s state', ()
     expect(sent.clears[0]).toEqual({ role: 'annot', revision: 'annot-rev-2' });
   });
 });
+
+// ---------------------------------------------------------------------------
+// #58: upload and sample-load revision conflicts must drop the stale side
+// (reset it, clear results, show the warning, disable Run), not merely show an
+// error and keep the superseded dataset displayed with Run enabled.
+// ---------------------------------------------------------------------------
+
+// A backend whose upload and sample-load responses stay pending until a test
+// settles them, so a request can be superseded before its response lands. Each
+// upload carries the revision the frontend would echo back on success.
+const conflictBackend = () => {
+  const uploads = [];
+  const samples = [];
+  const clears = [];
+  let counter = 0;
+  const uploadResponse = (name, role) => ({
+    ...dataset(name, 'bed', 1),
+    role,
+    revision: `${role}-rev-${++counter}`,
+  });
+  const fetchStub = vi.fn((url, options) => {
+    const u = String(url);
+    if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/upload') {
+      return new Promise((resolve, reject) => {
+        uploads.push({
+          role: options.body.get('role'),
+          name: options.body.get('file').name,
+          resolve,
+          reject,
+        });
+      });
+    }
+    if (u === '/api/load-sample') {
+      return new Promise((resolve, reject) => samples.push({ resolve, reject }));
+    }
+    if (u === '/api/dataset/clear') {
+      clears.push(JSON.parse(options.body));
+      return Promise.resolve(jsonResponse({ status: 'success' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  vi.stubGlobal('fetch', fetchStub);
+  return { uploads, samples, clears, uploadResponse };
+};
+
+// Load both sides through the conflict backend, settling each upload in order.
+const loadBoth = async (backend) => {
+  chooseFile('query', 'q.bed');
+  await waitFor(() => expect(backend.uploads).toHaveLength(1));
+  chooseFile('annot', 'a.bed');
+  await waitFor(() => expect(backend.uploads).toHaveLength(2));
+  await act(async () => backend.uploads[0].resolve(jsonResponse(backend.uploadResponse('q.bed', 'query'))));
+  await act(async () => backend.uploads[1].resolve(jsonResponse(backend.uploadResponse('a.bed', 'annot'))));
+  await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
+  await waitFor(() => expect(screen.getByText('a.bed')).toBeTruthy());
+};
+
+describe('#58: upload / sample-load revision conflicts drop the stale side', () => {
+  it('an upload 409 clears the stale query side and preserves the annotation', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    chooseFile('query', 'q2.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () =>
+      backend.uploads[2].resolve(
+        CONFLICT(['query'], 'This query upload was superseded by a newer upload or clear from another tab of this browser session; nothing was stored.'),
+      ),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/changed in another tab/i);
+    expect(screen.queryByText('q.bed')).toBeNull();
+    expect(screen.queryByText('q2.bed')).toBeNull();
+    expect(screen.getByText('a.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(true);
+    expect(backend.clears).toEqual([]);
+  });
+
+  it('an annotation 409 clears the stale annotation side and preserves the query', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    chooseFile('annot', 'a2.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () =>
+      backend.uploads[2].resolve(
+        CONFLICT(['annot'], 'This annot upload was superseded by a newer upload or clear from another tab of this browser session; nothing was stored.'),
+      ),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/changed in another tab/i);
+    expect(screen.queryByText('a.bed')).toBeNull();
+    expect(screen.queryByText('a2.bed')).toBeNull();
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it('a sample-load 409 resets the stale sides and warns', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(backend.samples).toHaveLength(1));
+    await act(async () =>
+      backend.samples[0].resolve(
+        CONFLICT(['query', 'annot'], 'This sample load was superseded by a newer upload or clear from another tab of this browser session; nothing was stored.'),
+      ),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/changed in another tab/i);
+    await waitFor(() => expect(screen.queryByText('q.bed')).toBeNull());
+    expect(screen.queryByText('a.bed')).toBeNull();
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it('a superseded (stale) 409 response cannot tear down a newer dataset', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    // Two query uploads: the first is slow, the second lands first.
+    chooseFile('query', 'older.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(4));
+
+    await act(async () => backend.uploads[3].resolve(jsonResponse(backend.uploadResponse('newer.bed', 'query'))));
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    // The superseded request now arrives as a 409: it describes a request this
+    // tab no longer owns, so it must be ignored, not tear down newer.bed.
+    await act(async () =>
+      backend.uploads[2].resolve(CONFLICT(['query'], 'superseded older upload')),
+    );
+
+    await waitFor(() => expect(screen.queryByText(/changed in another tab/i)).toBeNull());
+    expect(screen.getByText('newer.bed')).toBeTruthy();
+    expect(screen.queryByText('older.bed')).toBeNull();
+    expect(runButton().disabled).toBe(false);
+  });
+
+  it('a superseded (stale) sample-load success cannot overwrite a newer query', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+    await loadBoth(backend);
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(backend.samples).toHaveLength(1));
+
+    chooseFile('query', 'newer.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () => backend.uploads[2].resolve(jsonResponse(backend.uploadResponse('newer.bed', 'query'))));
+    await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
+
+    await act(async () => backend.samples[0].resolve(jsonResponse(SAMPLE)));
+
+    expect(screen.queryByText('sample-query.bed')).toBeNull();
+    expect(screen.getByText('newer.bed')).toBeTruthy();
+  });
+
+  it('sample-load success still populates both sides without a conflict', async () => {
+    const backend = conflictBackend();
+    await renderApp();
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(backend.samples).toHaveLength(1));
+    await act(async () => backend.samples[0].resolve(jsonResponse(SAMPLE)));
+
+    await waitFor(() => expect(screen.getByText('sample-query.bed')).toBeTruthy());
+    expect(screen.getByText('sample-annotation.gff3')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(runButton().disabled).toBe(false);
+  });
+});
