@@ -16,8 +16,12 @@ These tests pin the fix and the contract it must not disturb:
 3. two concurrent uploads in independent sessions never crosstalk;
 4. upload validation/error contracts stay prompt under that concurrency;
 5. a mix of successful and failing uploads leaves no temp dirs behind;
-6. a clear racing an in-flight upload never leaves a torn dataset/revision
-   and never lets a tab act on a revision a concurrent write replaced.
+6. an upload that started before a concurrent clear cannot resurrect the
+   cleared side, and never lets a tab act on a revision a write replaced;
+7. parsing is bounded by a dedicated limiter, so a burst of uploads cannot
+   exhaust the shared default threadpool and starve ``/health``;
+8. an upload that started before a newer upload cannot overwrite it
+   (arrival-order supersession -> 409).
 
 The parked-parse helper swaps the module-level
 :func:`streamlit_app.api_server._detect_parse_and_normalize` for a wrapper
@@ -42,6 +46,7 @@ import pytest
 from streamlit_app import api_server
 from streamlit_app.api_server import app
 from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
+from streamlit_app.config.settings import Settings
 from streamlit_app.core.engine_registry import engine_available
 from tests.revision_client import RevisionClient
 
@@ -86,6 +91,40 @@ def _parking_parse(monkeypatch, park_indices, watchdog_seconds=5.0):
     watchdog.start()
     try:
         yield entered, release, watchdog_fired
+    finally:
+        release.set()
+        watchdog.cancel()
+
+
+@contextlib.contextmanager
+def _park_all_parses(monkeypatch, target, watchdog_seconds=5.0):
+    """Block every sync parse and count how many run at once.
+
+    Yields ``(saturated, release, watchdog_fired, in_flight)`` where
+    ``saturated`` is set once ``target`` parses are parked together (the
+    limiter is fully held) and ``in_flight`` is a mutable ``{"count": int}``
+    of the peak/current number of parses that entered the sync half.
+    """
+    real = api_server._detect_parse_and_normalize
+    release = threading.Event()
+    watchdog_fired = threading.Event()
+    saturated = threading.Event()
+    in_flight = {"count": 0}
+    lock = threading.Lock()
+
+    def wrapped(temp_path, role, declared):
+        with lock:
+            in_flight["count"] += 1
+            if in_flight["count"] >= target:
+                saturated.set()
+        release.wait(timeout=watchdog_seconds * 2)
+        return real(temp_path, role, declared)
+
+    monkeypatch.setattr(api_server, "_detect_parse_and_normalize", wrapped)
+    watchdog = threading.Timer(watchdog_seconds, lambda: (watchdog_fired.set(), release.set()))
+    watchdog.start()
+    try:
+        yield saturated, release, watchdog_fired, in_flight
     finally:
         release.set()
         watchdog.cancel()
@@ -308,11 +347,11 @@ def test_concurrent_success_and_failure_leave_no_temp_dirs():
 
 
 # ---------------------------------------------------------------------------
-# 6: a clear racing an in-flight upload leaves no mismatched state
+# 6: an upload that started before a write cannot resurrect replaced state
 # ---------------------------------------------------------------------------
 
 
-def test_clear_racing_an_upload_never_leaves_mismatched_state(monkeypatch):
+def test_upload_started_before_a_clear_cannot_resurrect_the_cleared_side(monkeypatch):
     if not engine_available("bedtools"):
         pytest.skip("bedtools is not installed")
 
@@ -323,9 +362,10 @@ def test_clear_racing_an_upload_never_leaves_mismatched_state(monkeypatch):
     assert tab_a.post(
         "/api/upload", files={"file": ("q.bed", QUERY, "text/plain")}, data={"role": "query"}
     ).status_code == 200
+    token = tab_a.cookies.get(SESSION_COOKIE_NAME)
 
     tab_b = RevisionClient(app)
-    tab_b.cookies.set(SESSION_COOKIE_NAME, tab_a.cookies.get(SESSION_COOKIE_NAME))
+    tab_b.cookies.set(SESSION_COOKIE_NAME, token)
     tab_b.revisions.update(tab_a.revisions)
     stale_query_rev = tab_a.revisions["query"]
 
@@ -354,16 +394,11 @@ def test_clear_racing_an_upload_never_leaves_mismatched_state(monkeypatch):
         uploader.join(10.0)
 
     assert not watchdog_fired.is_set()
-    assert replaced and replaced[0].status_code == 200
-    new_rev = replaced[0].json()["revision"]
-
-    token = tab_b.cookies.get(SESSION_COOKIE_NAME)
-    entry = api_server.store.get(token).data["query"]
-    # The dataset and its revision were published together (no torn state),
-    # and the late commit carries a revision distinct from the cleared one.
-    assert entry["rev"] == new_rev
-    assert new_rev != stale_query_rev
-    assert [row["start"] for row in entry["df"].to_dict("records")] == [100]
+    # A started before the clear, so it is the superseded write: refused, never
+    # silently committed on top of the newer (cleared) state.
+    assert replaced and replaced[0].status_code == 409, replaced and replaced[0].text
+    assert replaced[0].json()["detail"]["code"] == "revision_conflict"
+    assert "query" not in api_server.store.get(token).data
 
     # A tab still displaying the revision a concurrent write replaced cannot
     # act on the state that now exists: it is refused, never silently served.
@@ -373,3 +408,129 @@ def test_clear_racing_an_upload_never_leaves_mismatched_state(monkeypatch):
     detail = run.json()["detail"]
     assert detail["code"] == "revision_conflict"
     assert "query" in detail["stale"]
+
+
+# ---------------------------------------------------------------------------
+# 8: an earlier upload never overwrites a later one (arrival-order wins)
+# ---------------------------------------------------------------------------
+
+
+def test_earlier_upload_does_not_overwrite_a_later_one(monkeypatch):
+    if not engine_available("bedtools"):
+        pytest.skip("bedtools is not installed")
+
+    tab_a = RevisionClient(app)
+    assert tab_a.post(
+        "/api/upload", files={"file": ("warm.bed", QUERY, "text/plain")}, data={"role": "query"}
+    ).status_code == 200
+    token = tab_a.cookies.get(SESSION_COOKIE_NAME)
+
+    tab_b = RevisionClient(app)
+    tab_b.cookies.set(SESSION_COOKIE_NAME, token)
+
+    with _parking_parse(monkeypatch, park_indices={1}) as (entered, release, watchdog_fired):
+        earlier: list = []
+        uploader = threading.Thread(
+            target=lambda: earlier.append(
+                tab_a.post(
+                    "/api/upload",
+                    files={"file": ("earlier.bed", b"chr1\t10\t20\n", "text/plain")},
+                    data={"role": "query"},
+                )
+            )
+        )
+        uploader.start()
+        assert entered.wait(10.0)
+        # A newer upload from the same session lands first while the earlier
+        # one is still parsing.
+        later = tab_b.post(
+            "/api/upload",
+            files={"file": ("later.bed", b"chr1\t5000\t6000\n", "text/plain")},
+            data={"role": "query"},
+        )
+        assert later.status_code == 200, later.text
+        later_rev = later.json()["revision"]
+        release.set()
+        uploader.join(10.0)
+
+    assert not watchdog_fired.is_set()
+    # The earlier upload finishes last: it is refused rather than clobbering
+    # the newer dataset it knows nothing about.
+    assert earlier and earlier[0].status_code == 409, earlier and earlier[0].text
+    assert earlier[0].json()["detail"]["code"] == "revision_conflict"
+    stored = api_server.store.get(token).data["query"]
+    assert stored["rev"] == later_rev
+    assert [row["start"] for row in stored["df"].to_dict("records")] == [5000]
+
+
+# ---------------------------------------------------------------------------
+# 7: parsing is bounded by a dedicated limiter, not the shared default pool
+# ---------------------------------------------------------------------------
+
+
+def test_parsing_limiter_is_dedicated_and_bounded():
+    async def check():
+        limiter = api_server._parse_limiter()
+        assert limiter is not anyio.to_thread.current_default_thread_limiter()
+        assert limiter.total_tokens == Settings.MAX_CONCURRENT_PARSES
+        assert 1 <= limiter.total_tokens <= 4
+        # One limiter per running loop, reused within it.
+        assert api_server._parse_limiter() is limiter
+
+    anyio.run(check)
+
+
+def test_saturating_the_parsing_limiter_never_starves_health(monkeypatch):
+    limit = Settings.MAX_CONCURRENT_PARSES
+    uploads = 40
+    with _park_all_parses(monkeypatch, target=limit) as (
+        saturated,
+        release,
+        watchdog_fired,
+        in_flight,
+    ):
+        outcome: dict = {}
+
+        async def scenario():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://testserver"
+            ) as client:
+                responses: list = []
+
+                async def upload(index):
+                    responses.append(
+                        await client.post(
+                            "/api/upload",
+                            timeout=30.0,
+                            **_upload_kwargs(QUERY, name=f"q{index}.bed"),
+                        )
+                    )
+
+                async with anyio.create_task_group() as tg:
+                    for index in range(uploads):
+                        tg.start_soon(upload, index)
+                    # The dedicated limiter is saturated once `limit` parses park.
+                    assert await anyio.to_thread.run_sync(saturated.wait, 10.0)
+                    # Let the remaining uploads queue up behind the limiter.
+                    await anyio.sleep(0.5)
+                    outcome["in_flight"] = in_flight["count"]
+                    # /health needs a default-threadpool token; no parse holds one
+                    # now, so it must still be answered promptly.
+                    outcome["health"] = await client.get("/health", timeout=2.0)
+                    outcome["served_before_release"] = not watchdog_fired.is_set()
+                    release.set()
+                outcome["responses"] = responses
+
+        anyio.run(scenario)
+
+        assert outcome["served_before_release"], (
+            f"{uploads} concurrent parses starved /health: parsing used the "
+            "shared default threadpool instead of a dedicated limiter"
+        )
+        assert outcome["health"].status_code == 200
+        assert outcome["in_flight"] == limit, (
+            f"parsing was not bounded by the dedicated limiter: "
+            f"{outcome['in_flight']} parses in flight, expected {limit}"
+        )
+        assert [r.status_code for r in outcome["responses"]] == [200] * uploads

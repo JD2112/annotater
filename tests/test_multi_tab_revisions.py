@@ -66,9 +66,37 @@ def _upload(tab, role, content, coord_system=AUTO, name=None):
     return response.json()
 
 
+def _try_upload(tab, role, content, coord_system=AUTO, name=None):
+    """Upload that tolerates supersession (issue #55).
+
+    Two tabs of one session uploading the same side at once is inherently
+    conflicting; the server now keeps the later-started write and refuses the
+    superseded one with 409. Returns the body on success, ``None`` when this
+    upload was superseded by the other tab's newer write.
+    """
+    name = name or ("regions.tsv" if role == "query" else "annot.bed")
+    response = tab.post(
+        "/api/upload",
+        files={"file": (name, content, "text/plain")},
+        data={"role": role, "coord_system": coord_system},
+    )
+    if response.status_code == 409:
+        assert response.json()["detail"]["code"] == "revision_conflict"
+        return None
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
 def _load(tab, coord_system=AUTO, annot=ANNOT):
     _upload(tab, "annot", annot)
     return _upload(tab, "query", QUERY, coord_system)
+
+
+def _try_load(tab, coord_system=AUTO, annot=ANNOT):
+    """Like :func:`_load` but returns False when either side was superseded."""
+    if _try_upload(tab, "annot", annot) is None:
+        return False
+    return _try_upload(tab, "query", QUERY, coord_system) is not None
 
 
 def _run(tab, **body):
@@ -311,10 +339,17 @@ def test_concurrent_tabs_never_read_or_export_each_others_results():
     _load(tab_a, AUTO)
     tab_b = _second_tab_of(tab_a)
     failures = []
+    completed = []
+    lock = threading.Lock()
 
     def worker(tab, coord_system, expect_match):
         for _ in range(8):
-            _load(tab, coord_system)
+            # The other tab may supersede one of this tab's uploads (409);
+            # skip that iteration -- it carries no scientific claim.
+            if not _try_load(tab, coord_system):
+                continue
+            with lock:
+                completed.append(1)
             sent = (tab.revisions["query"], tab.revisions["annot"])
             run = _run(tab)
             if run.status_code == 409:
@@ -342,6 +377,9 @@ def test_concurrent_tabs_never_read_or_export_each_others_results():
     for t in threads:
         t.join()
     assert failures == []
+    # Supersession must not have swallowed the whole workload: the test only
+    # means something if a good number of uploads/executes actually ran.
+    assert len(completed) >= 4, f"only {len(completed)} iterations survived supersession"
 
 
 # ---------------------------------------------------------------------------
