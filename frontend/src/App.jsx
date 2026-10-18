@@ -173,6 +173,17 @@ export default function App() {
   const [queryData, setQueryData] = useState(null);
   const [annotData, setAnnotData] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isMapping, setIsMapping] = useState(false);
+  // Review finding N2-R: the coordinate declaration is read when an upload or
+  // mapping request is sent, so the selectors (and everything that starts or
+  // consumes a dataset request) stay locked until that request settles.
+  const datasetBusy = isUploading || isMapping;
+  // Review finding N2-R: per-side dataset generation. Each upload and each
+  // coordinate-declaration change bumps its side's counter; an upload or
+  // mapping response only lands if its side's generation is unchanged, so a
+  // response parsed under a superseded declaration can never (re)populate
+  // that side. Query and annotation are tracked independently.
+  const datasetGeneration = useRef({ query: 0, annot: 0 });
   // Review finding N2: bumping a side's upload key remounts its file input,
   // so the browser's file picker cannot silently reuse the invalidated file
   // on re-upload.
@@ -237,9 +248,15 @@ export default function App() {
   // stored dataset for that side, locally and on the server, and forces a
   // re-upload under the new declaration instead of silently re-running the
   // stale, already-normalized table.
-  const invalidateDataset = (role) => {
-    const loaded = role === 'query' ? queryData : annotData;
-    if (!loaded) return;
+  const clearServerDataset = (role) =>
+    fetch('/api/dataset/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    }).catch(() => {});
+
+  // Drops one side's dataset locally and remounts its file picker.
+  const resetSide = (role) => {
     if (role === 'query') {
       setQueryData(null);
       setMappingRequired(false);
@@ -248,15 +265,32 @@ export default function App() {
       setAnnotData(null);
       setAnnotUploadKey((k) => k + 1);
     }
+  };
+
+  const invalidateDataset = (role) => {
+    // Always supersede an in-flight upload/mapping for this side, even when
+    // nothing is loaded yet (finding N2-R).
+    datasetGeneration.current[role] += 1;
+    const loaded = role === 'query' ? queryData : annotData;
+    if (!loaded) return;
+    resetSide(role);
     setStatusMessage({
       type: 'info',
       text: `Coordinate system changed. Re-upload the ${role} file so it is parsed under the new declaration.`,
     });
-    fetch('/api/dataset/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role }),
-    }).catch(() => {});
+    clearServerDataset(role);
+  };
+
+  // A superseded upload/mapping response may already have been stored
+  // server-side (the clear sent on invalidation can overtake it), so the
+  // stale copy is cleared again before the side is unlocked.
+  const discardStaleDataset = async (role) => {
+    resetSide(role);
+    setStatusMessage({
+      type: 'info',
+      text: `Coordinate system changed while the ${role} file was being processed. Re-upload it so it is parsed under the new declaration.`,
+    });
+    await clearServerDataset(role);
   };
 
   // Initial loading
@@ -272,6 +306,8 @@ export default function App() {
 
   // Handle Sample Loading
   const handleLoadSample = async () => {
+    datasetGeneration.current.query += 1;
+    datasetGeneration.current.annot += 1;
     setIsUploading(true);
     clearResults();
     setStatusMessage({ type: 'info', text: 'Loading bundled genomic sample datasets...' });
@@ -303,6 +339,8 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    const generation = ++datasetGeneration.current[role];
+    const isCurrent = () => datasetGeneration.current[role] === generation;
     setIsUploading(true);
     clearResults();
     setStatusMessage({ type: 'info', text: `Uploading and parsing ${file.name}...` });
@@ -317,6 +355,10 @@ export default function App() {
         body: formData,
       });
       const data = await res.json();
+      if (!isCurrent()) {
+        await discardStaleDataset(role);
+        return;
+      }
       if (res.ok) {
         if (role === 'query') {
           setQueryData(data);
@@ -336,7 +378,15 @@ export default function App() {
         setStatusMessage({ type: 'error', text: data.detail || 'Upload parsing error' });
       }
     } catch {
-      setStatusMessage({ type: 'error', text: 'Network error uploading file' });
+      if (!isCurrent()) {
+        await discardStaleDataset(role);
+        return;
+      }
+      // The server may or may not have stored the file; drop this side on
+      // both ends so client and server cannot disagree about what is loaded.
+      resetSide(role);
+      setStatusMessage({ type: 'error', text: `Network error uploading file. Re-upload the ${role} file.` });
+      await clearServerDataset(role);
     } finally {
       setIsUploading(false);
     }
@@ -344,6 +394,9 @@ export default function App() {
 
   // Handle Applying Column Mapping
   const handleApplyMapping = async () => {
+    const generation = datasetGeneration.current.query;
+    const isCurrent = () => datasetGeneration.current.query === generation;
+    setIsMapping(true);
     try {
       const res = await fetch('/api/apply-mapping', {
         method: 'POST',
@@ -356,6 +409,10 @@ export default function App() {
         }),
       });
       const data = await res.json();
+      if (!isCurrent()) {
+        await discardStaleDataset('query');
+        return;
+      }
       if (res.ok) {
         setQueryData(prev => ({
           ...prev,
@@ -371,13 +428,23 @@ export default function App() {
         setStatusMessage({ type: 'error', text: data.detail || 'Mapping failed' });
       }
     } catch {
-      setStatusMessage({ type: 'error', text: 'Failed to apply column mapping' });
+      if (!isCurrent()) {
+        await discardStaleDataset('query');
+        return;
+      }
+      // Whether the server applied the mapping is unknown; re-mapping an
+      // already-mapped table would fail, so start this side over.
+      resetSide('query');
+      setStatusMessage({ type: 'error', text: 'Failed to apply column mapping. Re-upload the query file.' });
+      await clearServerDataset('query');
+    } finally {
+      setIsMapping(false);
     }
   };
 
   // Execute Pipeline
   const handleExecute = async () => {
-    if (!queryData || !annotData) return;
+    if (!queryData || !annotData || datasetBusy) return;
     const generation = ++runGeneration.current;
     activeExecGeneration.current = generation;
     setIsExecuting(true);
@@ -496,7 +563,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             <button 
               onClick={handleLoadSample}
-              disabled={isUploading || isExecuting}
+              disabled={datasetBusy || isExecuting}
               className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
               title="Load example genomic variants and gene annotations"
             >
@@ -654,7 +721,7 @@ export default function App() {
                 </label>
                 <select
                   value={coordSystem}
-                  disabled={isExecuting}
+                  disabled={datasetBusy || isExecuting}
                   onChange={(e) => { setCoordSystem(e.target.value); clearResults(); invalidateDataset('query'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
@@ -670,7 +737,7 @@ export default function App() {
                 </label>
                 <select
                   value={annotSystem}
-                  disabled={isExecuting}
+                  disabled={datasetBusy || isExecuting}
                   onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); invalidateDataset('annot'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
@@ -827,7 +894,7 @@ export default function App() {
                     key={`query-upload-${queryUploadKey}`}
                     type="file"
                     className="hidden"
-                    disabled={isUploading || isExecuting}
+                    disabled={datasetBusy || isExecuting}
                     onChange={(e) => handleFileUpload(e, 'query')}
                     accept=".bed,.vcf,.csv,.tsv,.txt"
                   />
@@ -855,7 +922,7 @@ export default function App() {
                     key={`annot-upload-${annotUploadKey}`}
                     type="file"
                     className="hidden"
-                    disabled={isUploading || isExecuting}
+                    disabled={datasetBusy || isExecuting}
                     onChange={(e) => handleFileUpload(e, 'annot')}
                     accept=".gff,.gff3,.gtf,.bed,.csv,.tsv,.txt"
                   />
@@ -875,7 +942,7 @@ export default function App() {
                     <label className="font-semibold block mb-1">Chromosome</label>
                     <select
                       value={chrCol}
-                      disabled={isExecuting}
+                      disabled={datasetBusy || isExecuting}
                       onChange={(e) => setChrCol(e.target.value)}
                       className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
@@ -886,7 +953,7 @@ export default function App() {
                     <label className="font-semibold block mb-1">Start Position</label>
                     <select
                       value={startCol}
-                      disabled={isExecuting}
+                      disabled={datasetBusy || isExecuting}
                       onChange={(e) => setStartCol(e.target.value)}
                       className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
@@ -897,7 +964,7 @@ export default function App() {
                     <label className="font-semibold block mb-1">End Position</label>
                     <select
                       value={endCol}
-                      disabled={isExecuting}
+                      disabled={datasetBusy || isExecuting}
                       onChange={(e) => setEndCol(e.target.value)}
                       className="w-full bg-white border border-amber-300 rounded-md p-1.5 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                     >
@@ -908,7 +975,7 @@ export default function App() {
                   <div className="flex items-end">
                     <button
                       onClick={handleApplyMapping}
-                      disabled={isExecuting}
+                      disabled={datasetBusy || isExecuting}
                       className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold p-1.5 rounded-md cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                     >
                       Apply Mapping
@@ -927,9 +994,9 @@ export default function App() {
             <div>
               <button
                 onClick={handleExecute}
-                disabled={!queryData || !annotData || isExecuting}
+                disabled={!queryData || !annotData || datasetBusy || isExecuting}
                 className={`py-2 px-5 rounded-lg font-semibold text-xs transition-all cursor-pointer ${
-                  !queryData || !annotData || isExecuting
+                  !queryData || !annotData || datasetBusy || isExecuting
                     ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
                     : 'bg-[#004e92] hover:bg-[#003768] text-white shadow-xs'
                 }`}

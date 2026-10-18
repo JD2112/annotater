@@ -245,3 +245,258 @@ describe('N3: in-flight execute responses and execution locking', () => {
     expect(screen.getByRole('button', { name: 'Run annotation' }).disabled).toBe(false);
   });
 });
+// ---------------------------------------------------------------------------
+// N2-R: coordinate declaration vs. in-flight upload / mapping requests
+// ---------------------------------------------------------------------------
+
+const ONE_BASED = '1-based (GFF/GTF/VCF)';
+
+// A fetch stub whose /api/upload and /api/apply-mapping requests stay pending
+// until the test settles them, recording what was sent.
+const pendingBackend = () => {
+  const uploads = [];
+  const mappings = [];
+  const clears = [];
+  const fetchStub = vi.fn((url, options) => {
+    const u = String(url);
+    if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/upload') {
+      return new Promise((resolve, reject) => {
+        uploads.push({
+          role: options.body.get('role'),
+          coordSystem: options.body.get('coord_system'),
+          resolve,
+          reject,
+        });
+      });
+    }
+    if (u === '/api/apply-mapping') {
+      return new Promise((resolve, reject) => {
+        mappings.push({ body: JSON.parse(options.body), resolve, reject });
+      });
+    }
+    if (u === '/api/dataset/clear') {
+      clears.push(JSON.parse(options.body).role);
+      return Promise.resolve(jsonResponse({ status: 'success' }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+  vi.stubGlobal('fetch', fetchStub);
+  return { uploads, mappings, clears };
+};
+
+const renderApp = async () => {
+  render(<App />);
+  await waitFor(() => expect(screen.getByText('v9.9.9-test')).toBeTruthy());
+};
+
+const fileInputs = () => document.querySelectorAll('input[type="file"]');
+
+const chooseFile = (role, name) => {
+  fireEvent.change(fileInputs()[role === 'query' ? 0 : 1], {
+    target: { files: [new File(['chr1\t99\t100\n'], name)] },
+  });
+};
+
+const runButton = () => screen.getByRole('button', { name: 'Run annotation' });
+
+describe('N2-R: the coordinate declaration cannot drift from an in-flight upload or mapping', () => {
+  it('locks the coordinate selectors, pickers, mapping and run while an upload is in flight', async () => {
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('annot', 'a.gff3');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    expect(backend.uploads[0]).toMatchObject({ role: 'annot', coordSystem: 'Auto-detect' });
+
+    coordSelects().forEach((s) => expect(s.disabled).toBe(true));
+    fileInputs().forEach((i) => expect(i.disabled).toBe(true));
+    expect(screen.getByRole('button', { name: /load sample data/i }).disabled).toBe(true);
+    expect(runButton().disabled).toBe(true);
+
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('a.gff3', 'gff3', 1))));
+    await waitFor(() => expect(screen.getByText('a.gff3')).toBeTruthy());
+    coordSelects().forEach((s) => expect(s.disabled).toBe(false));
+    fileInputs().forEach((i) => expect(i.disabled).toBe(false));
+  });
+
+  it('first upload: a declaration change mid-flight discards the stale response on both ends', async () => {
+    // The re-gate's S2: upload sent under "Auto-detect", selector switched to
+    // 1-based while in flight. The stale table must not be shown as loaded
+    // under the 1-based selector. fireEvent bypasses the `disabled` lock, so
+    // this exercises the generation guard on its own.
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('query', 'q.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    expect(backend.uploads[0].coordSystem).toBe('Auto-detect');
+    const pickerBefore = fileInputs()[0];
+
+    fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+
+    await waitFor(() => expect(backend.clears).toEqual(['query']));
+    expect(screen.queryByText('q.bed')).toBeNull();
+    expect(coordSelects()[0].value).toBe(ONE_BASED);
+    expect(screen.getByText(/changed while the query file was being processed/i)).toBeTruthy();
+    // The picker is remounted so choosing the same file again re-uploads it.
+    expect(fileInputs()[0]).not.toBe(pickerBefore);
+
+    // Re-upload goes out under the declaration that is displayed.
+    chooseFile('query', 'q.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(2));
+    expect(backend.uploads[1].coordSystem).toBe(ONE_BASED);
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
+  });
+
+  it('re-upload / slow parse: a stale response cannot restore the invalidated dataset', async () => {
+    // The re-gate's S3/S4: the invalidation clear fires, then the slow
+    // in-flight re-upload response arrives and used to repopulate the card
+    // with the old declaration while the server copy had been cleared.
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('query', 'old.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('old.bed', 'bed', 1))));
+    await waitFor(() => expect(screen.getByText('old.bed')).toBeTruthy());
+
+    chooseFile('query', 'new.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(2));
+    fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
+    await waitFor(() => expect(backend.clears).toEqual(['query']));
+    expect(screen.queryByText('old.bed')).toBeNull();
+
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('new.bed', 'bed', 1))));
+    // The stale response is discarded, and the copy the server may have
+    // stored after the first clear is cleared again.
+    await waitFor(() => expect(backend.clears).toEqual(['query', 'query']));
+    expect(screen.queryByText('new.bed')).toBeNull();
+    expect(screen.queryByText('old.bed')).toBeNull();
+    expect(coordSelects()[0].disabled).toBe(false);
+  });
+
+  it('tracks query and annotation independently', async () => {
+    const backend = pendingBackend();
+    await renderApp();
+
+    // An annotation upload is in flight when the *query* declaration changes:
+    // the annotation response is still current and lands.
+    chooseFile('annot', 'a.gff3');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('a.gff3', 'gff3', 1))));
+    await waitFor(() => expect(screen.getByText('a.gff3')).toBeTruthy());
+    expect(backend.clears).toEqual([]);
+
+    // A query upload in flight when the *annotation* declaration changes:
+    // the query lands, the loaded annotation is the one invalidated.
+    chooseFile('query', 'q.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(2));
+    expect(backend.uploads[1].coordSystem).toBe(ONE_BASED);
+    fireEvent.change(coordSelects()[1], { target: { value: ONE_BASED } });
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
+    expect(screen.queryByText('a.gff3')).toBeNull();
+    expect(backend.clears).toEqual(['annot']);
+  });
+
+  it('mapping: locks the selectors while in flight and a stale mapping cannot resurrect the query', async () => {
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('query', 'custom.tsv');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    await act(async () =>
+      backend.uploads[0].resolve(
+        jsonResponse({ ...dataset('custom.tsv', 'custom', 1), columns: ['c', 'p', 'e'], needs_mapping: true }),
+      ),
+    );
+    await waitFor(() => expect(screen.getByText(/column mapping required/i)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply Mapping' }));
+    await waitFor(() => expect(backend.mappings).toHaveLength(1));
+    expect(backend.mappings[0].body.coord_system).toBe('Auto-detect');
+    coordSelects().forEach((s) => expect(s.disabled).toBe(true));
+    expect(screen.getByRole('button', { name: 'Apply Mapping' }).disabled).toBe(true);
+    fileInputs().forEach((i) => expect(i.disabled).toBe(true));
+
+    fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
+    await waitFor(() => expect(backend.clears).toEqual(['query']));
+    await act(async () =>
+      backend.mappings[0].resolve(jsonResponse({ total_rows: 1, columns: ['chr', 'start', 'end'], preview: [] })),
+    );
+    await waitFor(() => expect(backend.clears).toEqual(['query', 'query']));
+    expect(screen.queryByText('custom.tsv')).toBeNull();
+    expect(screen.queryByText(/column mapping applied/i)).toBeNull();
+    expect(screen.queryByText(/✓/)).toBeNull();
+    coordSelects().forEach((s) => expect(s.disabled).toBe(false));
+  });
+
+  it('keeps client and server consistent when an upload fails', async () => {
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('query', 'q.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 1))));
+    await waitFor(() => expect(screen.getByText('q.bed')).toBeTruthy());
+
+    // A rejected upload (the server stores nothing) keeps the loaded file on
+    // both ends.
+    chooseFile('query', 'bad.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(2));
+    await act(async () =>
+      backend.uploads[1].resolve({ ok: false, status: 400, json: async () => ({ detail: 'bad file' }) }),
+    );
+    await waitFor(() => expect(screen.getByText('bad file')).toBeTruthy());
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    expect(backend.clears).toEqual([]);
+
+    // A network failure leaves the server outcome unknown: the side is
+    // dropped on both ends instead of showing a file the server may not hold.
+    chooseFile('query', 'net.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    await act(async () => backend.uploads[2].reject(new TypeError('network down')));
+    await waitFor(() => expect(backend.clears).toEqual(['query']));
+    expect(screen.queryByText('q.bed')).toBeNull();
+    expect(screen.queryByText('net.bed')).toBeNull();
+    expect(coordSelects()[0].disabled).toBe(false);
+  });
+});
+
+describe('N7: annotation-side coordinate declaration', () => {
+  it('changing the annotation coordinate system invalidates only the annotation dataset', async () => {
+    const backend = pendingBackend();
+    await renderApp();
+
+    chooseFile('query', 'q.bed');
+    await waitFor(() => expect(backend.uploads).toHaveLength(1));
+    await act(async () => backend.uploads[0].resolve(jsonResponse(dataset('q.bed', 'bed', 2))));
+    chooseFile('annot', 'a.gff3');
+    await waitFor(() => expect(backend.uploads).toHaveLength(2));
+    await act(async () => backend.uploads[1].resolve(jsonResponse(dataset('a.gff3', 'gff3', 3))));
+    await waitFor(() => expect(screen.getByText('a.gff3')).toBeTruthy());
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    const annotPickerBefore = fileInputs()[1];
+    const queryPickerBefore = fileInputs()[0];
+
+    fireEvent.change(coordSelects()[1], { target: { value: ONE_BASED } });
+
+    await waitFor(() => expect(screen.queryByText('a.gff3')).toBeNull());
+    expect(screen.getByText(/re-upload the annot file/i)).toBeTruthy();
+    expect(backend.clears).toEqual(['annot']);
+    // The query dataset, its picker and its declaration are untouched.
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    expect(fileInputs()[0]).toBe(queryPickerBefore);
+    expect(fileInputs()[1]).not.toBe(annotPickerBefore);
+    expect(coordSelects()[0].value).toBe('Auto-detect');
+
+    // The annotation re-upload carries the new declaration.
+    chooseFile('annot', 'a.gff3');
+    await waitFor(() => expect(backend.uploads).toHaveLength(3));
+    expect(backend.uploads[2]).toMatchObject({ role: 'annot', coordSystem: ONE_BASED });
+  });
+});

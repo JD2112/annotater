@@ -9,6 +9,7 @@ so the guards here follow the same convention.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,7 +109,8 @@ def test_n3_stale_execute_responses_are_discarded_and_controls_locked():
     # run is still in flight.
     assert "const activeExecGeneration = useRef(0);" in APP_SOURCE
     assert "if (activeExecGeneration.current === generation) setIsExecuting(false);" in APP_SOURCE
-    # While a run is in flight the configuration controls are locked ...
-    assert APP_SOURCE.count("disabled={isExecuting}") >= 13
+    # While a run is in flight the configuration controls are locked (some
+    # are additionally locked during uploads/mapping, finding N2-R) ...
+    assert len(re.findall(r"disabled=\{[^}]*\bisExecuting\}", APP_SOURCE)) >= 13
     # ... and the results header states the operation the run actually used.
     assert "{execResult.stats.mode} / {execResult.stats.join}" in APP_SOURCE
