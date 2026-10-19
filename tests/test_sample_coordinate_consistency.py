@@ -207,3 +207,90 @@ def test_boundary_fixture_wrong_interpretation_changes_match_count(tmp_path):
         GFFParser.parse(str(annot_path)), coordinate_system="0-based"
     )
     assert _overlap_count(query_df, wrong_annot) == 0
+
+
+# ---------------------------------------------------------------------------
+# Independent-review finding F1: a sample's applied convention is provenance,
+# never the declaration the user's next file is parsed under.
+#
+# The sample response carries the system the sampler applied (issue #54), but
+# the React selectors are the user's declaration for *future* uploads. On the
+# PR #67 head, loading a sample set those selectors to the sample's system, so
+# an extension-neutral file uploaded afterwards was silently reinterpreted.
+# The API-level contract these tests pin: an upload's own ``coord_system``
+# decides the parse, and Auto-detect means "sniff" -- never "whatever the last
+# sample used".
+# ---------------------------------------------------------------------------
+
+AUTO = "Auto-detect"
+ONE_BASED_LABEL = "1-based (GFF/GTF/VCF)"
+
+# Extension-neutral, BED-like content. For a ``.tsv`` the sniffed format is
+# advisory and an explicit declaration overrides it, so the same bytes
+# normalize to different canonical intervals under each declaration.
+_NEUTRAL = b"chr1\t100\t200\tfeature1\n"
+
+
+def _store(client, role):
+    return _session(client).data[role]["df"]
+
+
+def _upload_tsv(client, role, content, coord_system):
+    return client.post(
+        "/api/upload",
+        files={"file": (f"{role}.tsv", content, "text/tab-separated-values")},
+        data={"role": role, "coord_system": coord_system},
+    )
+
+
+def test_extension_neutral_annotation_after_sample_load_stays_zero_based(client):
+    """Gene-overlap's annotation is 1-based provenance; the next user file is not."""
+    _load(client, "gene_overlap")
+    response = _upload_tsv(client, "annot", _NEUTRAL, AUTO)
+    assert response.status_code == 200, response.text
+    df = _store(client, "annot")
+    assert (df.iloc[0]["start"], df.iloc[0]["end"]) == (100, 200)
+
+
+def test_extension_neutral_query_after_sample_load_stays_zero_based(client):
+    """Closest-variants' query is 1-based provenance; the next user file is not."""
+    _load(client, "closest_variants")
+    response = _upload_tsv(client, "query", _NEUTRAL, AUTO)
+    assert response.status_code == 200, response.text
+    df = _store(client, "query")
+    assert (df.iloc[0]["start"], df.iloc[0]["end"]) == (100, 200)
+
+
+def test_wrong_declaration_shifts_the_extension_neutral_interval_by_one(client):
+    """The exact F1 failure mode: 1-based where Auto-detect was intended."""
+    _load(client, "gene_overlap")
+    assert _upload_tsv(client, "annot", _NEUTRAL, ONE_BASED_LABEL).status_code == 200
+    df = _store(client, "annot")
+    assert (df.iloc[0]["start"], df.iloc[0]["end"]) == (99, 200)
+
+
+# A one-base boundary where the declaration decides the match count: the query
+# covers 0-based bases 100..104; the extension-neutral annotation ``105 106``
+# touches it as 0-based [105, 106) (no overlap) but overlaps by one base as
+# 1-based [104, 106).
+_EDGE_QUERY = b"chr1\t100\t105\n"
+_EDGE_ANNOT = b"chr1\t105\t106\tgeneEdge\n"
+
+
+def _execute_overlap(client):
+    response = client.post("/api/execute", json={"engine": "bedtools", "mode": "overlap"})
+    assert response.status_code == 200, response.text
+    return response.json()["stats"]["matched_query_count"]
+
+
+def test_declaration_changes_the_match_count_on_a_one_base_boundary(client):
+    if not engine_available("bedtools"):
+        pytest.skip("bedtools binary unavailable")
+    _upload_tsv(client, "query", _EDGE_QUERY, AUTO)
+    _upload_tsv(client, "annot", _EDGE_ANNOT, AUTO)
+    # Auto-detect sniffs the BED-like annotation as 0-based: touching, no match.
+    assert _execute_overlap(client) == 0
+    # An explicit 1-based declaration is the user's intent: it shifts the
+    # annotation one base left and the one-base overlap appears.
+    _upload_tsv(client, "annot", _EDGE_ANNOT, ONE_BASED_LABEL)
+    assert _execute_overlap(client) == 1

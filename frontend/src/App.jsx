@@ -410,17 +410,14 @@ export default function App() {
         // leaving them displayed as loaded.
         handleRevisionConflict(data.detail);
       } else if (res.ok) {
+        // Store the datasets, including the coordinate system the backend
+        // reports as applied per side. That value is shown as read-only
+        // provenance on the sample card; it deliberately does NOT touch the
+        // coordinate selectors, which are the user's declaration for future
+        // uploads (issue #54 regression, finding F1). A later explicit change
+        // to a selector still fires the N2 invalidation.
         setQueryData(data.query);
         setAnnotData(data.annot);
-        // The bundled files are parsed under their format's authoritative
-        // source system, not the user's previous selection (issue #54).
-        // Reflect the convention the backend reported as applied so the
-        // selectors describe the loaded data; a later change still fires the
-        // N2 invalidation, so the re-upload contract is unchanged.
-        const queryLabel = coordSystemLabel(data.query.coordinate_system);
-        const annotLabel = coordSystemLabel(data.annot.coordinate_system);
-        if (queryLabel) setCoordSystem(queryLabel);
-        if (annotLabel) setAnnotSystem(annotLabel);
         setMappingRequired(false);
         setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
       } else {
@@ -1063,6 +1060,11 @@ export default function App() {
                       ✓ {queryData.format?.toUpperCase()} ({queryData.total_rows?.toLocaleString()} rows)
                     </span>
                   )}
+                  {queryData?.coordinate_system && (
+                    <span className="text-[11px] text-slate-500 font-medium mt-0.5">
+                      Coordinates: {coordSystemLabel(queryData.coordinate_system)}
+                    </span>
+                  )}
                   <input
                     key={`query-upload-${queryUploadKey}`}
                     type="file"
@@ -1089,6 +1091,11 @@ export default function App() {
                   {annotData && (
                     <span className="text-[11px] text-emerald-600 font-medium mt-0.5">
                       ✓ {annotData.format?.toUpperCase()} ({annotData.total_rows?.toLocaleString()} rows)
+                    </span>
+                  )}
+                  {annotData?.coordinate_system && (
+                    <span className="text-[11px] text-slate-500 font-medium mt-0.5">
+                      Coordinates: {coordSystemLabel(annotData.coordinate_system)}
                     </span>
                   )}
                   <input

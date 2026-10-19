@@ -67,12 +67,18 @@ declaration is silently ignored.
 
 Every bundled sample dataset carries an authoritative coordinate system
 for each side, matching the format of the files it loads (BED queries are
-0-based half-open; GFF3 and VCF are 1-based). **Load Sample Data** sets
-the two selectors to the convention actually applied to the loaded
-files, so the displayed declaration always describes the stored data
-rather than whatever was selected before. Changing a selector afterwards
-still invalidates that side and asks for a re-upload under the new
-declaration, exactly as for an uploaded file.
+0-based half-open; GFF3 and VCF are 1-based). After **Load Sample Data**
+each loaded card shows that applied convention as read-only provenance
+(for example "Coordinates: 0-based (BED)").
+
+The sample's convention is **provenance, not a declaration**: it does not
+change the "Query coordinates" / "Annotation coordinates" selectors,
+which describe how the *next* file you upload is parsed. Those keep
+Auto-detect (or whatever you explicitly chose) after a sample load, so an
+extension-neutral file you upload afterwards is still sniffed rather than
+silently reinterpreted. Changing a selector after a load still invalidates
+that side and asks for a re-upload under the new declaration, exactly as
+for any uploaded file.
 
 ## Why touching intervals are not overlaps
 
