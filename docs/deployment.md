@@ -268,6 +268,51 @@ ANNOTATER_TEST_IMAGE=annotater:ci pytest tests/test_container_image.py
 
 A passing `docker build` alone is **not** sufficient verification.
 
+### Real-browser regression tests (Playwright)
+
+`tests/test_browser_multi_tab.py` drives a real browser through Playwright
+against the actual FastAPI app serving the built React frontend. It covers
+the two-tab revision contract that HTTP-only tests cannot see:
+
+1. a stale tab cannot export another tab's result;
+2. a stale tab cannot run on another tab's datasets;
+3. re-uploading restores a consistent tab;
+4. an upload `409` clears the stale file card and disables Run;
+5. a revision-safe clean-up cannot wipe another tab's newer dataset;
+6. sample coordinate provenance does not leak into the next upload's
+   coordinate declaration.
+
+Run it locally (system Google Chrome by default):
+
+```bash
+(cd frontend && npm install && npm run build)
+ANNOTATER_BROWSER_TESTS=1 \
+  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+```
+
+Or use Playwright's managed Chromium (the CI choice) and install it once:
+
+```bash
+ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
+  uv run --with playwright==1.64.0 playwright install chromium
+ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
+  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+```
+
+The test fixture starts and stops its own Uvicorn process on a free local
+port; each scenario gets an isolated browser context (separate cookie jar).
+Set `ANNOTATER_BROWSER_LOG_DIR` to capture server and browser console logs,
+and `ANNOTATER_BROWSER_TRACE_DIR` to write one Playwright trace per context.
+`ANNOTATER_BROWSER_REQUIRED=1` makes missing prerequisites fail instead of
+skip (CI uses it).
+
+The `browser-regression` CI job in `.github/workflows/python-tests.yml` runs
+this suite on every pull request. It checks out the exact PR head commit,
+builds the frontend from that commit, installs the pinned Playwright Chromium,
+and uploads the logs and traces as the `browser-regression-diagnostics`
+artifact when the job fails. This job is additive: it does not change the
+existing pytest, frontend-lint or Docker jobs.
+
 ## Port and health check
 
 - The **React/FastAPI** image listens on **8000**. `start-script.sh` runs

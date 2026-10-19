@@ -1,11 +1,25 @@
 """Real-browser two-tab regression (release-gate finding F1).
 
-Opt-in, like the container tests: it drives system Google Chrome through
-Playwright against the real FastAPI app serving the built React frontend.
+Opt-in, like the container tests: it drives a real browser through Playwright
+against the real FastAPI app serving the built React frontend. CI sets
+``ANNOTATER_BROWSER_REQUIRED=1`` so a missing browser/build is a failure, not
+a skip, and ``ANNOTATER_BROWSER_CHANNEL=bundled`` to use Playwright's managed
+Chromium. Locally the default is the system Google Chrome channel:
 
     (cd frontend && npm run build)
     ANNOTATER_BROWSER_TESTS=1 uv run --with playwright==1.64.0 \\
         pytest tests/test_browser_multi_tab.py
+
+    # Use Playwright's bundled Chromium instead of system Chrome:
+    ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \\
+        uv run --with playwright==1.64.0 \\
+        playwright install chromium
+    ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \\
+        uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+
+Set ``ANNOTATER_BROWSER_LOG_DIR`` and/or ``ANNOTATER_BROWSER_TRACE_DIR`` to
+capture server/browser logs and Playwright traces (the CI job uploads both
+on failure).
 
 The gate's reproduction: two tabs of one browser share the session cookie.
 Tab A runs Auto-detect (0-based: 0 of 1 matched); tab B runs the same file
@@ -23,6 +37,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -38,27 +53,62 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "frontend" / "dist"
 ONE_BASED = "1-based (GFF/GTF/VCF)"
 MATCH_ROW = "left_edge_base100"
+LOG_DIR_ENV = "ANNOTATER_BROWSER_LOG_DIR"
+TRACE_DIR_ENV = "ANNOTATER_BROWSER_TRACE_DIR"
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("ANNOTATER_BROWSER_TESTS") != "1",
     reason="real-browser tests are opt-in: set ANNOTATER_BROWSER_TESTS=1 "
-    "(needs Playwright, Google Chrome, bedtools and a built frontend)",
+    "(needs Playwright, a browser, bedtools and a built frontend)",
 )
+
+
+def _env_dir(name: str) -> Path | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _skip_or_fail(reason: str) -> None:
+    """Skip locally, but never let a missing prerequisite pass CI silently."""
+    if os.environ.get("ANNOTATER_BROWSER_REQUIRED") == "1":
+        pytest.fail(reason)
+    pytest.skip(reason)
+
+
+def _watch_page(page, record) -> None:
+    page.on("console", lambda msg: record(f"console[{msg.type}] {msg.text}"))
+    page.on("pageerror", lambda exc: record(f"pageerror: {exc}"))
+    page.on(
+        "requestfailed",
+        lambda req: record(
+            f"requestfailed: {req.method} {req.url} ({req.failure})"
+        ),
+    )
 
 
 @pytest.fixture(scope="module")
 def base_url():
     if not (DIST / "index.html").is_file():
-        pytest.skip("frontend/dist is not built (cd frontend && npm run build)")
+        _skip_or_fail("frontend/dist is not built (cd frontend && npm run build)")
     if not engine_available("bedtools"):
-        pytest.skip("bedtools is not installed")
+        _skip_or_fail("bedtools is not installed")
+
+    log_dir = _env_dir(LOG_DIR_ENV)
+    log_path = log_dir / "server.log" if log_dir else None
+    log_handle = log_path.open("w") if log_path else None
+    output = log_handle if log_handle else subprocess.DEVNULL
+
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     server = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "streamlit_app.api_server:app",
          "--host", "127.0.0.1", "--port", str(port)],
-        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        cwd=ROOT, stdout=output, stderr=subprocess.STDOUT,
     )
     url = f"http://127.0.0.1:{port}"
     try:
@@ -69,23 +119,85 @@ def base_url():
             except OSError:
                 time.sleep(0.25)
         else:
-            pytest.fail("API server did not start")
+            detail = ""
+            if log_path and log_path.is_file():
+                detail = log_path.read_text(errors="replace")[-4000:]
+            pytest.fail(f"API server did not start\n{detail}".rstrip())
         yield url
     finally:
         server.terminate()
-        server.wait(timeout=10)
+        try:
+            server.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait(timeout=10)
+        if log_handle:
+            log_handle.close()
 
 
 @pytest.fixture()
 def browser():
-    sync_api = pytest.importorskip("playwright.sync_api")
+    try:
+        from playwright import sync_api
+    except ImportError as exc:  # pragma: no cover - opt-in environment
+        reason = f"Playwright is not installed: {exc}"
+        if os.environ.get("ANNOTATER_BROWSER_REQUIRED") == "1":
+            pytest.fail(reason)
+        pytest.skip(reason)
+    channel = os.environ.get("ANNOTATER_BROWSER_CHANNEL", "chrome").strip()
+    bundled = channel.lower() in {"", "bundled"}
+    launch_options = {"headless": True}
+    if not bundled:
+        launch_options["channel"] = channel
     with sync_api.sync_playwright() as p:
         try:
-            chrome = p.chromium.launch(channel="chrome", headless=True)
-        except Exception as exc:  # noqa: BLE001 - absent system Chrome
-            pytest.skip(f"Google Chrome is not available: {exc}")
+            chrome = p.chromium.launch(**launch_options)
+        except Exception as exc:  # noqa: BLE001 - absent browser
+            reason = f"browser is not available ({channel or 'bundled'}): {exc}"
+            if bundled or os.environ.get("ANNOTATER_BROWSER_REQUIRED") == "1":
+                pytest.fail(reason)
+            pytest.skip(reason)
         yield chrome
         chrome.close()
+
+
+@pytest.fixture()
+def new_context(browser, request):
+    """Create isolated contexts and record traces/console logs when requested."""
+    trace_dir = _env_dir(TRACE_DIR_ENV)
+    log_dir = _env_dir(LOG_DIR_ENV)
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", request.node.name)
+    created = []
+
+    def make(**kwargs):
+        context = browser.new_context(**kwargs)
+        index = len(created)
+        events = []
+        if log_dir:
+            context.on("page", lambda page: _watch_page(page, events.append))
+        if trace_dir:
+            context.tracing.start(screenshots=True, snapshots=True, sources=True)
+        created.append(
+            (
+                context,
+                events,
+                log_dir / f"{safe_name}-{index}.browser.log" if log_dir else None,
+                trace_dir / f"{safe_name}-{index}.zip" if trace_dir else None,
+            )
+        )
+        return context
+
+    yield make
+
+    for context, events, events_path, trace_path in created:
+        if trace_path:
+            try:
+                context.tracing.stop(path=str(trace_path))
+            except Exception as exc:  # noqa: BLE001 - context may already be gone
+                events.append(f"trace stop failed: {exc}")
+        context.close()
+        if events_path:
+            events_path.write_text("\n".join(events) + ("\n" if events else ""))
 
 
 @pytest.fixture()
@@ -128,8 +240,8 @@ def _no_download(page, action, wait_ms=2500):
     return downloads
 
 
-def test_second_tab_cannot_make_first_tab_export_or_run_its_analysis(browser, base_url, files, tmp_path):
-    context = browser.new_context(accept_downloads=True)
+def test_second_tab_cannot_make_first_tab_export_or_run_its_analysis(new_context, base_url, files, tmp_path):
+    context = new_context(accept_downloads=True)
     tab_a = _open_tab(context, base_url)
     assert "0 of 1 regions matched" in _load_and_run(tab_a, files, one_based=False)
     tab_b = _open_tab(context, base_url)  # same browser -> same session cookie
@@ -169,10 +281,9 @@ def test_second_tab_cannot_make_first_tab_export_or_run_its_analysis(browser, ba
     downloads = _no_download(tab_b, lambda: tab_b.get_by_role("button", name="CSV", exact=True).click())
     assert downloads == []
     assert "Changed in another tab" in tab_b.get_by_role("alert").inner_text()
-    context.close()
 
 
-def test_upload_409_conflict_drops_the_stale_side_and_disables_run(browser, base_url, files):
+def test_upload_409_conflict_drops_the_stale_side_and_disables_run(new_context, base_url, files):
     """Issue #58: a superseded upload must reset the tab, not keep the old file.
 
     With both sides loaded, the next query upload is answered with the 409
@@ -180,7 +291,7 @@ def test_upload_409_conflict_drops_the_stale_side_and_disables_run(browser, base
     tab must drop the stale query card, keep the untouched annotation, show the
     "Changed in another tab" warning and leave Run disabled until a re-upload.
     """
-    context = browser.new_context(accept_downloads=True)
+    context = new_context(accept_downloads=True)
     page = _open_tab(context, base_url)
     assert "0 of 1 regions matched" in _load_and_run(page, files, one_based=False)
     assert page.get_by_role("button", name="Run annotation").is_enabled()
@@ -209,10 +320,9 @@ def test_upload_409_conflict_drops_the_stale_side_and_disables_run(browser, base
     assert page.locator("text=regions.tsv").count() == 0
     assert page.locator("text=annot.bed").count() == 1
     assert page.get_by_role("button", name="Run annotation").is_disabled()
-    context.close()
 
 
-def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(browser, base_url, files):
+def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(new_context, base_url, files):
     """Issue #51: an unknown-outcome clean-up names only the revision it owns.
 
     Tab A watches its next query upload die in flight, so the server's stored
@@ -221,7 +331,7 @@ def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(browser, base_url, files):
     revision it last owned; a blind revision-less clear would delete tab B's
     newer dataset and break its export.
     """
-    context = browser.new_context(accept_downloads=True)
+    context = new_context(accept_downloads=True)
     tab_a = _open_tab(context, base_url)
     assert "0 of 1 regions matched" in _load_and_run(tab_a, files, one_based=False)
 
@@ -245,12 +355,11 @@ def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(browser, base_url, files):
     with tab_b.expect_download() as info:
         tab_b.get_by_role("button", name="CSV", exact=True).click()
     assert MATCH_ROW in Path(info.value.path()).read_text()
-    context.close()
 
 
-def test_separate_browser_sessions_stay_independent(browser, base_url, files):
-    one = browser.new_context(accept_downloads=True)
-    two = browser.new_context(accept_downloads=True)  # a separate cookie jar
+def test_separate_browser_sessions_stay_independent(new_context, base_url, files):
+    one = new_context(accept_downloads=True)
+    two = new_context(accept_downloads=True)  # a separate cookie jar
     tab_one = _open_tab(one, base_url)
     tab_two = _open_tab(two, base_url)
     assert "0 of 1 regions matched" in _load_and_run(tab_one, files, one_based=False)
@@ -262,11 +371,9 @@ def test_separate_browser_sessions_stay_independent(browser, base_url, files):
     with tab_two.expect_download() as info:
         tab_two.get_by_role("button", name="CSV", exact=True).click()
     assert MATCH_ROW in Path(info.value.path()).read_text()
-    one.close()
-    two.close()
 
 
-def test_sample_load_shows_provenance_without_hijacking_the_declaration(browser, base_url, tmp_path):
+def test_sample_load_shows_provenance_without_hijacking_the_declaration(new_context, base_url, tmp_path):
     """Issue #54 as corrected for finding F1, in a real browser.
 
     The gene_overlap sample pairs a BED query (0-based) with a GFF3
@@ -279,7 +386,7 @@ def test_sample_load_shows_provenance_without_hijacking_the_declaration(browser,
     as 1-based. On the PR #67 head the sample's 1-based provenance leaked
     into the selector and this run read "1 of 1".
     """
-    context = browser.new_context()
+    context = new_context()
     page = _open_tab(context, base_url)
     coord = page.locator("select").filter(has=page.locator("option[value='0-based (BED)']"))
 
@@ -303,4 +410,3 @@ def test_sample_load_shows_provenance_without_hijacking_the_declaration(browser,
     page.wait_for_selector("text=Analysis complete")
     result = page.locator("text=/Analysis complete.*regions matched/").inner_text()
     assert "0 of 1 regions matched" in result
-    context.close()

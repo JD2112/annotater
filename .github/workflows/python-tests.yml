@@ -102,6 +102,88 @@ jobs:
         working-directory: frontend
         run: npm test
 
+  browser-regression:
+    name: real-browser regression (two-tab revisions)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Test the exact PR head commit (not a merge commit synthesized by the
+      # event), and the exact pushed commit on main.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Record checked-out commit
+        run: git rev-parse HEAD
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install bedtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bedtools
+          bedtools --version
+
+      # Same locked Python graph as the pytest jobs. Playwright is added via
+      # an ephemeral `uv run --with playwright==1.64.0` overlay so the project
+      # lock stays unchanged.
+      - name: Install Python dependencies (from uv.lock)
+        env:
+          UV_PYTHON: "3.12"
+        run: |
+          python -m pip install "uv==0.11.8"
+          uv sync --frozen --extra dev
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      # Build the React app from the exact commit under test; the real
+      # FastAPI process serves frontend/dist at / during the test.
+      - name: Build React frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Restore Playwright browser cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-1.64.0-chromium-${{ hashFiles('uv.lock') }}
+
+      - name: Install Playwright Chromium
+        run: uv run --with playwright==1.64.0 playwright install --with-deps chromium
+
+      # ANNOTATER_BROWSER_REQUIRED turns a missing browser/build/bedtools into
+      # a failure instead of a skip. The tests start and stop the real app
+      # themselves, one isolated browser context (cookie jar) per scenario.
+      - name: Run real-browser regression tests
+        env:
+          ANNOTATER_BROWSER_TESTS: "1"
+          ANNOTATER_BROWSER_REQUIRED: "1"
+          ANNOTATER_BROWSER_CHANNEL: bundled
+          ANNOTATER_BROWSER_LOG_DIR: ${{ runner.temp }}/browser-logs
+          ANNOTATER_BROWSER_TRACE_DIR: ${{ runner.temp }}/browser-traces
+        run: |
+          uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py -v --durations=10
+
+      - name: Upload browser diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-regression-diagnostics
+          path: |
+            ${{ runner.temp }}/browser-logs
+            ${{ runner.temp }}/browser-traces
+          if-no-files-found: ignore
+          retention-days: 7
+
   docker-smoke:
     name: docker build + in-container smoke + benchmark smoke (linux/amd64)
     # ubuntu-latest is x86_64, so the amd64 image builds natively (no QEMU).
