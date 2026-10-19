@@ -307,11 +307,39 @@ and `ANNOTATER_BROWSER_TRACE_DIR` to write one Playwright trace per context.
 skip (CI uses it).
 
 The `browser-regression` CI job in `.github/workflows/python-tests.yml` runs
-this suite on every pull request. It checks out the exact PR head commit,
-builds the frontend from that commit, installs the pinned Playwright Chromium,
-and uploads the logs and traces as the `browser-regression-diagnostics`
-artifact when the job fails. This job is additive: it does not change the
-existing pytest, frontend-lint or Docker jobs.
+this suite on every pull request. Like the other PR jobs it uses GitHub's
+default checkout, so it tests the synthetic merge commit that would land
+rather than the loose PR head. The job logs both the PR head SHA and the
+checked-out commit SHA, builds the frontend from that checkout, installs the
+pinned Playwright Chromium, and uploads logs and traces as the
+`browser-regression-diagnostics` artifact when it fails or is cancelled.
+
+The job is fail-closed: `ANNOTATER_BROWSER_REQUIRED=1` makes a disabled suite
+(missing `ANNOTATER_BROWSER_TESTS=1`), zero collected browser tests, a skipped
+browser test, or a missing browser/frontend build/bedtools/server fail the
+job. Local runs without `ANNOTATER_BROWSER_REQUIRED` keep the opt-in skip
+behavior.
+
+### Required check configuration
+
+The GitHub Actions check name for this job is:
+
+```
+real-browser regression (two-tab revisions)
+```
+
+As of 2026-10-19, `pyrevo/annotater` has no classic branch protection on
+`main` and no repository rulesets, so this check is not yet required. Changing
+repository settings is outside this task; after merge, an administrator
+should enable a `main` ruleset (or classic protection) that:
+
+- requires this exact check, alongside the existing pytest, lock, frontend
+  and Docker checks, before merging;
+- requires a pull request and at least one approval;
+- dismisses stale approvals and requires conversation resolution;
+- requires branches to be up to date before merging.
+
+This job does not change the existing pytest, frontend-lint or Docker jobs.
 
 ## Port and health check
 

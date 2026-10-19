@@ -107,14 +107,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      # Test the exact PR head commit (not a merge commit synthesized by the
-      # event), and the exact pushed commit on main.
+      # Match every other PR job: the default checkout tests GitHub's
+      # synthetic merge commit, not the loose PR head. This is the commit that
+      # would land, so a green browser job cannot certify a combination that
+      # was never built. The next step records both identities so a failure
+      # can be tied back to the PR head.
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Record checked-out commit
-        run: git rev-parse HEAD
+      - name: Record commit identity
+        run: |
+          echo "PR head SHA: ${{ github.event.pull_request.head.sha || github.sha }}"
+          echo "Checked-out commit SHA: $(git rev-parse HEAD)"
+          echo "Event: ${{ github.event_name }}"
 
       - uses: actions/setup-python@v5
         with:
@@ -173,8 +177,13 @@ jobs:
         run: |
           uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py -v --durations=10
 
+      # Keep traces and logs when the job fails or is cancelled (for example a
+      # timeout); a cancelled job otherwise loses the only evidence of where
+      # the browser suite stopped. `continue-on-error` prevents a missing or
+      # rejected artifact from masking that original outcome.
       - name: Upload browser diagnostics
-        if: failure()
+        if: failure() || cancelled()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: browser-regression-diagnostics

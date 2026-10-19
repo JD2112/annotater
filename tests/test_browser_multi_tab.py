@@ -55,12 +55,24 @@ ONE_BASED = "1-based (GFF/GTF/VCF)"
 MATCH_ROW = "left_edge_base100"
 LOG_DIR_ENV = "ANNOTATER_BROWSER_LOG_DIR"
 TRACE_DIR_ENV = "ANNOTATER_BROWSER_TRACE_DIR"
+_REQUIRED = os.environ.get("ANNOTATER_BROWSER_REQUIRED") == "1"
+_OPTED_IN = os.environ.get("ANNOTATER_BROWSER_TESTS") == "1"
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("ANNOTATER_BROWSER_TESTS") != "1",
+    not _OPTED_IN and not _REQUIRED,
     reason="real-browser tests are opt-in: set ANNOTATER_BROWSER_TESTS=1 "
     "(needs Playwright, a browser, bedtools and a built frontend)",
 )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _required_mode_needs_opt_in():
+    """Never let a REQUIRED run become green while browser tests are disabled."""
+    if _REQUIRED and not _OPTED_IN:
+        pytest.fail(
+            "ANNOTATER_BROWSER_REQUIRED=1 requires ANNOTATER_BROWSER_TESTS=1; "
+            "refusing to run with the browser suite disabled."
+        )
 
 
 def _env_dir(name: str) -> Path | None:
@@ -232,6 +244,30 @@ def _open_tab(context, base_url):
     return page
 
 
+def _record_uploads(page):
+    """Collect successful /api/upload responses so tests can name revisions."""
+    responses = []
+
+    def record(response):
+        if (
+            response.url.endswith("/api/upload")
+            and response.request.method == "POST"
+            and response.status == 200
+        ):
+            responses.append(response)
+
+    page.on("response", record)
+    return responses
+
+
+def _upload_revision(responses, role):
+    for response in responses:
+        body = response.json()
+        if body.get("role") == role:
+            return body["revision"]
+    raise AssertionError(f"no successful {role} upload response was recorded")
+
+
 def _no_download(page, action, wait_ms=2500):
     downloads = []
     page.on("download", lambda download: downloads.append(download))
@@ -333,11 +369,16 @@ def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(new_context, base_url, fil
     """
     context = new_context(accept_downloads=True)
     tab_a = _open_tab(context, base_url)
+    tab_a_uploads = _record_uploads(tab_a)
     assert "0 of 1 regions matched" in _load_and_run(tab_a, files, one_based=False)
+    stale_query_revision = _upload_revision(tab_a_uploads, "query")
 
     # Tab B stores a newer query under a fresh revision and proves it runs.
     tab_b = _open_tab(context, base_url)
+    tab_b_uploads = _record_uploads(tab_b)
     assert "1 of 1 regions matched" in _load_and_run(tab_b, files, one_based=True)
+    newer_query_revision = _upload_revision(tab_b_uploads, "query")
+    assert newer_query_revision != stale_query_revision
 
     # Tab A's next upload never reaches the server: outcome unknown, server
     # revision unknown, so only tab A's last-known revision may be cleared.
@@ -345,8 +386,34 @@ def test_cross_tab_cleanup_cannot_wipe_a_newer_upload(new_context, base_url, fil
     superseded = files / "superseded.tsv"
     superseded.write_text("chr1\t100\t200\tr1\n")
     tab_a.bring_to_front()
-    tab_a.locator("input[type=file]").nth(0).set_input_files(superseded)
+
+    # Gate on the actual clean-up request and response, not the UI message:
+    # the message is shown before the fetch is even sent, so waiting on it
+    # would let this test pass before the server has ruled on the clear.
+    with tab_a.expect_request(
+        lambda request: request.url.endswith("/api/dataset/clear")
+        and request.method == "POST"
+    ) as clear_request_info, tab_a.expect_response(
+        lambda response: response.url.endswith("/api/dataset/clear")
+        and response.request.method == "POST"
+    ) as clear_response_info:
+        tab_a.locator("input[type=file]").nth(0).set_input_files(superseded)
+
     tab_a.wait_for_selector("text=/Network error uploading file/")
+    clear_request = clear_request_info.value
+    clear_payload = clear_request.post_data_json
+    assert clear_payload == {
+        "role": "query",
+        "revision": stale_query_revision,
+    }
+
+    # The server refuses a clear of a revision another tab replaced. Asserting
+    # the response means completion is observed, not merely a UI side effect.
+    clear_response = clear_response_info.value
+    assert clear_response.status == 409
+    conflict = clear_response.json()["detail"]
+    assert conflict["code"] == "revision_conflict"
+    assert conflict["stale"] == ["query"]
 
     # Tab B's newer dataset survived the clean-up: it still exports its own
     # 1-based result (a wiped query would leave it with nothing to export).
