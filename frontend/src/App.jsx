@@ -27,6 +27,20 @@ import {
   Cell 
 } from 'recharts';
 
+// Coordinate-system declaration options. The canonical token (``0-based`` /
+// ``1-based``) is what the backend reports for the system it actually applied
+// when it parsed a bundled sample; the label is what the selector displays
+// (issue #54). Keeping the mapping here means the option text and the sampled
+// authoritative value can never disagree.
+const COORD_SYSTEM_AUTO = 'Auto-detect';
+const COORD_SYSTEM_ZERO_BASED = '0-based (BED)';
+const COORD_SYSTEM_ONE_BASED = '1-based (GFF/GTF/VCF)';
+const COORD_SYSTEM_LABELS = {
+  '0-based': COORD_SYSTEM_ZERO_BASED,
+  '1-based': COORD_SYSTEM_ONE_BASED,
+};
+const coordSystemLabel = (token) => COORD_SYSTEM_LABELS[token] || null;
+
 // ---------------------------------------------------------------------------
 // Scientific report rendering (Task 14.3)
 //
@@ -396,6 +410,12 @@ export default function App() {
         // leaving them displayed as loaded.
         handleRevisionConflict(data.detail);
       } else if (res.ok) {
+        // Store the datasets, including the coordinate system the backend
+        // reports as applied per side. That value is shown as read-only
+        // provenance on the sample card; it deliberately does NOT touch the
+        // coordinate selectors, which are the user's declaration for future
+        // uploads (issue #54 regression, finding F1). A later explicit change
+        // to a selector still fires the N2 invalidation.
         setQueryData(data.query);
         setAnnotData(data.annot);
         setMappingRequired(false);
@@ -875,9 +895,9 @@ export default function App() {
                   onChange={(e) => { setCoordSystem(e.target.value); clearResults(); invalidateDataset('query'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="Auto-detect">Auto-detect</option>
-                  <option value="0-based (BED)">0-based (BED)</option>
-                  <option value="1-based (GFF/GTF/VCF)">1-based (GFF/GTF/VCF)</option>
+                  <option value={COORD_SYSTEM_AUTO}>Auto-detect</option>
+                  <option value={COORD_SYSTEM_ZERO_BASED}>{COORD_SYSTEM_ZERO_BASED}</option>
+                  <option value={COORD_SYSTEM_ONE_BASED}>{COORD_SYSTEM_ONE_BASED}</option>
                 </select>
               </div>
 
@@ -891,9 +911,9 @@ export default function App() {
                   onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); invalidateDataset('annot'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="Auto-detect">Auto-detect</option>
-                  <option value="0-based (BED)">0-based (BED)</option>
-                  <option value="1-based (GFF/GTF/VCF)">1-based (GFF/GTF/VCF)</option>
+                  <option value={COORD_SYSTEM_AUTO}>Auto-detect</option>
+                  <option value={COORD_SYSTEM_ZERO_BASED}>{COORD_SYSTEM_ZERO_BASED}</option>
+                  <option value={COORD_SYSTEM_ONE_BASED}>{COORD_SYSTEM_ONE_BASED}</option>
                 </select>
               </div>
 
@@ -1040,6 +1060,11 @@ export default function App() {
                       ✓ {queryData.format?.toUpperCase()} ({queryData.total_rows?.toLocaleString()} rows)
                     </span>
                   )}
+                  {queryData?.coordinate_system && (
+                    <span className="text-[11px] text-slate-500 font-medium mt-0.5">
+                      Coordinates: {coordSystemLabel(queryData.coordinate_system)}
+                    </span>
+                  )}
                   <input
                     key={`query-upload-${queryUploadKey}`}
                     type="file"
@@ -1066,6 +1091,11 @@ export default function App() {
                   {annotData && (
                     <span className="text-[11px] text-emerald-600 font-medium mt-0.5">
                       ✓ {annotData.format?.toUpperCase()} ({annotData.total_rows?.toLocaleString()} rows)
+                    </span>
+                  )}
+                  {annotData?.coordinate_system && (
+                    <span className="text-[11px] text-slate-500 font-medium mt-0.5">
+                      Coordinates: {coordSystemLabel(annotData.coordinate_system)}
                     </span>
                   )}
                   <input
