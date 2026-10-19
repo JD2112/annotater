@@ -447,34 +447,65 @@ def get_metadata():
     }
 
 
+#: Bundled sample datasets, keyed by id.
+#:
+#: Each sample carries an explicit, authoritative source coordinate system
+#: for its query and annotation file (issue #54). The declaration matches
+#: each format's specification, and the loader derives the *applied* system
+#: through the same ``coordinate_system_for`` precedence it uses to parse,
+#: so the value reported to the client can never silently drift from the
+#: normalization that actually ran. The frontend uses it to make the
+#: coordinate selectors describe the loaded data instead of a stale user
+#: selection.
+SAMPLE_DATASETS = {
+    "gene_overlap": {
+        "id": "gene_overlap",
+        "name": "Gene Overlap Analysis",
+        "query_file": "example_coordinates.bed",
+        "annot_file": "example_annotations.gff3",
+        "query_coord_system": "0-based",
+        "annot_coord_system": "1-based",
+        "description": "Exemplary BED query intervals matched against Ensembl GFF3 gene models.",
+        "mode": "overlap",
+    },
+    "closest_variants": {
+        "id": "closest_variants",
+        "name": "Closest Variants Proximity",
+        "query_file": "example_closest_variants.vcf",
+        "annot_file": "example_closest_annotations.gff3",
+        "query_coord_system": "1-based",
+        "annot_coord_system": "1-based",
+        "description": "High-throughput VCF variation dataset paired with nearest gene proximity search.",
+        "mode": "closest",
+    },
+    "stranded_features": {
+        "id": "stranded_features",
+        "name": "Strand-Specific Features",
+        "query_file": "example_strand_coordinates.bed",
+        "annot_file": "example_strand_annotations.gff3",
+        "query_coord_system": "0-based",
+        "annot_coord_system": "1-based",
+        "description": "Strand-aware genomic intervals filtering for antisense/sense overlaps.",
+        "mode": "overlap",
+    },
+}
+
+
 @app.get("/api/sample-datasets")
 def list_sample_datasets():
     """Lists available pre-bundled sample datasets."""
     return [
         {
-            "id": "gene_overlap",
-            "name": "Gene Overlap Analysis",
-            "query_file": "example_coordinates.bed",
-            "annot_file": "example_annotations.gff3",
-            "description": "Exemplary BED query intervals matched against Ensembl GFF3 gene models.",
-            "mode": "overlap",
-        },
-        {
-            "id": "closest_variants",
-            "name": "Closest Variants Proximity",
-            "query_file": "example_closest_variants.vcf",
-            "annot_file": "example_closest_annotations.gff3",
-            "description": "High-throughput VCF variation dataset paired with nearest gene proximity search.",
-            "mode": "closest",
-        },
-        {
-            "id": "stranded_features",
-            "name": "Strand-Specific Features",
-            "query_file": "example_strand_coordinates.bed",
-            "annot_file": "example_strand_annotations.gff3",
-            "description": "Strand-aware genomic intervals filtering for antisense/sense overlaps.",
-            "mode": "overlap",
-        },
+            "id": sample["id"],
+            "name": sample["name"],
+            "query_file": sample["query_file"],
+            "annot_file": sample["annot_file"],
+            "query_coord_system": sample["query_coord_system"],
+            "annot_coord_system": sample["annot_coord_system"],
+            "description": sample["description"],
+            "mode": sample["mode"],
+        }
+        for sample in SAMPLE_DATASETS.values()
     ]
 
 
@@ -485,12 +516,8 @@ def load_sample(
     session: Session = Depends(get_session),
 ):
     """Loads a pre-bundled sample dataset into the active working state."""
-    samples = {
-        "gene_overlap": ("example_coordinates.bed", "example_annotations.gff3"),
-        "closest_variants": ("example_closest_variants.vcf", "example_closest_annotations.gff3"),
-        "stranded_features": ("example_strand_coordinates.bed", "example_strand_annotations.gff3"),
-    }
-    if sample_id not in samples:
+    sample = SAMPLE_DATASETS.get(sample_id)
+    if sample is None:
         raise HTTPException(status_code=404, detail="Sample dataset not found")
 
     # Stamp both sides at arrival (issue #55), so a sample load cannot be
@@ -499,17 +526,30 @@ def load_sample(
     query_stamp = reserve_write_order(session, "query")
     annot_stamp = reserve_write_order(session, "annot")
 
-    q_name, a_name = samples[sample_id]
+    q_name, a_name = sample["query_file"], sample["annot_file"]
     q_path = get_example_data_path(q_name)
     a_path = get_example_data_path(a_name)
 
-    # Parse query
+    # Parse query. The sample's declared system is passed through so the
+    # explicit metadata, not a bare extension guess, is authoritative for
+    # extension-neutral content; for these authoritative extensions the
+    # format specification wins and the declaration agrees with it.
     q_fmt = FormatDetector.detect(str(q_path))
-    q_df = parse_and_normalize(str(q_path), fmt=q_fmt)
+    q_df = parse_and_normalize(
+        str(q_path), fmt=q_fmt, declared_system=sample["query_coord_system"]
+    )
+    q_system = coordinate_system_for(
+        q_fmt, sample["query_coord_system"], extension=q_path.suffix
+    )
 
     # Parse annotation
     a_fmt = FormatDetector.detect(str(a_path))
-    a_df = parse_and_normalize(str(a_path), fmt=a_fmt)
+    a_df = parse_and_normalize(
+        str(a_path), fmt=a_fmt, declared_system=sample["annot_coord_system"]
+    )
+    a_system = coordinate_system_for(
+        a_fmt, sample["annot_coord_system"], extension=a_path.suffix
+    )
 
     # First state write: consume a session slot (anonymous requests that
     # never stored state did not, review finding N4).
@@ -555,6 +595,7 @@ def load_sample(
             "revision": q_rev,
             "filename": q_name,
             "format": q_fmt,
+            "coordinate_system": q_system,
             "total_rows": len(q_df),
             "columns": list(q_df.columns),
             "preview": _clean_df_for_json(q_df, 50),
@@ -563,6 +604,7 @@ def load_sample(
             "revision": a_rev,
             "filename": a_name,
             "format": a_fmt,
+            "coordinate_system": a_system,
             "total_rows": len(a_df),
             "columns": list(a_df.columns),
             "preview": _clean_df_for_json(a_df, 50),

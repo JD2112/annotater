@@ -27,6 +27,20 @@ import {
   Cell 
 } from 'recharts';
 
+// Coordinate-system declaration options. The canonical token (``0-based`` /
+// ``1-based``) is what the backend reports for the system it actually applied
+// when it parsed a bundled sample; the label is what the selector displays
+// (issue #54). Keeping the mapping here means the option text and the sampled
+// authoritative value can never disagree.
+const COORD_SYSTEM_AUTO = 'Auto-detect';
+const COORD_SYSTEM_ZERO_BASED = '0-based (BED)';
+const COORD_SYSTEM_ONE_BASED = '1-based (GFF/GTF/VCF)';
+const COORD_SYSTEM_LABELS = {
+  '0-based': COORD_SYSTEM_ZERO_BASED,
+  '1-based': COORD_SYSTEM_ONE_BASED,
+};
+const coordSystemLabel = (token) => COORD_SYSTEM_LABELS[token] || null;
+
 // ---------------------------------------------------------------------------
 // Scientific report rendering (Task 14.3)
 //
@@ -398,6 +412,15 @@ export default function App() {
       } else if (res.ok) {
         setQueryData(data.query);
         setAnnotData(data.annot);
+        // The bundled files are parsed under their format's authoritative
+        // source system, not the user's previous selection (issue #54).
+        // Reflect the convention the backend reported as applied so the
+        // selectors describe the loaded data; a later change still fires the
+        // N2 invalidation, so the re-upload contract is unchanged.
+        const queryLabel = coordSystemLabel(data.query.coordinate_system);
+        const annotLabel = coordSystemLabel(data.annot.coordinate_system);
+        if (queryLabel) setCoordSystem(queryLabel);
+        if (annotLabel) setAnnotSystem(annotLabel);
         setMappingRequired(false);
         setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
       } else {
@@ -875,9 +898,9 @@ export default function App() {
                   onChange={(e) => { setCoordSystem(e.target.value); clearResults(); invalidateDataset('query'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="Auto-detect">Auto-detect</option>
-                  <option value="0-based (BED)">0-based (BED)</option>
-                  <option value="1-based (GFF/GTF/VCF)">1-based (GFF/GTF/VCF)</option>
+                  <option value={COORD_SYSTEM_AUTO}>Auto-detect</option>
+                  <option value={COORD_SYSTEM_ZERO_BASED}>{COORD_SYSTEM_ZERO_BASED}</option>
+                  <option value={COORD_SYSTEM_ONE_BASED}>{COORD_SYSTEM_ONE_BASED}</option>
                 </select>
               </div>
 
@@ -891,9 +914,9 @@ export default function App() {
                   onChange={(e) => { setAnnotSystem(e.target.value); clearResults(); invalidateDataset('annot'); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="Auto-detect">Auto-detect</option>
-                  <option value="0-based (BED)">0-based (BED)</option>
-                  <option value="1-based (GFF/GTF/VCF)">1-based (GFF/GTF/VCF)</option>
+                  <option value={COORD_SYSTEM_AUTO}>Auto-detect</option>
+                  <option value={COORD_SYSTEM_ZERO_BASED}>{COORD_SYSTEM_ZERO_BASED}</option>
+                  <option value={COORD_SYSTEM_ONE_BASED}>{COORD_SYSTEM_ONE_BASED}</option>
                 </select>
               </div>
 

@@ -49,10 +49,21 @@ const dataset = (filename, format, totalRows, revision) => ({
   ...(revision ? { revision } : {}),
 });
 
+// Bundled samples are parsed under their format's authoritative system; the
+// load-sample response reports the applied convention per side (issue #54).
 const SAMPLE = {
-  query: dataset('sample-query.bed', 'bed', 20, 'sample-query-rev'),
-  annot: dataset('sample-annotation.gff3', 'gff3', 40, 'sample-annot-rev'),
+  query: {
+    ...dataset('sample-query.bed', 'bed', 20, 'sample-query-rev'),
+    coordinate_system: '0-based',
+  },
+  annot: {
+    ...dataset('sample-annotation.gff3', 'gff3', 40, 'sample-annot-rev'),
+    coordinate_system: '1-based',
+  },
 };
+
+const ONE_BASED = '1-based (GFF/GTF/VCF)';
+const ZERO_BASED = '0-based (BED)';
 
 const EXEC_RESULT = {
   stats: {
@@ -260,8 +271,6 @@ describe('N3: in-flight execute responses and execution locking', () => {
 // ---------------------------------------------------------------------------
 // N2-R: coordinate declaration vs. in-flight upload / mapping requests
 // ---------------------------------------------------------------------------
-
-const ONE_BASED = '1-based (GFF/GTF/VCF)';
 
 // A fetch stub whose /api/upload and /api/apply-mapping requests stay pending
 // until the test settles them, recording what was sent.
@@ -536,6 +545,150 @@ describe('N7: annotation-side coordinate declaration', () => {
     chooseFile('annot', 'a.gff3');
     await waitFor(() => expect(backend.uploads).toHaveLength(3));
     expect(backend.uploads[2]).toMatchObject({ role: 'annot', coordSystem: ONE_BASED });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #54: a bundled sample reports the coordinate convention it was actually
+// parsed under, and the selectors describe that data rather than a stale
+// user selection.
+// ---------------------------------------------------------------------------
+
+// A load-sample backend that answers immediately with the given payload and
+// records any dataset clears.
+const sampleBackend = (payload) => {
+  const clears = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn((url, options) => {
+      const u = String(url);
+      if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+      if (u === '/api/load-sample') return Promise.resolve(jsonResponse(payload));
+      if (u === '/api/dataset/clear') {
+        clears.push(JSON.parse(options.body));
+        return Promise.resolve(jsonResponse({ status: 'success' }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    }),
+  );
+  return { clears };
+};
+
+const SAMPLES = [
+  {
+    id: 'gene_overlap',
+    query: { ...dataset('example_coordinates.bed', 'bed', 6, 'q-gene'), coordinate_system: '0-based' },
+    annot: { ...dataset('example_annotations.gff3', 'gff3', 8, 'a-gene'), coordinate_system: '1-based' },
+  },
+  {
+    id: 'closest_variants',
+    query: { ...dataset('example_closest_variants.vcf', 'vcf', 4, 'q-closest'), coordinate_system: '1-based' },
+    annot: { ...dataset('example_closest_annotations.gff3', 'gff3', 3, 'a-closest'), coordinate_system: '1-based' },
+  },
+  {
+    id: 'stranded_features',
+    query: { ...dataset('example_strand_coordinates.bed', 'bed', 3, 'q-strand'), coordinate_system: '0-based' },
+    annot: { ...dataset('example_strand_annotations.gff3', 'gff3', 3, 'a-strand'), coordinate_system: '1-based' },
+  },
+];
+
+describe('#54: sample load reflects the coordinate convention actually applied', () => {
+  it.each(SAMPLES)(
+    'sets both selectors to the authoritative convention for $id',
+    async ({ query, annot }) => {
+      sampleBackend({ query, annot });
+      render(<App />);
+      await waitFor(() => expect(screen.getByText('v9.9.9-test')).toBeTruthy());
+
+      fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+
+      await waitFor(() => expect(screen.getByText(query.filename)).toBeTruthy());
+      expect(screen.getByText(annot.filename)).toBeTruthy();
+      // Query and annotation conventions are reported independently.
+      await waitFor(() =>
+        expect(coordSelects()[0].value).toBe(
+          query.coordinate_system === '0-based' ? ZERO_BASED : ONE_BASED,
+        ),
+      );
+      expect(coordSelects()[1].value).toBe(
+        annot.coordinate_system === '0-based' ? ZERO_BASED : ONE_BASED,
+      );
+    },
+  );
+
+  it('keeps the re-upload contract: changing a declaration after load still invalidates', async () => {
+    const backend = sampleBackend(SAMPLE);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('v9.9.9-test')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(screen.getByText('sample-query.bed')).toBeTruthy());
+    expect(coordSelects()[0].value).toBe(ZERO_BASED);
+
+    // The query loaded under 0-based; declaring 1-based must invalidate the
+    // sample dataset and demand a re-upload, exactly as for an upload.
+    fireEvent.change(coordSelects()[0], { target: { value: ONE_BASED } });
+
+    await waitFor(() => expect(screen.queryByText('sample-query.bed')).toBeNull());
+    expect(screen.getByText(/re-upload the query file/i)).toBeTruthy();
+    expect(backend.clears).toEqual([{ role: 'query', revision: 'sample-query-rev' }]);
+    // The annotation side keeps its own authoritative declaration.
+    expect(screen.getByText('sample-annotation.gff3')).toBeTruthy();
+    expect(coordSelects()[1].value).toBe(ONE_BASED);
+  });
+
+  it('a superseded sample-load success does not move the selectors', async () => {
+    const samples = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url, options) => {
+        const u = String(url);
+        if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/upload') {
+          return Promise.resolve(jsonResponse(dataset('newer.tsv', 'bed', 2, 'newer-rev')));
+        }
+        if (u === '/api/load-sample') {
+          return new Promise((resolve) => samples.push(resolve));
+        }
+        if (u === '/api/dataset/clear') {
+          return Promise.resolve(jsonResponse({ status: 'success' }));
+        }
+        return Promise.resolve(jsonResponse({}));
+      }),
+    );
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('v9.9.9-test')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(samples).toHaveLength(1));
+
+    const fileInputs = document.querySelectorAll('input[type="file"]');
+    fireEvent.change(fileInputs[0], { target: { files: [new File(['chr1\t10\t20\n'], 'newer.tsv')] } });
+    await waitFor(() => expect(screen.getByText('newer.tsv')).toBeTruthy());
+
+    // The sample response is now stale: it must neither install its datasets
+    // nor overwrite the newer side's selector state.
+    await act(async () => samples[0](jsonResponse(SAMPLE)));
+
+    expect(screen.queryByText('sample-query.bed')).toBeNull();
+    expect(screen.getByText('newer.tsv')).toBeTruthy();
+    expect(coordSelects()[0].value).toBe('Auto-detect');
+    expect(coordSelects()[1].value).toBe('Auto-detect');
+  });
+
+  it('leaves the selectors unchanged when the response carries no convention', async () => {
+    const noSystems = {
+      query: dataset('legacy.bed', 'bed', 2, 'legacy-q'),
+      annot: dataset('legacy.gff3', 'gff3', 3, 'legacy-a'),
+    };
+    sampleBackend(noSystems);
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('v9.9.9-test')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(screen.getByText('legacy.bed')).toBeTruthy());
+    expect(coordSelects()[0].value).toBe('Auto-detect');
+    expect(coordSelects()[1].value).toBe('Auto-detect');
   });
 });
 

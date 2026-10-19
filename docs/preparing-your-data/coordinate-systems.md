@@ -63,6 +63,17 @@ content detection**; for known format extensions, **format
 specification > user coordinate override**. No explicit user
 declaration is silently ignored.
 
+## Bundled samples
+
+Every bundled sample dataset carries an authoritative coordinate system
+for each side, matching the format of the files it loads (BED queries are
+0-based half-open; GFF3 and VCF are 1-based). **Load Sample Data** sets
+the two selectors to the convention actually applied to the loaded
+files, so the displayed declaration always describes the stored data
+rather than whatever was selected before. Changing a selector afterwards
+still invalidates that side and asks for a re-upload under the new
+declaration, exactly as for an uploaded file.
+
 ## Why touching intervals are not overlaps
 
 Half-open intervals that touch at the same boundary coordinate share no

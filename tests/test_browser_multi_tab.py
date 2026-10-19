@@ -12,6 +12,10 @@ Tab A runs Auto-detect (0-based: 0 of 1 matched); tab B runs the same file
 declared 1-based (1 of 1 matched). Tab A still displays "0 of 1", but its
 Export used to download tab B's 1-based result and a re-run silently used
 tab B's datasets. Now both are visible conflicts in tab A.
+
+It also verifies issue #54 in a real browser: loading a bundled sample sets
+the coordinate selectors to the convention actually applied to the loaded
+files.
 """
 
 from __future__ import annotations
@@ -259,3 +263,31 @@ def test_separate_browser_sessions_stay_independent(browser, base_url, files):
     assert MATCH_ROW in Path(info.value.path()).read_text()
     one.close()
     two.close()
+
+
+def test_sample_load_sets_the_selectors_to_the_loaded_convention(browser, base_url):
+    """Issue #54, in a real browser.
+
+    The gene_overlap sample pairs a BED query (0-based) with a GFF3
+    annotation (1-based). Load Sample Data must set both selectors to that
+    convention instead of leaving the previous selection displayed, while a
+    later declaration change still invalidates the side and demands a
+    re-upload.
+    """
+    context = browser.new_context()
+    page = _open_tab(context, base_url)
+    coord = page.locator("select").filter(has=page.locator("option[value='0-based (BED)']"))
+    assert coord.nth(0).input_value() == "Auto-detect"
+    assert coord.nth(1).input_value() == "Auto-detect"
+
+    page.get_by_role("button", name="Load Sample Data").click()
+    page.wait_for_selector("text=example_coordinates.bed")
+    assert coord.nth(0).input_value() == "0-based (BED)"
+    assert coord.nth(1).input_value() == "1-based (GFF/GTF/VCF)"
+
+    # The re-upload contract is unchanged: declaring 1-based for the loaded
+    # 0-based BED query invalidates it and asks for a re-upload.
+    coord.nth(0).select_option(ONE_BASED)
+    page.wait_for_selector("text=/re-upload the query file/i")
+    assert page.locator("text=example_coordinates.bed").count() == 0
+    context.close()
