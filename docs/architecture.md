@@ -214,6 +214,17 @@ transitions they guard run under the session's lock; execute and mapping run
 the expensive work outside the lock and commit only if the datasets they
 read are still the stored ones (otherwise 409, nothing stored).
 
+Every write to a dataset side — upload, sample load, clear and applied column
+mapping — is also ordered by request **arrival** per `(session, query|annot)`
+(issues #55, #60). Each takes a stamp before its expensive work and records it
+only after a successful commit; a writer whose stamp is below the side's
+committed high-water mark was superseded by a later-started write and is
+refused (409 `revision_conflict`) rather than allowed to replace it. A mapping
+counts as a write to `query`, so an upload that arrived before a mapping but
+finishes parsing after it committed can no longer overwrite the mapped table.
+A failed or superseded write records nothing and does not advance the mark, so
+it cannot strand another in-flight write.
+
 Revisions are not credentials: they never grant access beyond the session
 cookie, and another session's revisions name nothing in yours. On a 409 the
 React UI drops the stale parts of the tab and shows a "Changed in another

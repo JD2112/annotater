@@ -838,7 +838,20 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
     (``CustomParser.map_columns`` + ``normalize_intervals``): chromosome,
     start, end (or single position) and optional strand are selected from the
     user's columns; every other column is preserved as metadata.
+
+    A successful mapping is a write to the ``query`` side, so it takes part in
+    the same arrival-order contract as upload, sample load and clear (issue
+    #60): a stamp is reserved before the (possibly slow) column mapping, and
+    the mapped table commits only if no later-started write to ``query`` has
+    already committed. An upload that arrived earlier but finishes parsing
+    later is then refused (409) instead of silently overwriting the mapped
+    table. A failed or superseded mapping records nothing, so it does not
+    advance the committed high-water mark.
     """
+    # Arrival-order stamp (issue #60): reserve before the mapping work so this
+    # mapping outranks any write that arrives afterwards, and any write that
+    # arrived earlier must see this stamp once it commits.
+    write_stamp = reserve_write_order(session, "query")
     with session.lock:
         entry = session.data.get("query")
     if entry is None:
@@ -909,6 +922,16 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
                 "re-upload it and map again.",
                 ["query"],
             )
+        if write_order_superseded(session, "query", write_stamp):
+            # A later-started write to this side (upload, sample load, clear or
+            # another mapping) committed while this mapping ran: it outranks
+            # this older mapping by arrival order (issue #60), so the mapped
+            # table is refused rather than resurrected.
+            raise _revision_conflict(
+                "The query dataset changed while the mapping was applied; "
+                "re-upload it and map again.",
+                ["query"],
+            )
         session.data["query"] = {
             **entry,
             "rev": revision,
@@ -917,6 +940,9 @@ def apply_mapping(req: ColumnMappingRequest, session: Session = Depends(get_sess
             "columns": list(mapped_df.columns),
             "rows": len(mapped_df),
         }
+        # Record only after the mapped table is stored, so a failed mapping or
+        # one rejected above never advances the committed high-water mark.
+        record_write_committed(session, "query", write_stamp)
     return {
         "status": "success",
         "revision": revision,
