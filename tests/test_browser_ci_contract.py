@@ -38,6 +38,7 @@ EXPECTED_JOBS = {
     "frontend-tests",
     "browser-regression",
     "docker-smoke",
+    "ci-gate",
 }
 BROWSER_COMMAND_PREFIX = (
     "uv",
