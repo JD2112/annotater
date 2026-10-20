@@ -1,7 +1,7 @@
 # AnnotateR Architecture
 
 **Status:** target architecture for the Polars-Bio parity refactor  
-**Last updated:** 2026-09-21
+**Last updated:** 2026-10-20
 
 ## 1. Current problem
 
@@ -195,11 +195,14 @@ revision they act on:
 | annotation dataset | `POST /api/upload` (`revision`), `POST /api/load-sample` (`annot.revision`) | `POST /api/execute` (`annot_rev`), `POST /api/dataset/clear` (`revision`, required when stored) |
 | result | `POST /api/execute` (`result_revision`; also echoes `query_revision`/`annot_revision`) | `GET /api/results/data`, `GET /api/results/gene-list`, `GET /api/export/{fmt}` (`result_rev` query parameter) |
 
-Uniform contract: nothing stored and no revision stated → 400/404 as
+Revision contract: nothing stored and no revision stated → 400/404 as
 before; state stored but no revision stated → **428**; a stated revision
 that is absent or different → **409** with
 `{"detail": {"code": "revision_conflict", "message": …, "stale": ["query" | "annot" | "result", …]}}`.
-The server never falls back to "whatever is stored now".
+The server never falls back to "whatever is stored now". This is the
+*revision* check, where the client names a revision it had seen. Write
+endpoints can return a 409 even when the client names no revision, because
+they are also ordered by arrival (below).
 
 Lifecycle: a dataset revision is replaced on every upload, sample load or
 mapping of that side and disappears when the side is cleared or the session
@@ -216,22 +219,64 @@ read are still the stored ones (otherwise 409, nothing stored).
 
 Every write to a dataset side — upload, sample load, clear and applied column
 mapping — is also ordered by request **arrival** per `(session, query|annot)`
-(issues #55, #60). Each takes a stamp before its expensive work and records it
-only after a successful commit; a writer whose stamp is below the side's
-committed high-water mark was superseded by a later-started write and is
-refused (409 `revision_conflict`) rather than allowed to replace it. A mapping
-counts as a write to `query`, so an upload that arrived before a mapping but
-finishes parsing after it committed can no longer overwrite the mapped table.
-A failed or superseded write records nothing and does not advance the mark, so
-it cannot strand another in-flight write. A clear that finds nothing stored for
-the side is a 200 no-op that removes and records nothing, so it cannot advance
-the mark either (issue #64).
+(issues #55, #60). Arrival order is not commit order: each writer takes a
+stamp when its request arrives, before its expensive work, and the side's
+high-water mark records the highest stamp that actually **committed**. A
+writer whose stamp is below that mark was superseded by a later-started write
+and is refused (409 `revision_conflict`) without storing anything. If several
+writes commit, the latest-arrived one wins regardless of which request
+finished first. A later-started write that fails or is itself superseded
+records nothing, so it never strands an earlier in-flight write.
+
+- **Upload** (`POST /api/upload`) stamps only the requested `query` or
+  `annot` side and commits that side only if no later-started write to it has
+  committed. A superseded upload stores nothing and answers with `stale`
+  containing its role.
+- **Sample load** (`POST /api/load-sample`) stamps both sides at arrival and
+  commits the query and annotation pair atomically. If a later-started write
+  to either side has committed, the whole load is refused, nothing is stored
+  and `stale` names both `query` and `annot`.
+- **Clear** (`POST /api/dataset/clear`) checks arrival order before the
+  revision contract. A later-started write that already committed wins, so a
+  clear cannot delete it. A clear that removes a stored dataset is itself a
+  committed write and advances the side's mark; a clear that finds nothing
+  stored is a 200 no-op that removes and records nothing, so it cannot advance
+  the mark either (issue #64). Stale or revision-less clears of stored data
+  are still refused (409/428) without committing.
+- **Apply mapping** (`POST /api/apply-mapping`) is a write to `query`. It
+  checks the stated `query_rev` before the possibly slow mapping and confirms
+  after it that the query entry is still the same and that no later-started
+  query write committed; otherwise it stores nothing and answers 409. Query
+  and annotation ordering remain independent.
+
+A mapping therefore counts as a write to `query`, and an upload that arrived
+before a mapping but finishes parsing after it committed cannot overwrite the
+mapped table.
 
 Revisions are not credentials: they never grant access beyond the session
-cookie, and another session's revisions name nothing in yours. On a 409 the
-React UI drops the stale parts of the tab and shows a "Changed in another
-tab" warning; exports are fetched with the displayed `result_rev`, so a
-superseded result is never downloaded.
+cookie, and another session's revisions name nothing in yours. A refused
+operation stores, runs or serves nothing. When a 409 reaches the React UI, it
+drops the side(s) named in `stale`, clears any dependent result and shows a
+"Changed in another tab" warning; Run stays unavailable until the user
+re-uploads the affected file, reloads the sample or re-runs in that tab.
+Exports are fetched with the displayed `result_rev`, so a superseded result is
+never downloaded.
+
+### Parsing concurrency (React/FastAPI)
+
+Upload parsing is CPU- and memory-heavy. `POST /api/upload` runs detection,
+parsing and normalization on a worker thread through
+`anyio.to_thread.run_sync`, but borrows from a limiter dedicated to parsing
+(`api_server._parse_limiter`, sized by `Settings.MAX_CONCURRENT_PARSES`,
+default `2`) rather than AnyIO's shared default thread-pool limiter.
+Starlette runs synchronous endpoints — `/health`, `/api/meta`, sample load and
+clear — on that shared default limiter, so a burst of uploads cannot occupy
+its tokens and starve them. Uploads waiting for a parse slot wait on the event
+loop and do not block it. The limiter is per running event loop; production
+has one loop (single Uvicorn worker) and therefore one limiter. This limit
+covers uploads only: the bundled sample loader parses on the default pool.
+Configuration values and the memory trade-off are documented in
+[Deployment](deployment.md#parsing-concurrency).
 
 ## 4. Coordinate model
 
