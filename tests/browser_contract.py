@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterable
+from pathlib import PurePosixPath
 
 from tests.browser_test_inventory import (
     BROWSER_OPT_IN_ENV,
@@ -30,7 +31,7 @@ def opt_in_enabled() -> bool:
 def targets_browser_module(arguments: Iterable[object]) -> bool:
     module = BROWSER_TEST_MODULE
     for argument in arguments:
-        value = str(argument).replace("\\", "/")
+        value = PurePosixPath(str(argument).replace("\\", "/")).as_posix()
         if value == module or value.startswith(f"{module}::"):
             return True
     return False
