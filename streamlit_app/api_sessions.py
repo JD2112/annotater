@@ -415,10 +415,9 @@ class SessionStore:
         """Evict expired sessions; returns the number removed."""
         moment = time.monotonic() if now is None else now
         with self._lock:
-            before = len(self._sessions)
             removed = self._sweep_locked(moment)
         self._notify_evicted(removed)
-        return before - len(removed)
+        return len(removed)
 
     def __len__(self) -> int:
         with self._lock:

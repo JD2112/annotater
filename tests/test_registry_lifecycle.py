@@ -32,19 +32,14 @@ from streamlit_app.core.chrom_registry import (
     RegistryEstimate,
     RegistryLifecycle,
     RegistryNotAvailable,
+    RegistryReplacementRequiresClear,
     RegistrySessionExpired,
     RegistryWriteConflict,
+    RegistryWriteResult,
     cgroup_v2_headroom,
     count_custom_mapping_rows,
     estimate_registry,
     load_custom_registry,
-)
-from streamlit_app.core.chrom_registry.lifecycle import (
-    PARSE_BASE_BYTES,
-    PARSE_BYTES_PER_ROW,
-    PARSE_INPUT_MULTIPLIER,
-    RETAINED_BASE_BYTES,
-    RETAINED_BYTES_PER_ROW,
 )
 
 MIB = 1024 * 1024
@@ -66,9 +61,9 @@ CONTENT_C = mapping(("3", "chr3", "3", "CM000003.1", "NC_000003.1"))
 
 def make_budget(**overrides) -> RegistryBudget:
     values = {
-        "retained_bytes": 8 * MIB,
-        "transient_bytes": 8 * MIB,
-        "combined_bytes": 16 * MIB,
+        "retained_bytes": 16 * MIB,
+        "transient_bytes": 24 * MIB,
+        "combined_bytes": 40 * MIB,
         "parse_concurrency": 1,
         "memory_headroom_reserve_bytes": 0,
     }
@@ -92,29 +87,55 @@ def retained_for(content: bytes) -> int:
 # ---------------------------------------------------------------------------
 
 
-def test_estimator_values_are_pinned_at_the_published_limits():
+@pytest.mark.parametrize(
+    ("rows", "input_bytes", "retained_mib", "parse_mib"),
+    [
+        # Independent hand-computed vectors for the approved M2.1c formulas:
+        #   retained = ceil((1 MiB + rows * 1.4 KiB + bytes) / 1 MiB)
+        #   parse    = ceil((8 MiB + rows * 2.25 KiB + 2 * bytes) / 1 MiB)
+        (1_000, 100 * 1024, 3, 11),
+        (10_000, 1 * MIB, 16, 32),
+        (100_000, 16 * MIB, 154, 260),
+        (500_000, 64 * MIB, 749, 1235),
+        # Additional vectors from the M2.2a review probe.
+        (100_000, 64 * MIB, 202, 356),
+        (500_000, 25 * MIB, 710, 1157),
+    ],
+)
+def test_approved_estimator_vectors_are_pinned_to_whole_mib(
+    rows, input_bytes, retained_mib, parse_mib
+):
+    estimate = estimate_registry(rows, input_bytes)
+
+    assert estimate.retained_bytes == retained_mib * MIB
+    assert estimate.parse_bytes == parse_mib * MIB
+    assert estimate.total_bytes == (retained_mib + parse_mib) * MIB
+
+
+def test_estimator_rounds_up_conservatively_to_whole_mib():
+    empty = estimate_registry(0, 0)
+    assert empty.retained_bytes == 1 * MIB
+    assert empty.parse_bytes == 8 * MIB
+
+    # Any non-zero row/byte charge rounds the retained pool up to the next MiB.
+    tiny = estimate_registry(1, 1)
+    assert tiny.retained_bytes == 2 * MIB
+    assert tiny.parse_bytes == 9 * MIB
+
+
+def test_published_maxima_are_inside_the_published_pools():
     estimate = estimate_registry(500_000, 64 * MIB)
 
-    assert estimate.retained_bytes == (
-        RETAINED_BASE_BYTES + 500_000 * RETAINED_BYTES_PER_ROW)
-    assert estimate.parse_bytes == (
-        PARSE_BASE_BYTES
-        + 64 * MIB * PARSE_INPUT_MULTIPLIER
-        + 500_000 * PARSE_BYTES_PER_ROW)
-    assert estimate.total_bytes == (
-        estimate.retained_bytes + estimate.parse_bytes)
-    # The published maxima are inside the published pools.
     assert estimate.retained_bytes <= DEFAULT_RETAINED_BYTES
     assert estimate.parse_bytes <= DEFAULT_TRANSIENT_PARSE_BYTES
     assert estimate.total_bytes <= DEFAULT_COMBINED_BYTES
-    assert estimate.retained_bytes == 768_065_536
-    assert estimate.parse_bytes == 969_392_128
 
 
 def test_estimator_is_monotonic_and_rejects_negative_input():
     small = estimate_registry(1, 1)
-    large = estimate_registry(2, 1)
+    large = estimate_registry(1_000, 1)
     assert large.retained_bytes > small.retained_bytes
+    assert large.parse_bytes > small.parse_bytes
     with pytest.raises(ValueError):
         estimate_registry(-1, 0)
     with pytest.raises(ValueError):
@@ -181,9 +202,117 @@ def test_temporary_capacity_exhaustion_is_429_and_does_not_evict():
         budget.reserve(RegistryEstimate(0, 0, 1, 0))
     assert info.value.status_code == 429
     assert info.value.code == "capacity_unavailable"
-    assert info.value.retry_after is None
+    assert info.value.retry_after is not None and info.value.retry_after >= 1
     # The existing accounting is untouched (no silent eviction).
     assert budget.stats().retained_bytes == 1_000
+
+
+def test_transient_capacity_exact_boundary_is_admitted():
+    budget = make_budget(
+        retained_bytes=1_000, transient_bytes=1_000, combined_bytes=2_000)
+    reservation = budget.reserve(RegistryEstimate(0, 0, 0, 1_000))
+    assert budget.stats().transient_parse_bytes == 1_000
+    reservation.abort()
+    assert budget.stats().accounted_bytes == 0
+
+    with pytest.raises(RegistryAdmissionError) as info:
+        budget.reserve(RegistryEstimate(0, 0, 0, 1_001))
+    assert info.value.status_code == 413
+    assert info.value.code == "registry_too_large"
+
+
+def test_combined_capacity_boundary_and_permanent_413():
+    budget = make_budget(
+        retained_bytes=1_000, transient_bytes=2_000, combined_bytes=3_000)
+
+    # Exactly the combined pool: retained and transient each fit on their own.
+    reservation = budget.reserve(RegistryEstimate(0, 0, 1_000, 2_000))
+    assert budget.stats().accounted_bytes == 3_000
+    reservation.abort()
+
+    # One byte over the combined pool can never be admitted, even when each
+    # component is below its own limit.
+    with pytest.raises(RegistryAdmissionError) as info:
+        budget.reserve(RegistryEstimate(0, 0, 1_000, 2_001))
+    assert info.value.status_code == 413
+    assert info.value.code == "registry_too_large"
+    assert info.value.retry_after is None
+
+
+def test_temporary_transient_and_combined_exhaustion_are_429():
+    budget = make_budget(
+        retained_bytes=5_000,
+        transient_bytes=5_000,
+        combined_bytes=6_000,
+        parse_concurrency=2,
+    )
+    first = budget.reserve(RegistryEstimate(0, 0, 1_000, 2_000))
+    assert first.active
+
+    # A second parse would exceed the transient pool (2_000 + 2_000 > 5_000
+    # is false here, so use a larger request for the transient reason).
+    with pytest.raises(RegistryAdmissionError) as info:
+        budget.reserve(RegistryEstimate(0, 0, 1_000, 4_000))
+    assert info.value.status_code == 429
+    assert info.value.code == "capacity_unavailable"
+    assert info.value.retry_after is not None and info.value.retry_after >= 1
+    assert "transient" in str(info.value)
+
+    # Combined exhaustion: retained 1_000 + transient 2_000 (first) plus a
+    # second total of 4_000 exceeds the 6_000 combined pool.
+    with pytest.raises(RegistryAdmissionError) as info:
+        budget.reserve(RegistryEstimate(0, 0, 1_000, 3_000))
+    assert info.value.status_code == 429
+    assert info.value.code == "capacity_unavailable"
+    assert info.value.retry_after is not None and info.value.retry_after >= 1
+    assert "combined" in str(info.value)
+
+    first.abort()
+    assert budget.stats().accounted_bytes == 0
+
+
+def test_parse_busy_takes_precedence_over_capacity_exhaustion():
+    budget = make_budget(
+        retained_bytes=1 * MIB,
+        transient_bytes=4 * MIB,
+        combined_bytes=8 * MIB,
+        parse_concurrency=1,
+    )
+    held = budget.reserve(RegistryEstimate(0, 0, 1 * MIB, 1 * MIB))
+
+    with pytest.raises(RegistryAdmissionError) as info:
+        budget.reserve(RegistryEstimate(0, 0, 1 * MIB, 1 * MIB), wait_seconds=0)
+    assert info.value.status_code == 429
+    assert info.value.code == "parse_busy"
+    assert info.value.retry_after is not None and info.value.retry_after >= 1
+
+    held.abort()
+
+
+def test_bounded_wait_rechecks_capacity_after_the_parse_slot_frees():
+    budget = make_budget(
+        retained_bytes=1 * MIB,
+        transient_bytes=4 * MIB,
+        combined_bytes=8 * MIB,
+        parse_concurrency=1,
+    )
+    held = budget.reserve(RegistryEstimate(0, 0, 1 * MIB, 1 * MIB))
+    released = threading.Event()
+
+    def release() -> None:
+        time.sleep(0.05)
+        held.abort()
+        released.set()
+
+    thread = threading.Thread(target=release)
+    thread.start()
+    try:
+        reservation = budget.reserve(
+            RegistryEstimate(0, 0, 1 * MIB, 1 * MIB), wait_seconds=2.0)
+        assert released.is_set()
+        reservation.abort()
+    finally:
+        thread.join(timeout=2)
 
 
 def test_parse_slot_contention_is_429_with_retry_after():
@@ -237,6 +366,7 @@ def test_injected_memory_headroom_is_a_temporary_429():
         budget.reserve(RegistryEstimate(0, 0, 201, 200))
     assert info.value.status_code == 429
     assert info.value.code == "capacity_unavailable"
+    assert info.value.retry_after is not None and info.value.retry_after >= 1
 
 
 def test_cgroup_v2_headroom_supports_nested_paths_and_parent_limits(tmp_path):
@@ -315,6 +445,87 @@ def test_acquire_can_be_bound_to_the_revision_it_displayed():
         assert lease.registry.resolve("chr1").seq_id == "custom:000001"
 
 
+def test_small_replacement_succeeds_atomically():
+    life = make_lifecycle()
+    first = life.register("session", CONTENT_A)
+    first_bytes = retained_for(CONTENT_A)
+
+    second = life.register("session", CONTENT_B)
+
+    assert second.revision != first.revision
+    assert life.current_revision("session") == second.revision
+    assert life.current_registry("session") is second.registry
+    stats = life.stats()
+    assert stats.retained_bytes == retained_for(CONTENT_B)
+    assert stats.retained_bytes < first_bytes + retained_for(CONTENT_B)
+    assert stats.reserved_retained_bytes == 0
+    assert stats.transient_parse_bytes == 0
+    assert stats.active_parses == 0
+
+
+def test_replacement_that_cannot_coexist_is_refused_without_state_change():
+    # Both registries fit alone, but the old one must stay charged while the
+    # new one is parsed. The replacement is therefore permanently impossible
+    # until the caller explicitly clears the existing registry.
+    budget = make_budget(
+        retained_bytes=3 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    first = life.register("session", CONTENT_A)
+    first_registry = life.current_registry("session")
+
+    with pytest.raises(RegistryReplacementRequiresClear) as info:
+        life.register("session", CONTENT_B)
+
+    assert info.value.status_code == 409
+    assert info.value.code == "replacement_requires_clear"
+    assert info.value.retry_after is None
+    assert "clear" in str(info.value).lower()
+    assert life.current_revision("session") == first.revision
+    assert life.current_registry("session") is first_registry
+    stats = life.stats()
+    assert stats.retained_bytes == retained_for(CONTENT_A)
+    assert stats.reserved_retained_bytes == 0
+    assert stats.transient_parse_bytes == 0
+    assert stats.active_parses == 0
+
+    # Clearing explicitly releases the old charge, after which the upload
+    # succeeds in the same session.
+    assert life.clear("session") is True
+    second = life.register("session", CONTENT_B)
+    assert second.revision != first.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+
+
+def test_leased_registry_is_not_released_by_a_refused_replacement_or_clear():
+    budget = make_budget(
+        retained_bytes=3 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    first = life.register("session", CONTENT_A)
+    lease = life.acquire("session")
+
+    with pytest.raises(RegistryReplacementRequiresClear):
+        life.register("session", CONTENT_B)
+    assert life.current_revision("session") == first.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+    # A lease keeps the old registry accounted after an explicit clear.
+    assert life.clear("session") is True
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+    lease.release()
+    assert life.stats().retained_bytes == 0
+
+    # The explicit clear now permits the upload.
+    written = life.register("session", CONTENT_B)
+    assert life.current_revision("session") == written.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+
+
 # ---------------------------------------------------------------------------
 # Leases
 # ---------------------------------------------------------------------------
@@ -351,6 +562,30 @@ def test_clear_with_an_active_lease_defers_release():
     assert life.stats().retained_bytes == retained_for(CONTENT_A)
     lease.release()
     assert life.stats().retained_bytes == 0
+
+
+def test_double_release_is_detected_instead_of_clamped():
+    budget = make_budget()
+    reservation = budget.reserve(RegistryEstimate(0, 0, 1 * MIB, 0))
+    reservation.commit()
+    budget.release_retained(1 * MIB)
+    assert budget.stats().retained_bytes == 0
+    with pytest.raises(RuntimeError):
+        budget.release_retained(1)
+
+
+def test_lease_and_entry_double_release_are_detected():
+    life = make_lifecycle()
+    life.register("session", CONTENT_A)
+    lease = life.acquire("session")
+    life.clear("session")
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+    lease.release()
+    lease.release()  # the lease itself is idempotent
+    assert life.stats().retained_bytes == 0
+    with pytest.raises(RuntimeError):
+        lease._entry.release_lease()
 
 
 # ---------------------------------------------------------------------------
@@ -391,6 +626,179 @@ def test_lru_session_eviction_releases_the_registry():
     assert life.current_revision(first.token) is None
     assert life.current_revision(second.token) is not None
     assert life.stats().retained_bytes == retained_for(CONTENT_B)
+
+
+def test_expired_session_accounting_is_swept_before_capacity_refusal():
+    # Session A's registry stays charged after A expires. Admitting B must
+    # release that stale charge itself, not wait for another session create.
+    now = [100.0]
+    store = SessionStore(ttl_seconds=10.0, max_sessions=4)
+    budget = make_budget(
+        retained_bytes=3 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = RegistryLifecycle(
+        budget,
+        is_live=lambda token: store.contains(token, now=now[0]),
+        loader=load_custom_registry,
+    )
+    store.set_on_evict(life.release_session)
+    stale = store.create(now=now[0])
+    live = store.create(now=now[0])
+    life.register(stale.token, CONTENT_A)
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+    now[0] = 105.0
+    assert store.get(live.token, now=now[0]) is live
+    now[0] = 111.0
+    assert store.contains(stale.token, now=now[0]) is False
+    # No create/sweep has run yet: the stale registry is still accounted.
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+    written = life.register(live.token, CONTENT_B)
+
+    assert life.current_revision(live.token) == written.revision
+    assert life.current_revision(stale.token) is None
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+    assert len(life) == 1
+
+
+def test_reserve_write_does_not_create_slots_for_invalid_sessions():
+    now = [100.0]
+    store = SessionStore(ttl_seconds=10.0, max_sessions=4)
+    life = RegistryLifecycle(
+        make_budget(),
+        is_live=lambda token: store.contains(token, now=now[0]),
+        loader=load_custom_registry,
+    )
+
+    for _ in range(100):
+        assert life.reserve_write("never-issued") is None
+    assert len(life._slots) == 0
+
+    session = store.create(now=now[0])
+    assert life.reserve_write(session.token) is not None
+    assert len(life._slots) == 1
+
+    # Expiry without any eviction callback: reserve_write must remove the
+    # stale slot instead of keeping or re-creating it.
+    now[0] = 200.0
+    for _ in range(100):
+        assert life.reserve_write(session.token) is None
+    assert len(life._slots) == 0
+
+    # LRU/drop eviction without a callback has the same effect.
+    evicted = store.create(now=now[0])
+    assert life.reserve_write(evicted.token) is not None
+    store.drop(evicted.token)
+    assert life.reserve_write(evicted.token) is None
+    assert len(life._slots) == 0
+
+
+def test_session_store_notifies_on_drop_get_expiry_sweep_and_create():
+    evicted: list[str] = []
+    store = SessionStore(
+        ttl_seconds=10.0, max_sessions=2, on_evict=evicted.append)
+
+    dropped = store.create(now=0.0)
+    store.drop(dropped.token)
+    assert evicted == [dropped.token]
+
+    evicted.clear()
+    expired = store.create(now=100.0)
+    assert store.get(expired.token, now=111.0) is None
+    assert evicted == [expired.token]
+
+    evicted.clear()
+    first = store.create(now=200.0)
+    second = store.create(now=200.0)
+    assert store.sweep(now=211.0) == 2
+    assert set(evicted) == {first.token, second.token}
+
+    evicted.clear()
+    stale_on_create = store.create(now=300.0)
+    store.create(now=311.0)
+    assert evicted == [stale_on_create.token]
+
+    evicted.clear()
+    lru_first = store.create(now=400.0)
+    store.create(now=400.0)
+    store.create(now=400.0)  # over max_sessions: evicts the LRU session
+    assert lru_first.token in evicted
+
+
+def test_contains_ignores_expiry_without_notifying_the_callback():
+    evicted: list[str] = []
+    store = SessionStore(ttl_seconds=10.0, on_evict=evicted.append)
+    session = store.create(now=0.0)
+
+    assert store.contains(session.token, now=11.0) is False
+    assert evicted == []
+    assert len(store) == 1
+
+
+def test_eviction_callback_errors_never_escape_the_store(caplog):
+    store = SessionStore(ttl_seconds=10.0)
+    store.set_on_evict(lambda token: (_ for _ in ()).throw(RuntimeError("boom")))
+    session = store.create()
+
+    store.drop(session.token)  # must not raise
+    assert len(store) == 0
+    assert "session eviction callback failed" in caplog.text
+
+
+def test_eviction_callback_can_reenter_the_store_without_deadlock():
+    events: list[tuple[str, bool]] = []
+    store = SessionStore(ttl_seconds=10.0, max_sessions=4)
+
+    def callback(token: str) -> None:
+        events.append((token, store.contains(token)))
+        store.sweep()
+
+    store.set_on_evict(callback)
+    session = store.create()
+    thread = threading.Thread(target=store.drop, args=(session.token,))
+    thread.start()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert events == [(session.token, False)]
+
+
+def test_identical_digest_fast_path_rechecks_session_liveness():
+    live = [True]
+    life = RegistryLifecycle(
+        make_budget(),
+        is_live=lambda token: live[0],
+        loader=load_custom_registry,
+    )
+    life.register("session", CONTENT_A)
+
+    live[0] = False
+    with pytest.raises(RegistrySessionExpired):
+        life.register("session", CONTENT_A)  # identical-content fast path
+
+    assert life.stats().retained_bytes == 0
+    assert len(life._slots) == 0
+
+
+@pytest.mark.parametrize("operation", ["clear", "acquire"])
+def test_expired_session_is_refused_by_clear_and_acquire(operation):
+    live = [True]
+    life = RegistryLifecycle(
+        make_budget(),
+        is_live=lambda token: live[0],
+        loader=load_custom_registry,
+    )
+    life.register("session", CONTENT_A)
+
+    live[0] = False
+    with pytest.raises(RegistrySessionExpired):
+        getattr(life, operation)("session")
+
+    assert life.stats().retained_bytes == 0
+    assert len(life._slots) == 0
 
 
 def test_stale_write_finishing_after_eviction_does_not_resurrect_it():
@@ -526,6 +934,61 @@ def test_identical_content_commit_supersedes_an_in_flight_earlier_parse():
     assert life.stats().accounted_bytes == retained_for(CONTENT_A)
 
 
+def test_same_digest_in_flight_parses_converge_on_one_revision():
+    budget = make_budget(parse_concurrency=2)
+    calls: list[bytes] = []
+    started = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    calls_lock = threading.Lock()
+
+    def loader(data: bytes):
+        with calls_lock:
+            index = len(calls)
+            calls.append(data)
+        started[index].set()
+        assert release[index].wait(timeout=5)
+        return load_custom_registry(data)
+
+    life = RegistryLifecycle(budget, loader=loader)
+    results: dict[str, RegistryWriteResult] = {}
+    failures: list[BaseException] = []
+
+    def write(name: str, ticket) -> None:
+        try:
+            results[name] = life.register(
+                "session", CONTENT_C, ticket=ticket)
+        except BaseException as exc:  # noqa: BLE001 - propagate to assertion
+            failures.append(exc)
+
+    earlier = life.reserve_write("session")
+    earlier_thread = threading.Thread(
+        target=write, args=("earlier", earlier))
+    earlier_thread.start()
+    assert started[0].wait(timeout=5)
+
+    later = life.reserve_write("session")
+    later_thread = threading.Thread(target=write, args=("later", later))
+    later_thread.start()
+    assert started[1].wait(timeout=5)
+
+    # The earlier-started parse commits first; the later in-flight parse must
+    # then reuse that revision rather than replace it with a second registry.
+    release[0].set()
+    earlier_thread.join(timeout=5)
+    release[1].set()
+    later_thread.join(timeout=5)
+
+    assert failures == []
+    assert len(calls) == 2
+    assert results["earlier"].revision == results["later"].revision
+    assert results["earlier"].reused is False
+    assert results["later"].reused is True
+    stats = life.stats()
+    assert stats.retained_bytes == retained_for(CONTENT_C)
+    assert stats.accounted_bytes == retained_for(CONTENT_C)
+    assert stats.active_parses == 0
+
+
 def test_a_later_clear_blocks_an_in_flight_earlier_write():
     life = make_lifecycle()
     life.register("session", CONTENT_A)
@@ -630,8 +1093,8 @@ def test_concurrent_admissions_cannot_oversubscribe_the_retained_pool():
     one = retained_for(CONTENT_A)
     budget = make_budget(
         retained_bytes=2 * one,
-        transient_bytes=8 * MIB,
-        combined_bytes=16 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
         parse_concurrency=2,
     )
     life = RegistryLifecycle(budget, loader=load_custom_registry)

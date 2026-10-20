@@ -20,12 +20,17 @@ shared process-wide):
 * ``combined_bytes`` -- the sum of retained and transient charges (a registry
   being parsed counts in both, deliberately conservative).
 
-The values are *estimates*, never measurements of RSS. ``custom.py`` records
-the measured cost of a loaded registry as roughly 1.4 KB per sequence; the
-estimator rounds that up to 1.5 KiB and adds a conservative input multiple for
-the transient text/row structures. ``default_memory_headroom`` is a separate,
-injected live check (cgroup v2 or host available memory) used only to avoid
-starting a parse that the process cannot hold.
+The values are *estimates*, never measurements of RSS. They implement the
+approved M2.1c formulas exactly, with conservative integer rounding and a
+whole-MiB ceiling::
+
+    retained = ceil((1 MiB + rows * 1.4 KiB + bytes) / 1 MiB)
+    parse    = ceil((8 MiB + rows * 2.25 KiB + 2 * bytes) / 1 MiB)
+
+``default_memory_headroom`` is a separate, injected live check (cgroup v2 or
+host available memory) used only to avoid starting a parse that the process
+cannot hold. See ``docs/technical/registry-resource-lifecycle.md`` for the
+authoritative contract and its limitations.
 
 Lifecycle model
 ---------------
@@ -79,16 +84,20 @@ DEFAULT_MEMORY_HEADROOM_RESERVE_BYTES = 128 * MIB
 #: Bounded wait for the serialised parse slot before answering 429.
 DEFAULT_PARSE_WAIT_SECONDS = 2.0
 
-#: Conservative row/byte estimator constants. ``custom.py`` documents a
-#: measured cost of about 1.4 KB per loaded sequence (622,000 sequences took
-#: ~0.9 GB); 1.5 KiB is the rounded-up accounting value. The parse estimate
-#: also charges the raw text three times for the decoded text, split rows and
-#: binding structures, so it overstates rather than understates the peak.
-RETAINED_BASE_BYTES = 64 * 1024
-RETAINED_BYTES_PER_ROW = 1536
-PARSE_BASE_BYTES = 64 * 1024
-PARSE_BYTES_PER_ROW = 1536
-PARSE_INPUT_MULTIPLIER = 3
+#: Approved M2.1c estimator constants. The fractional byte-per-row terms are
+#: evaluated as exact integer ratios and only rounded up once, by the final
+#: whole-MiB ceiling. ``1.4 KiB == 7/5 KiB`` and ``2.25 KiB == 9/4 KiB``.
+KIB = 1024
+RETAINED_BASE_BYTES = 1 * MIB
+RETAINED_BYTES_PER_ROW_NUMERATOR = 7
+RETAINED_BYTES_PER_ROW_DENOMINATOR = 5
+PARSE_BASE_BYTES = 8 * MIB
+PARSE_BYTES_PER_ROW_NUMERATOR = 9
+PARSE_BYTES_PER_ROW_DENOMINATOR = 4
+PARSE_INPUT_MULTIPLIER = 2
+
+#: Retry-After (seconds) for a temporary capacity refusal.
+DEFAULT_RETRY_AFTER_SECONDS = 1
 
 CGROUP_V2_ROOT = Path("/sys/fs/cgroup")
 
@@ -118,22 +127,55 @@ class RegistryEstimate:
         return self.retained_bytes + self.parse_bytes
 
 
+def _ceil_div(numerator: int, denominator: int) -> int:
+    return -(-numerator // denominator)
+
+
+def _estimate_with_ceiling(
+    base_bytes: int,
+    *,
+    input_bytes: int,
+    input_multiplier: int,
+    row_count: int,
+    row_bytes_numerator: int,
+    row_bytes_denominator: int,
+) -> int:
+    """Ceil an exact rational byte estimate to a whole number of MiB."""
+    numerator = (
+        (base_bytes + input_multiplier * input_bytes) * row_bytes_denominator
+        + row_count * row_bytes_numerator * KIB
+    )
+    denominator = row_bytes_denominator * MIB
+    return _ceil_div(numerator, denominator) * MIB
+
+
 def estimate_registry(row_count: int, input_bytes: int) -> RegistryEstimate:
     """The conservative retained/transient charge for one mapping.
 
     ``row_count`` is the number of data rows (the header is not a row) and
     ``input_bytes`` is the size of the UTF-8 mapping. Both must be
-    non-negative integers.
+    non-negative integers. The approved M2.1c formulas are evaluated with
+    integer arithmetic and rounded up to whole MiB.
     """
     if not isinstance(row_count, int) or not isinstance(input_bytes, int):
         raise TypeError("row_count and input_bytes must be integers")
     if row_count < 0 or input_bytes < 0:
         raise ValueError("row_count and input_bytes must be non-negative")
-    retained = RETAINED_BASE_BYTES + row_count * RETAINED_BYTES_PER_ROW
-    parse = (
-        PARSE_BASE_BYTES
-        + input_bytes * PARSE_INPUT_MULTIPLIER
-        + row_count * PARSE_BYTES_PER_ROW
+    retained = _estimate_with_ceiling(
+        RETAINED_BASE_BYTES,
+        input_bytes=input_bytes,
+        input_multiplier=1,
+        row_count=row_count,
+        row_bytes_numerator=RETAINED_BYTES_PER_ROW_NUMERATOR,
+        row_bytes_denominator=RETAINED_BYTES_PER_ROW_DENOMINATOR,
+    )
+    parse = _estimate_with_ceiling(
+        PARSE_BASE_BYTES,
+        input_bytes=input_bytes,
+        input_multiplier=PARSE_INPUT_MULTIPLIER,
+        row_count=row_count,
+        row_bytes_numerator=PARSE_BYTES_PER_ROW_NUMERATOR,
+        row_bytes_denominator=PARSE_BYTES_PER_ROW_DENOMINATOR,
     )
     return RegistryEstimate(row_count, input_bytes, retained, parse)
 
@@ -322,8 +364,10 @@ class RegistryAdmissionError(Exception):
     """A deterministic admission refusal carrying its HTTP status.
 
     ``status_code`` is 413 when the estimate can never fit the configured
-    limits, and 429 for temporary capacity or parse-slot contention. A
-    ``retry_after`` value (seconds) is set only for parse-slot contention.
+    limits, 409 when a replacement cannot coexist with the session's current
+    registry, and 429 for temporary capacity or parse-slot contention. A
+    ``retry_after`` value (seconds) is set on every temporary 429, never on a
+    permanent 413 or 409 refusal.
     """
 
     def __init__(
@@ -340,6 +384,27 @@ class RegistryAdmissionError(Exception):
         self.retry_after = retry_after
         self.estimate = estimate
         super().__init__(message)
+
+
+class RegistryReplacementRequiresClear(RegistryAdmissionError):
+    """A replacement cannot coexist with the session's existing registry.
+
+    The old registry must stay charged while the new one is parsed, so the
+    replacement is permanently impossible in the current session state. It is
+    not retryable; the caller must explicitly clear the existing registry
+    first. The old registry, revision, results and accounting are untouched.
+    """
+
+    def __init__(self, estimate: RegistryEstimate, reason: str) -> None:
+        super().__init__(
+            409,
+            "replacement_requires_clear",
+            f"Cannot replace this session's custom registry: {reason}. The "
+            "existing registry must be explicitly cleared before a larger "
+            "mapping can be uploaded for this session.",
+            retry_after=None,
+            estimate=estimate,
+        )
 
 
 class RegistryReservation:
@@ -473,10 +538,21 @@ class RegistryBudget:
             )
         return None
 
-    def _capacity_reason(self, estimate: RegistryEstimate) -> str | None:
-        """A human-readable temporary capacity reason, or ``None`` if it fits."""
+    def _capacity_reason(
+        self,
+        estimate: RegistryEstimate,
+        *,
+        retained_bytes: int | None = None,
+    ) -> str | None:
+        """A human-readable temporary capacity reason, or ``None`` if it fits.
+
+        ``retained_bytes`` overrides the currently committed retained charge;
+        it is used only to ask whether removing one session's existing
+        registry would make a replacement possible.
+        """
+        retained = self._retained if retained_bytes is None else retained_bytes
         if (
-            self._retained
+            retained
             + self._reserved_retained
             + estimate.retained_bytes
             > self._config.retained_bytes
@@ -485,7 +561,7 @@ class RegistryBudget:
         if self._transient + estimate.parse_bytes > self._config.transient_bytes:
             return "transient parse capacity is currently in use"
         if (
-            self._retained
+            retained
             + self._reserved_retained
             + self._transient
             + estimate.total_bytes
@@ -511,15 +587,21 @@ class RegistryBudget:
         estimate: RegistryEstimate,
         *,
         wait_seconds: float = 0.0,
+        replacing_retained_bytes: int = 0,
     ) -> RegistryReservation:
         """Reserve a parse slot plus retained/transient capacity.
 
         Raises :class:`RegistryAdmissionError` with 413 for an estimate that
-        can never fit and 429 for temporary exhaustion or parse-slot
-        contention. At most ``wait_seconds`` is spent waiting for a busy parse
-        slot; the wait happens on the condition, never as a busy loop.
+        can never fit, 409 when the charge for a replacement cannot coexist
+        with the session's existing registry, and 429 for temporary exhaustion
+        or parse-slot contention. A busy parse slot is waited for before
+        capacity is judged, because the in-flight parse's own transient charge
+        may be what is blocking admission. At most ``wait_seconds`` is spent
+        waiting; the wait happens on the condition, never as a busy loop.
         """
         wait_seconds = max(0.0, float(wait_seconds))
+        if replacing_retained_bytes < 0:
+            raise ValueError("replacing_retained_bytes must be non-negative")
         permanent = self._permanent_error(estimate)
         if permanent is not None:
             raise permanent
@@ -527,39 +609,54 @@ class RegistryBudget:
         deadline = self._clock() + wait_seconds
         with self._condition:
             while True:
+                if self._active_parses >= self._config.parse_concurrency:
+                    remaining = deadline - self._clock()
+                    if remaining <= 0:
+                        raise RegistryAdmissionError(
+                            429,
+                            "parse_busy",
+                            "Another custom mapping is being parsed. Retry "
+                            "after the indicated delay.",
+                            retry_after=max(
+                                DEFAULT_RETRY_AFTER_SECONDS,
+                                math.ceil(wait_seconds or 1.0),
+                            ),
+                            estimate=estimate,
+                        )
+                    self._condition.wait(remaining)
+                    continue
+
                 if not self._headroom_allows(estimate):
                     raise RegistryAdmissionError(
                         429,
                         "capacity_unavailable",
                         "The server does not currently have enough live memory "
                         "headroom to parse this mapping. Retry shortly.",
+                        retry_after=DEFAULT_RETRY_AFTER_SECONDS,
                         estimate=estimate,
                     )
                 capacity = self._capacity_reason(estimate)
                 if capacity is not None:
+                    if replacing_retained_bytes:
+                        without_old = max(
+                            0, self._retained - replacing_retained_bytes)
+                        if self._capacity_reason(
+                            estimate, retained_bytes=without_old
+                        ) is None:
+                            raise RegistryReplacementRequiresClear(
+                                estimate, capacity)
                     raise RegistryAdmissionError(
                         429,
                         "capacity_unavailable",
                         f"Cannot admit this mapping: {capacity}. Retry shortly.",
+                        retry_after=DEFAULT_RETRY_AFTER_SECONDS,
                         estimate=estimate,
                     )
-                if self._active_parses < self._config.parse_concurrency:
-                    self._active_parses += 1
-                    self._reserved_retained += estimate.retained_bytes
-                    self._transient += estimate.parse_bytes
-                    return RegistryReservation(self, estimate)
 
-                remaining = deadline - self._clock()
-                if remaining <= 0:
-                    raise RegistryAdmissionError(
-                        429,
-                        "parse_busy",
-                        "Another custom mapping is being parsed. Retry after "
-                        "the indicated delay.",
-                        retry_after=max(1, math.ceil(wait_seconds or 1.0)),
-                        estimate=estimate,
-                    )
-                self._condition.wait(remaining)
+                self._active_parses += 1
+                self._reserved_retained += estimate.retained_bytes
+                self._transient += estimate.parse_bytes
+                return RegistryReservation(self, estimate)
 
     def _finish_reservation(
         self, reservation: RegistryReservation, *, commit: bool
@@ -582,7 +679,11 @@ class RegistryBudget:
         if retained_bytes < 0:
             raise ValueError("retained_bytes must be non-negative")
         with self._condition:
-            self._retained = max(0, self._retained - retained_bytes)
+            if retained_bytes > self._retained:
+                raise RuntimeError(
+                    f"attempted to release {retained_bytes} retained bytes "
+                    f"but only {self._retained} are accounted")
+            self._retained -= retained_bytes
             self._condition.notify_all()
 
 
@@ -703,7 +804,8 @@ class RegistryEntry:
     def release_lease(self) -> None:
         with self._lock:
             if self._leases <= 0:
-                return
+                raise RuntimeError(
+                    "custom-registry lease released without a matching acquire")
             self._leases -= 1
             self._release_if_unused_locked()
 
@@ -815,12 +917,18 @@ class RegistryLifecycle:
         """Reserve an arrival-order stamp for one registry write.
 
         Returns ``None`` for a not-yet-materialised anonymous session, matching
-        the dataset write-order contract: it allocates no registry state.
+        the dataset write-order contract: it allocates no registry state. It
+        also refuses expired, evicted or otherwise unknown tokens without
+        creating a slot, and removes any stale slot left for such a token so a
+        stream of invalid requests cannot grow lifecycle state.
         """
         if not token:
             return None
         moment = self._clock()
         with self._lock:
+            if not self._is_live(token):
+                self._drop_slot_locked(token)
+                return None
             slot = self._slots.get(token)
             if slot is None:
                 slot = _RegistrySlot(token=token, last_used=moment)
@@ -828,6 +936,35 @@ class RegistryLifecycle:
             slot.write_seq += 1
             slot.last_used = moment
             return RegistryWriteTicket(token, slot.write_seq)
+
+    def _reserve_with_expiry_sweep(
+        self,
+        estimate: RegistryEstimate,
+        *,
+        wait_seconds: float,
+        replacing_retained_bytes: int,
+    ) -> RegistryReservation:
+        """Admit once, then sweep expired sessions and retry once on 429.
+
+        The sweep is the same side-effect-free-liveness check used elsewhere:
+        it drops only sessions the injected authority reports as not live. It
+        never evicts a live session to make room for another one.
+        """
+        try:
+            return self._budget.reserve(
+                estimate,
+                wait_seconds=wait_seconds,
+                replacing_retained_bytes=replacing_retained_bytes,
+            )
+        except RegistryAdmissionError as exc:
+            if exc.code != "capacity_unavailable":
+                raise
+            self.sweep()
+            return self._budget.reserve(
+                estimate,
+                wait_seconds=wait_seconds,
+                replacing_retained_bytes=replacing_retained_bytes,
+            )
 
     def register(
         self,
@@ -842,8 +979,11 @@ class RegistryLifecycle:
         Identical content reuses the committed revision without parsing. A
         different digest is parsed under the serialised slot and replaces the
         previous registry, retiring it (memory stays accounted while leases
-        remain). Any failure, supersession or expired session releases the
-        reservation and never advances the high-water mark.
+        remain). A replacement whose charge cannot coexist with the current
+        registry is refused with
+        :class:`RegistryReplacementRequiresClear` and changes nothing. Any
+        failure, supersession or expired session releases the reservation and
+        never advances the high-water mark.
         """
         data = _as_bytes(content)
         if not token:
@@ -881,10 +1021,19 @@ class RegistryLifecycle:
                     reused=True,
                     registry=slot.entry.registry,
                 )
+            previous_retained = (
+                slot.entry.retained_bytes
+                if slot is not None and slot.entry is not None
+                else 0
+            )
 
         estimate = estimate_registry(
             count_custom_mapping_rows(data), len(data))
-        reservation = self._budget.reserve(estimate, wait_seconds=wait_seconds)
+        reservation = self._reserve_with_expiry_sweep(
+            estimate,
+            wait_seconds=wait_seconds,
+            replacing_retained_bytes=previous_retained,
+        )
         try:
             registry = self._loader(data)
 
