@@ -268,6 +268,79 @@ ANNOTATER_TEST_IMAGE=annotater:ci pytest tests/test_container_image.py
 
 A passing `docker build` alone is **not** sufficient verification.
 
+### Real-browser regression tests (Playwright)
+
+`tests/test_browser_multi_tab.py` drives a real browser through Playwright
+against the actual FastAPI app serving the built React frontend. It covers
+the two-tab revision contract that HTTP-only tests cannot see:
+
+1. a stale tab cannot export another tab's result;
+2. a stale tab cannot run on another tab's datasets;
+3. re-uploading restores a consistent tab;
+4. an upload `409` clears the stale file card and disables Run;
+5. a revision-safe clean-up cannot wipe another tab's newer dataset;
+6. sample coordinate provenance does not leak into the next upload's
+   coordinate declaration.
+
+Run it locally (system Google Chrome by default):
+
+```bash
+(cd frontend && npm install && npm run build)
+ANNOTATER_BROWSER_TESTS=1 \
+  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+```
+
+Or use Playwright's managed Chromium (the CI choice) and install it once:
+
+```bash
+ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
+  uv run --with playwright==1.64.0 playwright install chromium
+ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
+  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+```
+
+The test fixture starts and stops its own Uvicorn process on a free local
+port; each scenario gets an isolated browser context (separate cookie jar).
+Set `ANNOTATER_BROWSER_LOG_DIR` to capture server and browser console logs,
+and `ANNOTATER_BROWSER_TRACE_DIR` to write one Playwright trace per context.
+`ANNOTATER_BROWSER_REQUIRED=1` makes missing prerequisites fail instead of
+skip (CI uses it).
+
+The `browser-regression` CI job in `.github/workflows/python-tests.yml` runs
+this suite on every pull request. Like the other PR jobs it uses GitHub's
+default checkout, so it tests the synthetic merge commit that would land
+rather than the loose PR head. The job logs both the PR head SHA and the
+checked-out commit SHA, builds the frontend from that checkout, installs the
+pinned Playwright Chromium, and uploads logs and traces as the
+`browser-regression-diagnostics` artifact when it fails or is cancelled.
+
+The job is fail-closed: `ANNOTATER_BROWSER_REQUIRED=1` makes a disabled suite
+(missing `ANNOTATER_BROWSER_TESTS=1`), zero collected browser tests, a skipped
+browser test, or a missing browser/frontend build/bedtools/server fail the
+job. Local runs without `ANNOTATER_BROWSER_REQUIRED` keep the opt-in skip
+behavior.
+
+### Required check configuration
+
+The GitHub Actions check name for this job is:
+
+```
+real-browser regression (two-tab revisions)
+```
+
+As of 2026-10-19, `pyrevo/annotater` has no classic branch protection on
+`main` and no repository rulesets, so this check is not yet required. Changing
+repository settings is outside this task; after merge, an administrator
+should enable a `main` ruleset (or classic protection) that:
+
+- requires this exact check, alongside the existing pytest, lock, frontend
+  and Docker checks, before merging;
+- requires a pull request and at least one approval;
+- dismisses stale approvals and requires conversation resolution;
+- requires branches to be up to date before merging.
+
+This job does not change the existing pytest, frontend-lint or Docker jobs.
+
 ## Port and health check
 
 - The **React/FastAPI** image listens on **8000**. `start-script.sh` runs
