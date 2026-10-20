@@ -101,6 +101,19 @@ def _browser_command_problems(run: str) -> list[str]:
     return []
 
 
+FORBIDDEN_ENV_OVERRIDES = ("PYTEST_ADDOPTS", "PYTEST_PLUGINS")
+
+
+def _env_override_problems(env: object, scope: str) -> list[str]:
+    if not isinstance(env, dict):
+        return []
+    return [
+        f"{scope} must not set {name}, which can bypass the browser contract"
+        for name in FORBIDDEN_ENV_OVERRIDES
+        if name in env
+    ]
+
+
 def audit_browser_workflow(path: Path) -> list[str]:
     workflow = load_workflow(path)
     problems: list[str] = []
@@ -114,6 +127,7 @@ def audit_browser_workflow(path: Path) -> list[str]:
 
     if "defaults" in workflow:
         problems.append("workflow must not override the default shell or run defaults")
+    problems.extend(_env_override_problems(workflow.get("env"), "workflow env"))
 
     jobs = workflow.get("jobs")
     if not isinstance(jobs, dict):
@@ -132,6 +146,7 @@ def audit_browser_workflow(path: Path) -> list[str]:
         problems.append("browser-regression job must not use continue-on-error")
     if "defaults" in job:
         problems.append("browser-regression job must not override run defaults")
+    problems.extend(_env_override_problems(job.get("env"), "browser-regression job env"))
 
     steps = job.get("steps")
     if not isinstance(steps, list):
@@ -181,6 +196,7 @@ def audit_browser_workflow(path: Path) -> list[str]:
                 problems.append(
                     f"browser test step must set {name}={value!r} on the run step"
                 )
+        problems.extend(_env_override_problems(env, "browser test step env"))
         if "if" in step:
             problems.append("browser test step must not be conditional")
         if "continue-on-error" in step:
@@ -352,6 +368,56 @@ _SHELL_OVERRIDE = (
     _BROWSER_STEP_ANCHOR,
     _BROWSER_STEP_ANCHOR + "        shell: bash\n",
 )
+_PYTEST_ENV_OVERRIDES = (
+    (
+        (
+            "name: python-tests\n\non:\n",
+            "name: python-tests\n\nenv:\n  PYTEST_ADDOPTS: --noconftest\n\non:\n",
+        ),
+        "PYTEST_ADDOPTS",
+    ),
+    (
+        (
+            "name: python-tests\n\non:\n",
+            'name: python-tests\n\nenv:\n  "PYTEST_PLUGINS": malicious_plugin\n\non:\n',
+        ),
+        "PYTEST_PLUGINS",
+    ),
+    (
+        (
+            "  browser-regression:\n",
+            "  browser-regression:\n    env:\n      PYTEST_ADDOPTS: --noconftest\n",
+        ),
+        "PYTEST_ADDOPTS",
+    ),
+    (
+        (
+            "  browser-regression:\n",
+            '  browser-regression:\n    env:\n      "PYTEST_PLUGINS": malicious_plugin\n',
+        ),
+        "PYTEST_PLUGINS",
+    ),
+    (
+        (
+            '          ANNOTATER_BROWSER_TESTS: "1"\n',
+            (
+                '          PYTEST_ADDOPTS: --noconftest\n'
+                '          ANNOTATER_BROWSER_TESTS: "1"\n'
+            ),
+        ),
+        "PYTEST_ADDOPTS",
+    ),
+    (
+        (
+            '          ANNOTATER_BROWSER_TESTS: "1"\n',
+            (
+                '          "PYTEST_PLUGINS": malicious_plugin\n'
+                '          ANNOTATER_BROWSER_TESTS: "1"\n'
+            ),
+        ),
+        "PYTEST_PLUGINS",
+    ),
+)
 _BROWSER_CONTINUE_ON_ERROR = (
     "      - name: Run real-browser regression tests\n",
     (
@@ -391,6 +457,17 @@ def test_the_workflow_contract_rejects_broken_configuration(
     problems = audit_browser_workflow(_mutated_workflow(tmp_path, *replacements))
     assert problems
     assert any(expected in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(("replacement", "variable"), _PYTEST_ENV_OVERRIDES)
+def test_the_workflow_contract_rejects_pytest_env_overrides(
+    tmp_path: Path, replacement: tuple[str, str], variable: str
+):
+    problems = audit_browser_workflow(_mutated_workflow(tmp_path, replacement))
+    assert problems
+    assert any(
+        variable in problem and "must not set" in problem for problem in problems
+    ), problems
 
 
 def test_the_documented_playwright_command_uses_the_dev_environment():
@@ -530,6 +607,18 @@ def test_required_mode_rejects_a_setup_only_run(tmp_path: Path):
         _scratch_repo(tmp_path),
         BROWSER_TEST_MODULE,
         "--setup-only",
+        required=True,
+        opt_in=True,
+    )
+    _assert_failed(proc, "did not run and pass")
+
+
+@pytest.mark.parametrize("option", ("--fixtures", "--fixtures-per-test"))
+def test_required_mode_rejects_fixture_listing(tmp_path: Path, option: str):
+    proc = _run_pytest(
+        _scratch_repo(tmp_path),
+        BROWSER_TEST_MODULE,
+        option,
         required=True,
         opt_in=True,
     )

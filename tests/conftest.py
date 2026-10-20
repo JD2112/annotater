@@ -12,6 +12,8 @@ than quietly turn the job green.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from tests.browser_contract import (
@@ -25,6 +27,21 @@ from tests.browser_test_inventory import BROWSER_TEST_MODULE, EXPECTED_BROWSER_T
 _skipped_or_xfailed: list[str] = []
 _passed: set[str] = set()
 _enforced = False
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_cmdline_main(config: pytest.Config) -> pytest.ExitCode | None:
+    if not required_mode_enabled():
+        return None
+    if not (config.option.showfixtures or config.option.show_fixtures_per_test):
+        return None
+    if not targets_browser_module(config.args):
+        return None
+    sys.stderr.write(
+        "ANNOTATER_BROWSER_REQUIRED=1, but these browser tests did not run "
+        "and pass: fixture listing does not execute tests.\n"
+    )
+    return pytest.ExitCode.TESTS_FAILED
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
