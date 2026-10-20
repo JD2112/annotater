@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Modern React + Tailwind CSS frontend interface with real-time progress indicators, interactive statistics visualizations, gene frequency charting, and one-click data previews.
 - FastAPI backend service (`streamlit_app.api_server`) exposing annotation endpoints, sample dataset inspection, and progress tracking.
 - Automated frontend linting and build validation step (`oxlint` + `vite build`) in GitHub Actions CI workflow (`python-tests.yml`).
+- A stable `ci-gate` GitHub Actions aggregate status check that requires every essential validation job (lock consistency, Ubuntu and macOS pytest, frontend lint/build, real-browser regression, and Docker smoke) to succeed; a failure, cancellation, skip or missing result in any required job fails the gate closed.
 - Multi-stage Docker build producing an optimized production container image with embedded frontend assets and non-root user execution (`appuser:appgroup`).
 - Restored the "Charts and gene list" results panel from the original Streamlit application: a top-10 gene/feature bar chart and gene-list export (`.txt` / comma-separated `.csv`) for external enrichment tools (g:Profiler, Enrichr, DAVID, STRING), served by the new `GET /api/results/gene-list` endpoint and the `gene_list` field of the execute response.
 - `POST /api/dataset/clear` endpoint that discards one role's stored dataset together with any result derived from it, without allocating a session (it is a state removal, not a write).

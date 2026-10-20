@@ -232,3 +232,26 @@ jobs:
         # Single line: in a folded `run` scalar a trailing backslash is not a
         # shell line-continuation and would leave a literal space in the path.
         run: docker run --rm --entrypoint python annotater:ci /app/benchmarks/benchmark_engines.py --quick
+
+  # Stable aggregate status check for branch protection. `if: always()` makes
+  # the gate run even when a dependency failed, was cancelled or was skipped;
+  # the script then fails unless every required job reports "success". Do not
+  # add conditional deployment or publication jobs here: the gate certifies
+  # validation only, and must work on both pull requests and main pushes.
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - lock-consistency
+      - tests
+      - frontend-tests
+      - browser-regression
+      - docker-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify every required job succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/ci_gate.py
