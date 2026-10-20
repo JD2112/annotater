@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -37,6 +38,7 @@ REQUIRED_JOBS = {
 }
 GATE_COMMAND = ("python", "scripts/ci_gate.py")
 GATE_CONDITION = "always()"
+EXPECTED_PYTEST_MATRIX = ("macos-latest", "ubuntu-latest")
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +89,16 @@ def audit_ci_gate(workflow: dict[str, object]) -> list[str]:
         problems.append(
             f"required validation job(s) missing: {', '.join(missing_jobs)}"
         )
+
+    tests_job = jobs.get("tests")
+    if isinstance(tests_job, dict):
+        strategy = tests_job.get("strategy")
+        matrix = strategy.get("matrix") if isinstance(strategy, dict) else None
+        oses = matrix.get("os") if isinstance(matrix, dict) else None
+        if not isinstance(oses, list) or sorted(str(os) for os in oses) != list(
+            EXPECTED_PYTEST_MATRIX
+        ):
+            problems.append("tests job must run exactly ubuntu-latest and macos-latest")
 
     gate = jobs.get(GATE_JOB_ID)
     if not isinstance(gate, dict):
@@ -218,6 +230,12 @@ def test_the_gate_requires_every_essential_validation_job():
     assert set(gate["needs"]) == REQUIRED_JOBS
 
 
+def test_the_pytest_matrix_runs_exactly_ubuntu_and_macos():
+    workflow = load_workflow()
+    matrix = workflow["jobs"]["tests"]["strategy"]["matrix"]
+    assert sorted(str(os) for os in matrix["os"]) == list(EXPECTED_PYTEST_MATRIX)
+
+
 def test_all_required_jobs_succeed_so_the_gate_succeeds():
     proc = _run_gate(_all_successful())
     assert proc.returncode == 0, proc.stdout + proc.stderr
@@ -248,6 +266,14 @@ def test_a_missing_required_outcome_fails_the_gate():
     proc = _run_gate(needs)
     assert proc.returncode != 0, proc.stdout + proc.stderr
     assert "lock-consistency: missing from needs" in proc.stdout
+
+
+def test_a_required_job_without_a_result_field_fails_the_gate():
+    needs = _all_successful()
+    needs["frontend-tests"] = {"outputs": {}}
+    proc = _run_gate(needs)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "frontend-tests: missing result" in proc.stdout
 
 
 def test_an_unparseable_needs_payload_fails_the_gate():
@@ -306,6 +332,23 @@ def test_the_gate_contract_rejects_a_conditional_gate():
     workflow["jobs"][GATE_JOB_ID]["if"] = "success()"
     problems = audit_ci_gate(workflow)
     assert any("if: always()" in problem for problem in problems), problems
+
+
+@pytest.mark.parametrize(
+    "matrix_os",
+    (
+        ["ubuntu-latest"],
+        ["ubuntu-latest", "macos-14"],
+        ["ubuntu-latest", "windows-latest"],
+    ),
+)
+def test_the_gate_contract_rejects_a_weakened_pytest_matrix(matrix_os):
+    workflow = copy.deepcopy(load_workflow())
+    workflow["jobs"]["tests"]["strategy"]["matrix"]["os"] = matrix_os
+    problems = audit_ci_gate(workflow)
+    assert any(
+        "exactly ubuntu-latest and macos-latest" in problem for problem in problems
+    ), problems
 
 
 # ---------------------------------------------------------------------------
