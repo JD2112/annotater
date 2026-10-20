@@ -17,7 +17,8 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 - [Port and health check](#port-and-health-check)
 - [SciLifeLab Serve setup](#scilifelab-serve-setup)
 - [Environment / configuration](#environment-configuration)
-  (including [upload size](#upload-size) and [data handling](#data-handling))
+  (including [upload size](#upload-size), [parsing concurrency](#parsing-concurrency)
+  and [data handling](#data-handling))
 - [Single-worker requirement](#single-worker-requirement)
 - [Expected startup and resources](#expected-startup-and-resources)
 - [Deployment verification](#deployment-verification)
@@ -469,7 +470,8 @@ defaults in [Environment / configuration](#environment-configuration).
 
 All environment variables are optional. The React/FastAPI image's
 entrypoint (`start-script.sh`) reads `PORT` and `FORWARDED_ALLOW_IPS`; the
-API reads `MAX_FILE_SIZE_MB` and `ANNOTATER_CORS_ORIGINS`. The published
+API reads `MAX_FILE_SIZE_MB`, `ANNOTATER_CORS_ORIGINS` and
+`ANNOTATER_MAX_CONCURRENT_PARSES`. The published
 Streamlit generation instead sets four `STREAMLIT_*` variables, reads
 `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` if it is set, and uses `TEMP_DIR`
 through its file helpers.
@@ -481,6 +483,7 @@ through its file helpers.
 | `PORT` | `8000` | Port Uvicorn binds in `start-script.sh`. |
 | `FORWARDED_ALLOW_IPS` | `*` | Trusted proxy address(es) for `--forwarded-allow-ips`, so the TLS-terminating proxy's `X-Forwarded-Proto` is honoured and the session cookie is issued `Secure` over HTTPS. Override if the deployment topology differs. |
 | `MAX_FILE_SIZE_MB` | `500` | Per-file upload limit enforced by the API (`/api/upload`); see [Upload size](#upload-size). |
+| `ANNOTATER_MAX_CONCURRENT_PARSES` | `2` | Maximum number of uploads parsed concurrently. A positive integer is used as given; `0` and negative values are clamped to `1`; a non-integer aborts startup. Raising it increases peak memory — see [Parsing concurrency](#parsing-concurrency). |
 | `ANNOTATER_CORS_ORIGINS` | unset (no cross-origin access) | Comma-separated origin allowlist for credentialed cross-origin API calls, e.g. `https://app.example.org,https://tools.example.org`. The default deployment (React app served from the same host) is same-origin and needs no configuration. A bare `*` entry is rejected at startup: with `allow_credentials=True` it would reflect every request origin. |
 
 The React/FastAPI upload path writes its temporary parsing copy under the
@@ -504,9 +507,35 @@ which the React/FastAPI image does not call.
 
 Other settings-style names that appear in
 `streamlit_app/config/settings.py` or in `docker-compose.yml` (for example
-chunking, worker-count, caching and logging settings) are not read by any
+chunking (`CHUNK_SIZE`), worker-count (`MAX_WORKERS`), caching
+(`ENABLE_CACHING`) and logging (`LOG_LEVEL`) settings) are not read by any
 application code path, so setting them has no effect and they are not
 supported configuration.
+
+### Parsing concurrency
+
+`POST /api/upload` parses on a worker thread so the event loop stays
+responsive, but it borrows from a limiter dedicated to parsing rather than
+AnyIO's shared default thread pool. Starlette runs synchronous endpoints such
+as `GET /health`, `/api/meta`, sample load and clear on that shared default
+pool, so a burst of uploads cannot occupy all its tokens and starve them.
+Uploads waiting for a parse slot wait on the event loop without blocking it.
+The limit applies to uploads only; sample loading parses on the default pool.
+
+`ANNOTATER_MAX_CONCURRENT_PARSES` is read at import by
+`streamlit_app/config/settings.py`. It accepts a base-10 integer: the default
+is `2`, `0` and negative values are clamped to `1`, positive values are used as
+given (there is no upper clamp), and a non-integer value raises `ValueError`
+during settings import, so the process aborts at startup rather than silently
+falling back.
+
+Parsing is memory-heavy: a canonical frame can be several times the size of
+the uploaded file, so concurrent parses multiply peak RSS. At the default of
+`2`, an internal measurement of four concurrent ~111 MB uploads peaked at
+about **2.6 GB RSS**, within the default 2 vCPU / 4 GB Serve allocation
+([Expected startup and resources](#expected-startup-and-resources)). Raise the
+limit only together with more memory; it cannot create CPU throughput beyond
+the available cores.
 
 ### Upload size
 
@@ -600,7 +629,8 @@ process's memory, the app **must run exactly one Uvicorn worker**:
   use with files below the 100 MB platform upload cap; the in-container
   smoke test passes within these limits. Very large inputs (hundreds of
   MB) need headroom for canonical frames held in memory — see
-  [Limitations](limitations.md).
+  [Limitations](limitations.md). Concurrent upload parses multiply that
+  peak; see [Parsing concurrency](#parsing-concurrency).
 - The filesystem is ephemeral except for the project *Mount path* (not
   used). Each upload is written to a temporary file under the system
   temporary directory (`tempfile.mkdtemp`) for parsing and deleted
