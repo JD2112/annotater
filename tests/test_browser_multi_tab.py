@@ -7,15 +7,15 @@ a skip, and ``ANNOTATER_BROWSER_CHANNEL=bundled`` to use Playwright's managed
 Chromium. Locally the default is the system Google Chrome channel:
 
     (cd frontend && npm run build)
-    ANNOTATER_BROWSER_TESTS=1 uv run --with playwright==1.64.0 \\
-        pytest tests/test_browser_multi_tab.py
+    ANNOTATER_BROWSER_TESTS=1 \\
+        uv run --with playwright==1.64.0 --extra dev pytest tests/test_browser_multi_tab.py
 
     # Use Playwright's bundled Chromium instead of system Chrome:
     ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \\
         uv run --with playwright==1.64.0 \\
         playwright install chromium
     ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \\
-        uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+        uv run --with playwright==1.64.0 --extra dev pytest tests/test_browser_multi_tab.py
 
 Set ``ANNOTATER_BROWSER_LOG_DIR`` and/or ``ANNOTATER_BROWSER_TRACE_DIR`` to
 capture server/browser logs and Playwright traces (the CI job uploads both
