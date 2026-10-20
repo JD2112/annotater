@@ -223,7 +223,9 @@ refused (409 `revision_conflict`) rather than allowed to replace it. A mapping
 counts as a write to `query`, so an upload that arrived before a mapping but
 finishes parsing after it committed can no longer overwrite the mapped table.
 A failed or superseded write records nothing and does not advance the mark, so
-it cannot strand another in-flight write.
+it cannot strand another in-flight write. A clear that finds nothing stored for
+the side is a 200 no-op that removes and records nothing, so it cannot advance
+the mark either (issue #64).
 
 Revisions are not credentials: they never grant access beyond the session
 cookie, and another session's revisions name nothing in yours. On a 409 the
