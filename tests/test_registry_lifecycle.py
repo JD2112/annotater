@@ -369,6 +369,53 @@ def test_injected_memory_headroom_is_a_temporary_429():
     assert info.value.retry_after is not None and info.value.retry_after >= 1
 
 
+@pytest.mark.parametrize(
+    ("kind", "expected_code"),
+    [
+        ("parse_busy", "parse_busy"),
+        ("replacement_requires_clear", "replacement_requires_clear"),
+        ("registry_too_large", "registry_too_large"),
+    ],
+)
+def test_no_expiry_sweep_outside_temporary_capacity_refusals(kind, expected_code):
+    # Only a temporary capacity refusal may trigger the expiry sweep and its
+    # single retry. A busy parse slot, a permanent 409 and a permanent 413
+    # must not sweep anything.
+    retained = 1 * MIB if kind == "registry_too_large" else 3 * MIB
+    budget = make_budget(
+        retained_bytes=retained,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    sweeps: list[int] = []
+    original_sweep = life.sweep
+
+    def counting_sweep(**kwargs):
+        sweeps.append(1)
+        return original_sweep(**kwargs)
+
+    life.sweep = counting_sweep
+
+    if kind == "parse_busy":
+        held = budget.reserve(estimate_registry(1, 100))
+        try:
+            with pytest.raises(RegistryAdmissionError) as info:
+                life.register("a", CONTENT_A, wait_seconds=0)
+        finally:
+            held.abort()
+    elif kind == "replacement_requires_clear":
+        life.register("a", CONTENT_A)
+        with pytest.raises(RegistryAdmissionError) as info:
+            life.register("a", CONTENT_B)
+    else:
+        with pytest.raises(RegistryAdmissionError) as info:
+            life.register("a", CONTENT_A)
+
+    assert info.value.code == expected_code
+    assert sweeps == []
+
+
 def test_cgroup_v2_headroom_supports_nested_paths_and_parent_limits(tmp_path):
     root = tmp_path / "cgroup"
     nested = root / "user.slice" / "session.scope"
@@ -524,6 +571,220 @@ def test_leased_registry_is_not_released_by_a_refused_replacement_or_clear():
     written = life.register("session", CONTENT_B)
     assert life.current_revision("session") == written.revision
     assert life.stats().retained_bytes == retained_for(CONTENT_B)
+
+
+# ---------------------------------------------------------------------------
+# Replacement admission classification: permanent 409 versus temporary 429
+# ---------------------------------------------------------------------------
+
+
+def test_expired_session_capacity_is_swept_so_a_replacement_succeeds():
+    # Session B holds the retained pool. When B expires, the sweep must
+    # release its stale charge, otherwise A's replacement is refused even
+    # though it fits once the expired session is gone.
+    now = [100.0]
+    store = SessionStore(ttl_seconds=10.0, max_sessions=4)
+    budget = make_budget(
+        retained_bytes=4 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = RegistryLifecycle(
+        budget,
+        is_live=lambda token: store.contains(token, now=now[0]),
+        loader=load_custom_registry,
+    )
+    store.set_on_evict(life.release_session)
+    a = store.create(now=now[0])
+    b = store.create(now=now[0])
+    life.register(a.token, CONTENT_A)
+    life.register(b.token, CONTENT_A)
+    assert life.stats().retained_bytes == 4 * MIB
+
+    # A stays live, B expires. Nothing has released B's charge yet.
+    now[0] = 105.0
+    assert store.get(a.token, now=now[0]) is not None
+    now[0] = 111.0
+    assert store.contains(b.token, now=now[0]) is False
+    assert store.contains(a.token, now=now[0]) is True
+    assert life.stats().retained_bytes == 4 * MIB
+
+    written = life.register(a.token, CONTENT_B)
+
+    assert written.reused is False
+    assert life.current_revision(a.token) == written.revision
+    assert life.current_revision(b.token) is None
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+    assert len(life) == 1
+
+
+def test_cross_session_capacity_exhaustion_is_429_and_recovers_after_release():
+    # A's old and new registries fit together (2 + 2 MiB <= 4 MiB), so the
+    # replacement is not permanently impossible: session B simply holds the
+    # capacity for now. That is a retryable 429, not a 409.
+    budget = make_budget(
+        retained_bytes=4 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    attempts: list[int] = []
+    original_reserve = budget.reserve
+
+    def counting_reserve(estimate, **kwargs):
+        attempts.append(1)
+        return original_reserve(estimate, **kwargs)
+
+    budget.reserve = counting_reserve
+    sweeps: list[int] = []
+    original_sweep = life.sweep
+
+    def counting_sweep(**kwargs):
+        sweeps.append(1)
+        return original_sweep(**kwargs)
+
+    life.sweep = counting_sweep
+
+    first = life.register("a", CONTENT_A)
+    life.register("b", CONTENT_A)
+    assert life.stats().retained_bytes == 4 * MIB
+
+    with pytest.raises(RegistryAdmissionError) as info:
+        life.register("a", CONTENT_B)
+
+    error = info.value
+    assert error.status_code == 429
+    assert error.code == "capacity_unavailable"
+    assert error.retry_after is not None and error.retry_after >= 1
+    # Exactly one expiry sweep and exactly one retry.
+    assert len(sweeps) == 1
+    assert len(attempts) == 4  # A, B, the refused attempt and its retry
+
+    # B releases its capacity; the unchanged request now succeeds.
+    assert life.clear("b") is True
+    written = life.register("a", CONTENT_B)
+
+    assert written.reused is False
+    assert written.revision != first.revision
+    assert life.current_revision("a") == written.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+
+
+def test_self_capacity_impossible_replacement_is_409_without_retry_after():
+    # The old and the new registry cannot coexist even in an otherwise empty
+    # budget, so no amount of waiting or sweeping can help.
+    budget = make_budget(
+        retained_bytes=3 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    first = life.register("a", CONTENT_A)
+
+    with pytest.raises(RegistryReplacementRequiresClear) as info:
+        life.register("a", CONTENT_B)
+
+    assert info.value.status_code == 409
+    assert info.value.code == "replacement_requires_clear"
+    assert info.value.retry_after is None
+    assert "clear" in str(info.value).lower()
+    assert life.current_revision("a") == first.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+
+def test_combined_pool_self_impossibility_is_409():
+    # The retained pool has room for both registries, but the combined pool
+    # does not: the replacement is still permanently impossible.
+    budget = make_budget(
+        retained_bytes=8 * MIB,
+        transient_bytes=12 * MIB,
+        combined_bytes=12 * MIB,
+    )
+    life = make_lifecycle(budget)
+    first = life.register("a", CONTENT_A)
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+    with pytest.raises(RegistryReplacementRequiresClear) as info:
+        life.register("a", CONTENT_B)
+
+    assert info.value.status_code == 409
+    assert info.value.retry_after is None
+    assert life.current_revision("a") == first.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+
+@pytest.mark.parametrize(
+    ("retained_bytes", "with_other_session", "expected_status", "expected_code"),
+    [
+        (4 * MIB, True, 429, "capacity_unavailable"),
+        (3 * MIB, False, 409, "replacement_requires_clear"),
+    ],
+)
+def test_refused_replacement_preserves_registry_revision_and_accounting(
+    retained_bytes, with_other_session, expected_status, expected_code
+):
+    budget = make_budget(
+        retained_bytes=retained_bytes,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    first = life.register("a", CONTENT_A)
+    lease = life.acquire("a")
+    if with_other_session:
+        life.register("b", CONTENT_A)
+
+    with pytest.raises(RegistryAdmissionError) as info:
+        life.register("a", CONTENT_B)
+
+    assert info.value.status_code == expected_status
+    assert info.value.code == expected_code
+    if expected_status == 429:
+        assert info.value.retry_after is not None
+    else:
+        assert info.value.retry_after is None
+
+    # The registry, its revision and the leased result survive the refusal.
+    assert life.current_revision("a") == first.revision
+    assert life.current_registry("a") is not None
+    assert lease.registry.resolve("chr1").seq_id == "custom:000001"
+    stats = life.stats()
+    assert stats.reserved_retained_bytes == 0
+    assert stats.transient_parse_bytes == 0
+    assert stats.active_parses == 0
+    assert stats.retained_bytes == (
+        4 * MIB if with_other_session else retained_for(CONTENT_A)
+    )
+
+
+def test_retired_registry_with_an_active_lease_stays_charged_until_release():
+    # A retired registry keeps its charge while an execution still leases it,
+    # so the charge keeps blocking other sessions until the lease is gone.
+    budget = make_budget(
+        retained_bytes=5 * MIB,
+        transient_bytes=24 * MIB,
+        combined_bytes=40 * MIB,
+    )
+    life = make_lifecycle(budget)
+    life.register("a", CONTENT_A)
+    lease = life.acquire("a")
+    life.register("a", CONTENT_B)
+
+    assert life.stats().retained_bytes == (
+        retained_for(CONTENT_A) + retained_for(CONTENT_B)
+    )
+
+    with pytest.raises(RegistryAdmissionError) as info:
+        life.register("b", CONTENT_A)
+    assert info.value.status_code == 429
+    assert info.value.code == "capacity_unavailable"
+
+    lease.release()
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
+    life.register("b", CONTENT_A)
+    assert life.stats().retained_bytes == (
+        retained_for(CONTENT_B) + retained_for(CONTENT_A)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -766,6 +1027,38 @@ def test_eviction_callback_can_reenter_the_store_without_deadlock():
     assert events == [(session.token, False)]
 
 
+def test_session_store_sweep_runs_its_callbacks_outside_the_store_lock():
+    # A callback that re-enters the store deadlocks when it runs while the
+    # store lock is held. The bounded join turns that deadlock into a failure
+    # instead of a hung test.
+    events: list[tuple[str, bool]] = []
+    store = SessionStore(ttl_seconds=10.0, max_sessions=4)
+
+    def callback(token: str) -> None:
+        events.append((token, store.contains(token)))
+        store.sweep()
+
+    store.set_on_evict(callback)
+    first = store.create(now=0.0)
+    second = store.create(now=0.0)
+
+    finished = threading.Event()
+
+    def run() -> None:
+        store.sweep(now=11.0)
+        finished.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=2)
+
+    assert finished.is_set()
+    assert not thread.is_alive()
+    assert {token for token, _ in events} == {first.token, second.token}
+    assert all(seen is False for _, seen in events)
+    assert len(store) == 0
+
+
 def test_identical_digest_fast_path_rechecks_session_liveness():
     live = [True]
     life = RegistryLifecycle(
@@ -779,6 +1072,33 @@ def test_identical_digest_fast_path_rechecks_session_liveness():
     with pytest.raises(RegistrySessionExpired):
         life.register("session", CONTENT_A)  # identical-content fast path
 
+    assert life.stats().retained_bytes == 0
+    assert len(life._slots) == 0
+
+
+def test_same_digest_fast_path_with_a_reserved_ticket_rejects_an_expired_session():
+    # The ticket was reserved while the session was live, so the fast path
+    # itself is the only liveness guard for this write.
+    live = [True]
+    life = RegistryLifecycle(
+        make_budget(),
+        is_live=lambda token: live[0],
+        loader=load_custom_registry,
+    )
+    life.register("session", CONTENT_A)
+    slot = life._slots["session"]
+    ticket = life.reserve_write("session")
+    assert ticket is not None
+    committed_stamp = slot.write_done
+
+    live[0] = False
+    with pytest.raises(RegistrySessionExpired):
+        life.register("session", CONTENT_A, ticket=ticket)
+
+    # The refusal commits nothing: no stamp advance and no resurrected
+    # registry. The dead session's own accounting is released.
+    assert slot.write_done == committed_stamp
+    assert life.current_revision("session") is None
     assert life.stats().retained_bytes == 0
     assert len(life._slots) == 0
 

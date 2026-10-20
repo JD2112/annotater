@@ -364,10 +364,11 @@ class RegistryAdmissionError(Exception):
     """A deterministic admission refusal carrying its HTTP status.
 
     ``status_code`` is 413 when the estimate can never fit the configured
-    limits, 409 when a replacement cannot coexist with the session's current
-    registry, and 429 for temporary capacity or parse-slot contention. A
-    ``retry_after`` value (seconds) is set on every temporary 429, never on a
-    permanent 413 or 409 refusal.
+    limits, 409 when a replacement is permanently impossible because the
+    session's old and new registry charges cannot coexist, and 429 for
+    temporary capacity or parse-slot contention. A ``retry_after`` value
+    (seconds) is set on every temporary 429, never on a permanent 413 or 409
+    refusal.
     """
 
     def __init__(
@@ -389,10 +390,16 @@ class RegistryAdmissionError(Exception):
 class RegistryReplacementRequiresClear(RegistryAdmissionError):
     """A replacement cannot coexist with the session's existing registry.
 
-    The old registry must stay charged while the new one is parsed, so the
-    replacement is permanently impossible in the current session state. It is
-    not retryable; the caller must explicitly clear the existing registry
-    first. The old registry, revision, results and accounting are untouched.
+    The old registry must stay charged while the new one is parsed. When the
+    two charges cannot coexist even in an otherwise empty budget -- with no
+    other session and no other reservation -- the replacement is permanently
+    impossible in the current session state. It is not retryable; the caller
+    must explicitly clear the existing registry first. The old registry,
+    revision, results and accounting are untouched.
+
+    A replacement that is only blocked by capacity held elsewhere (another
+    session, another parse, or the accounting of an expired session awaiting
+    cleanup) is *not* this error: it is a retryable 429.
     """
 
     def __init__(self, estimate: RegistryEstimate, reason: str) -> None:
@@ -400,8 +407,8 @@ class RegistryReplacementRequiresClear(RegistryAdmissionError):
             409,
             "replacement_requires_clear",
             f"Cannot replace this session's custom registry: {reason}. The "
-            "existing registry must be explicitly cleared before a larger "
-            "mapping can be uploaded for this session.",
+            "existing registry must be explicitly cleared before this mapping "
+            "can be uploaded for this session.",
             retry_after=None,
             estimate=estimate,
         )
@@ -538,21 +545,47 @@ class RegistryBudget:
             )
         return None
 
-    def _capacity_reason(
-        self,
-        estimate: RegistryEstimate,
-        *,
-        retained_bytes: int | None = None,
+    def _replacement_impossible(
+        self, estimate: RegistryEstimate, replacing_retained_bytes: int
     ) -> str | None:
+        """Why the session's old and new registry charges cannot coexist.
+
+        The answer depends only on the session's own old registry and on the
+        new estimate -- never on other sessions, other reservations or the
+        current accounting. A replacement refused for this reason can never
+        succeed in this session, while a replacement blocked by somebody
+        else's capacity is merely temporary.
+        """
+        if (
+            replacing_retained_bytes + estimate.retained_bytes
+            > self._config.retained_bytes
+        ):
+            return (
+                "the existing registry and the new mapping together need more "
+                f"than the {_mib(self._config.retained_bytes)} retained "
+                "registry budget"
+            )
+        if (
+            replacing_retained_bytes + estimate.total_bytes
+            > self._config.combined_bytes
+        ):
+            return (
+                "the existing registry and the new mapping together need more "
+                f"than the {_mib(self._config.combined_bytes)} combined "
+                "custom-mapping pool"
+            )
+        return None
+
+    def _capacity_reason(self, estimate: RegistryEstimate) -> str | None:
         """A human-readable temporary capacity reason, or ``None`` if it fits.
 
-        ``retained_bytes`` overrides the currently committed retained charge;
-        it is used only to ask whether removing one session's existing
-        registry would make a replacement possible.
+        The reason describes the *current* accounting: other sessions, other
+        reservations and the transient charge of a running parse. It never
+        describes the session's own old registry, which is handled by
+        :meth:`_replacement_impossible`.
         """
-        retained = self._retained if retained_bytes is None else retained_bytes
         if (
-            retained
+            self._retained
             + self._reserved_retained
             + estimate.retained_bytes
             > self._config.retained_bytes
@@ -561,7 +594,7 @@ class RegistryBudget:
         if self._transient + estimate.parse_bytes > self._config.transient_bytes:
             return "transient parse capacity is currently in use"
         if (
-            retained
+            self._retained
             + self._reserved_retained
             + self._transient
             + estimate.total_bytes
@@ -592,12 +625,19 @@ class RegistryBudget:
         """Reserve a parse slot plus retained/transient capacity.
 
         Raises :class:`RegistryAdmissionError` with 413 for an estimate that
-        can never fit, 409 when the charge for a replacement cannot coexist
-        with the session's existing registry, and 429 for temporary exhaustion
-        or parse-slot contention. A busy parse slot is waited for before
-        capacity is judged, because the in-flight parse's own transient charge
-        may be what is blocking admission. At most ``wait_seconds`` is spent
-        waiting; the wait happens on the condition, never as a busy loop.
+        can never fit, 409 when the session's old and new registry charges
+        cannot coexist even in an otherwise empty budget, and 429 for
+        temporary exhaustion or parse-slot contention.
+
+        The 409 is decided from the session's own charges only: it means the
+        replacement is permanently impossible until the caller clears the
+        existing registry. Capacity that is in use by *other* sessions or by
+        another parse is temporary and is refused with a retryable 429.
+
+        A busy parse slot is waited for before capacity is judged, because the
+        in-flight parse's own transient charge may be what is blocking
+        admission. At most ``wait_seconds`` is spent waiting; the wait
+        happens on the condition, never as a busy loop.
         """
         wait_seconds = max(0.0, float(wait_seconds))
         if replacing_retained_bytes < 0:
@@ -605,6 +645,11 @@ class RegistryBudget:
         permanent = self._permanent_error(estimate)
         if permanent is not None:
             raise permanent
+        if replacing_retained_bytes:
+            impossible = self._replacement_impossible(
+                estimate, replacing_retained_bytes)
+            if impossible is not None:
+                raise RegistryReplacementRequiresClear(estimate, impossible)
 
         deadline = self._clock() + wait_seconds
         with self._condition:
@@ -637,14 +682,6 @@ class RegistryBudget:
                     )
                 capacity = self._capacity_reason(estimate)
                 if capacity is not None:
-                    if replacing_retained_bytes:
-                        without_old = max(
-                            0, self._retained - replacing_retained_bytes)
-                        if self._capacity_reason(
-                            estimate, retained_bytes=without_old
-                        ) is None:
-                            raise RegistryReplacementRequiresClear(
-                                estimate, capacity)
                     raise RegistryAdmissionError(
                         429,
                         "capacity_unavailable",
@@ -946,6 +983,10 @@ class RegistryLifecycle:
     ) -> RegistryReservation:
         """Admit once, then sweep expired sessions and retry once on 429.
 
+        Only a *temporary* capacity refusal is swept and retried: a busy
+        parse slot, a permanent 409 and a permanent 413 are re-raised
+        unchanged, because neither waiting nor sweeping can help them.
+
         The sweep is the same side-effect-free-liveness check used elsewhere:
         it drops only sessions the injected authority reports as not live. It
         never evicts a live session to make room for another one.
@@ -979,11 +1020,13 @@ class RegistryLifecycle:
         Identical content reuses the committed revision without parsing. A
         different digest is parsed under the serialised slot and replaces the
         previous registry, retiring it (memory stays accounted while leases
-        remain). A replacement whose charge cannot coexist with the current
-        registry is refused with
-        :class:`RegistryReplacementRequiresClear` and changes nothing. Any
-        failure, supersession or expired session releases the reservation and
-        never advances the high-water mark.
+        remain). A replacement whose own old and new charges cannot coexist
+        even in an otherwise empty budget is refused with
+        :class:`RegistryReplacementRequiresClear` and changes nothing; a
+        replacement that is only blocked by capacity held elsewhere is
+        refused with a retryable 429 instead. Any failure, supersession or
+        expired session releases the reservation and never advances the
+        high-water mark.
         """
         data = _as_bytes(content)
         if not token:

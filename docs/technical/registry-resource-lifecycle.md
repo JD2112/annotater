@@ -61,15 +61,26 @@ Admission is decided before parsing and never mutates existing registries:
   refusal carries a `Retry-After`.
 - **429 `capacity_unavailable`** — retained, transient, combined or live
   headroom is temporarily unavailable. It carries a `Retry-After`.
-- **409 `replacement_requires_clear`** — the new registry cannot coexist with
-  this session's existing registry inside the retained/combined budget even
-  though it would fit alone. See below.
+- **409 `replacement_requires_clear`** — the session's own old and new
+  registry charges cannot coexist even in an otherwise empty budget. See below.
+
+The 409/429 split depends on *whose* capacity is in the way:
+
+| Situation | Outcome |
+|---|---|
+| The session's old and new charges cannot coexist with no other session and no other reservation | 409 `replacement_requires_clear`, permanent, no `Retry-After` |
+| Another live session holds the pool | 429 `capacity_unavailable` with `Retry-After` |
+| Another parse holds the transient pool | 429 `capacity_unavailable` (or `parse_busy`) with `Retry-After` |
+| An expired session still holds its charge (cleanup pending) | 429 `capacity_unavailable` with `Retry-After`, then swept and retried once |
+| A retired registry whose lease is still active holds its charge | 429 `capacity_unavailable` with `Retry-After` until the lease is released |
 
 Before a capacity 429 is returned, the lifecycle performs one safe liveness
 sweep and retries admission once. The sweep drops only sessions that the
 injected liveness authority reports as not live (expired or evicted); it never
 evicts a live session to free budget. This releases accounting even when the
-session store does not call its eviction callback.
+session store does not call its eviction callback. A busy parse slot, a
+permanent 409 and a permanent 413 are re-raised unchanged: neither waiting nor
+sweeping can help them, and neither triggers a sweep.
 
 The parse slot is checked before capacity. A request that arrives while another
 parse is running therefore waits for the slot and re-evaluates capacity after
@@ -84,12 +95,21 @@ remains charged until the new reservation commits and the old registry is
 retired; an active execution lease keeps the old charge until the lease is
 released.
 
-If the new estimate is admissible on its own but cannot coexist with the
-session's old registry (retained or combined budget), the replacement is
-refused with **409 `replacement_requires_clear`**. The refusal is non-retryable
-while the old registry exists. The old registry, revision, results and
-accounting are all preserved. The caller must explicitly clear the registry
-and retry the upload; retrying the replacement unchanged can never succeed.
+If the new estimate is admissible on its own but the session's old and new
+registry charges cannot coexist inside the retained/combined budget *even with
+no other session and no other reservation*, the replacement is refused with
+**409 `replacement_requires_clear`**. The refusal is non-retryable while the
+old registry exists. The old registry, revision, results and accounting are
+all preserved. The caller must explicitly clear the registry and retry the
+upload; retrying the replacement unchanged can never succeed.
+
+Capacity that is in use *elsewhere* — another live session, another parse, the
+accounting of an expired session awaiting cleanup, or a retired registry whose
+lease is still active — does **not** make the replacement permanently
+impossible. Such a replacement is refused with a retryable **429
+`capacity_unavailable`** carrying a `Retry-After`, and it succeeds unchanged
+once that capacity is released. The classification never depends on the
+current accounting, only on the session's own two charges.
 
 Smaller replacements that fit beside the old registry proceed atomically: the
 new reservation commits first, then the old entry is retired and released when
@@ -115,7 +135,7 @@ was evicted commits nothing and cannot recreate a lifecycle slot.
 Slots are released by:
 
 1. the session store's `drop`/expiry/LRU eviction callback, immediately;
-2. a liveness sweep at a capacity refusal, before a retry;
+2. a liveness sweep at a temporary capacity refusal, before a retry;
 3. `reserve_write`, which refuses invalid tokens without creating a slot and
    removes any stale slot for them.
 
@@ -163,4 +183,6 @@ vectors, transient/combined boundaries, 413 versus 429 versus 409, bounded
 parse-slot waiting, replacement preservation, lease-protected retirement,
 expiry/LRU cleanup, unknown-token slot growth, store notification behavior,
 double-release guards, re-entrant eviction callbacks and same-digest in-flight
-reuse.
+reuse. The 409/429 split is pinned by the replacement-classification tests:
+expired-session cleanup, cross-session exhaustion, self-capacity
+impossibility, refusal preservation and lease-retained charges.
