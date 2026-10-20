@@ -36,7 +36,23 @@ class Settings:
     # uses for synchronous endpoints, so a burst of uploads cannot starve
     # GET /health or other lightweight requests.
     MAX_CONCURRENT_PARSES = max(1, int(os.getenv("ANNOTATER_MAX_CONCURRENT_PARSES", "2")))
-    
+
+    # Custom chromosome-registry resource accounting (M2.2a). These bound
+    # *custom* mappings only; bundled registries are immutable and shared.
+    # The estimator converts them to row/byte charges; they are accounting
+    # limits, not claims about RSS.
+    _MIB = 1024 * 1024
+    REGISTRY_RETAINED_BUDGET_BYTES = int(
+        os.getenv("ANNOTATER_REGISTRY_RETAINED_MB", "768")) * _MIB
+    REGISTRY_TRANSIENT_PARSE_BYTES = int(
+        os.getenv("ANNOTATER_REGISTRY_TRANSIENT_MB", "1280")) * _MIB
+    REGISTRY_COMBINED_POOL_BYTES = int(
+        os.getenv("ANNOTATER_REGISTRY_COMBINED_MB", "2048")) * _MIB
+    REGISTRY_PARSE_CONCURRENCY = max(
+        1, int(os.getenv("ANNOTATER_REGISTRY_PARSE_CONCURRENCY", "1")))
+    REGISTRY_MEMORY_HEADROOM_RESERVE_BYTES = int(
+        os.getenv("ANNOTATER_REGISTRY_MEMORY_HEADROOM_MB", "128")) * _MIB
+
     # Temporary files
     TEMP_DIR = Path(os.getenv("TEMP_DIR", "/tmp/annotator"))
     CLEANUP_AFTER_HOURS = int(os.getenv("CLEANUP_AFTER_HOURS", 24))
