@@ -84,6 +84,7 @@ single-worker until a shared store (e.g. an external cache) is introduced.
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import tempfile
@@ -91,7 +92,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
+
+_logger = logging.getLogger(__name__)
 
 #: Cookie name carrying the opaque session token (plain-HTTP transport,
 #: i.e. local development).
@@ -295,42 +298,71 @@ def anonymous_session() -> Session:
 
 
 class SessionStore:
-    """Bounded, thread-safe, in-memory store of per-session request state."""
+    """Bounded, thread-safe, in-memory store of per-session request state.
+
+    An optional ``on_evict(token)`` callback is invoked *after* the store lock
+    is released whenever a session is expired, dropped or evicted for
+    capacity. Registry lifecycle accounting hooks in there, so a session's
+    custom registry is retired exactly when the session disappears. Calling it
+    outside the lock is deliberate: the callback may take its own lock and
+    must not be able to deadlock a liveness check.
+    """
 
     def __init__(
         self,
         ttl_seconds: float = DEFAULT_SESSION_TTL_SECONDS,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
+        on_evict: Optional[Callable[[str], None]] = None,
     ) -> None:
         self._ttl = float(ttl_seconds)
         self._max = int(max_sessions)
         self._sessions: Dict[str, Session] = {}
         self._lock = threading.Lock()
+        self._on_evict = on_evict
 
     @property
     def ttl_seconds(self) -> float:
         return self._ttl
 
+    def set_on_evict(self, callback: Optional[Callable[[str], None]]) -> None:
+        """Install/replace the post-eviction callback."""
+        with self._lock:
+            self._on_evict = callback
+
     def _is_expired(self, session: Session, now: float) -> bool:
         return (now - session.last_seen) > self._ttl
 
-    def _sweep_locked(self, now: float) -> None:
+    def _sweep_locked(self, now: float) -> list[str]:
         stale = [t for t, s in self._sessions.items() if self._is_expired(s, now)]
         for token in stale:
             del self._sessions[token]
+        return stale
+
+    def _notify_evicted(self, tokens: Iterable[str]) -> None:
+        callback = self._on_evict
+        if callback is None:
+            return
+        for token in tokens:
+            try:
+                callback(token)
+            except Exception:  # never let cleanup break session handling
+                _logger.exception("session eviction callback failed for %r", token)
 
     def create(self, now: Optional[float] = None) -> Session:
         """Create and store a new session with an unguessable token."""
         moment = time.monotonic() if now is None else now
         token = secrets.token_urlsafe(32)
         session = Session(token=token, created_at=moment, last_seen=moment)
+        evicted: list[str] = []
         with self._lock:
-            self._sweep_locked(moment)
+            evicted.extend(self._sweep_locked(moment))
             while len(self._sessions) >= self._max:
                 # Evict the least-recently-seen session (bounded memory).
                 oldest = min(self._sessions.values(), key=lambda s: s.last_seen)
                 del self._sessions[oldest.token]
+                evicted.append(oldest.token)
             self._sessions[token] = session
+        self._notify_evicted(evicted)
         return session
 
     def get(self, token: Optional[str], now: Optional[float] = None) -> Optional[Session]:
@@ -348,22 +380,44 @@ class SessionStore:
                 return None
             if self._is_expired(session, moment):
                 del self._sessions[token]
-                return None
-            session.last_seen = moment
-            return session
+                expired = True
+            else:
+                session.last_seen = moment
+                expired = False
+        if expired:
+            self._notify_evicted((token,))
+            return None
+        return session
+
+    def contains(self, token: Optional[str], now: Optional[float] = None) -> bool:
+        """Whether ``token`` names a live session.
+
+        This is a pure liveness probe: it neither refreshes ``last_seen`` nor
+        evicts and never invokes the eviction callback. Commit-time registry
+        checks call it while holding the registry lock, so it must not take
+        the callback path (which takes that same lock).
+        """
+        if not token:
+            return False
+        moment = time.monotonic() if now is None else now
+        with self._lock:
+            session = self._sessions.get(token)
+            return session is not None and not self._is_expired(session, moment)
 
     def drop(self, token: str) -> None:
         """Remove one session's state without touching any other session."""
         with self._lock:
-            self._sessions.pop(token, None)
+            removed = self._sessions.pop(token, None) is not None
+        if removed:
+            self._notify_evicted((token,))
 
     def sweep(self, now: Optional[float] = None) -> int:
         """Evict expired sessions; returns the number removed."""
         moment = time.monotonic() if now is None else now
         with self._lock:
-            before = len(self._sessions)
-            self._sweep_locked(moment)
-            return before - len(self._sessions)
+            removed = self._sweep_locked(moment)
+        self._notify_evicted(removed)
+        return len(removed)
 
     def __len__(self) -> int:
         with self._lock:

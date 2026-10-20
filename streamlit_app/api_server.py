@@ -55,6 +55,7 @@ from streamlit_app.core import (
     parse_and_normalize,
 )
 from streamlit_app.core.chrom_registry import (
+    RegistryLifecycle,
     assembly_options,
     find_assembly,
     load_catalog,
@@ -189,6 +190,14 @@ app.add_middleware(
 #: the single-worker deployment constraint.
 store = SessionStore()
 _SESSION_TTL_SECONDS = int(store.ttl_seconds)
+
+#: Process-wide custom-registry accounting and session-scoped lifecycle. No
+#: public endpoint uses it yet (M2.2a is an internal foundation); wiring the
+#: eviction callback now guarantees that session expiry/LRU eviction releases
+#: registry accounting as soon as a registry is attached.
+registry_lifecycle = RegistryLifecycle(
+    is_live=lambda token: store.contains(token))
+store.set_on_evict(registry_lifecycle.release_session)
 
 # ---------------------------------------------------------------------------
 # Dedicated parsing capacity (issue #55)

@@ -278,6 +278,16 @@ covers uploads only: the bundled sample loader parses on the default pool.
 Configuration values and the memory trade-off are documented in
 [Deployment](deployment.md#parsing-concurrency).
 
+### Custom-registry resource lifecycle (M2.2a)
+
+Session-scoped custom chromosome mappings have their own accounting: the
+approved M2.1c retained/transient estimators, retained/transient/combined
+budgets, serialised parse admission, explicit replacement semantics,
+execution leases and expiry cleanup. The authoritative contract, including
+the formulas, error semantics, M2.1c Linux measurements and limitations, is
+[Custom-registry resource lifecycle](technical/registry-resource-lifecycle.md).
+No public endpoint consumes this lifecycle yet.
+
 ## 4. Coordinate model
 
 The target internal interval convention is 0-based, half-open `[start, end)`. Format-specific conversion belongs before backend execution. This model is compatible with BED/bedtools conventions and makes one-base boundary behavior explicit.

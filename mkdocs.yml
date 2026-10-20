@@ -87,6 +87,7 @@ nav:
   - Technical Reference:
       - "Scientific semantics and engine contract": technical/scientific-contract.md
       - "Chromosome registries: provenance and audit": technical/chromosome-registry.md
+      - "Custom-registry resource lifecycle": technical/registry-resource-lifecycle.md
       - "Backend parity and benchmark": benchmark.md
       - "Architecture": architecture.md
       - "Engine contract (detailed design)": engine-contract.md
