@@ -287,8 +287,12 @@ Run it locally (system Google Chrome by default):
 ```bash
 (cd frontend && npm install && npm run build)
 ANNOTATER_BROWSER_TESTS=1 \
-  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+  uv run --with playwright==1.64.0 --extra dev pytest tests/test_browser_multi_tab.py
 ```
+
+`--extra dev` is required: `uv run` otherwise selects only the project's
+runtime dependencies, so `pytest` may be absent even when the browser suite's
+pytest command is correct.
 
 Or use Playwright's managed Chromium (the CI choice) and install it once:
 
@@ -296,7 +300,7 @@ Or use Playwright's managed Chromium (the CI choice) and install it once:
 ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
   uv run --with playwright==1.64.0 playwright install chromium
 ANNOTATER_BROWSER_TESTS=1 ANNOTATER_BROWSER_CHANNEL=bundled \
-  uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+  uv run --with playwright==1.64.0 --extra dev pytest tests/test_browser_multi_tab.py
 ```
 
 The test fixture starts and stops its own Uvicorn process on a free local
@@ -315,10 +319,24 @@ pinned Playwright Chromium, and uploads logs and traces as the
 `browser-regression-diagnostics` artifact when it fails or is cancelled.
 
 The job is fail-closed: `ANNOTATER_BROWSER_REQUIRED=1` makes a disabled suite
-(missing `ANNOTATER_BROWSER_TESTS=1`), zero collected browser tests, a skipped
-browser test, or a missing browser/frontend build/bedtools/server fail the
-job. Local runs without `ANNOTATER_BROWSER_REQUIRED` keep the opt-in skip
-behavior.
+(missing `ANNOTATER_BROWSER_TESTS=1`), a dropped/renamed/deselected browser
+test, a skipped, xfailed or non-passing browser test, a collection-only or
+setup-only run, or a missing browser/frontend build/bedtools/server fail the
+job. The exact expected node IDs live in `tests/browser_test_inventory.py`;
+add a legitimate regression there in the same change.
+
+The workflow contract accepts one explicit invocation:
+
+```
+uv run --with playwright==1.64.0 pytest tests/test_browser_multi_tab.py
+```
+
+followed only by `-v`, `-q`, or `--durations=N`. Shell wrappers, conditional
+steps, `continue-on-error`, working-directory changes, and other pytest
+options (including `-k`, `--deselect`, `--noconftest`, `-p`, and
+`--collect-only`) are rejected. Diagnostics must be uploaded after the browser
+test step. Workflow inspection uses the PyYAML dev dependency; local runs
+without `ANNOTATER_BROWSER_REQUIRED` keep the opt-in skip behavior.
 
 ### Required check configuration
 

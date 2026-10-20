@@ -153,6 +153,8 @@ python-multipart==0.0.32
     #   streamlit
 pytokens==0.4.1
     # via black
+pyyaml==6.0.3
+    # via annotater
 referencing==0.37.0
     # via
     #   jsonschema
