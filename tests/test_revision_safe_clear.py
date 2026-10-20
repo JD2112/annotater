@@ -16,6 +16,8 @@ those requests rely on.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -23,6 +25,7 @@ from streamlit_app import api_server
 from streamlit_app.api_server import app
 from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
 from tests.revision_client import RevisionClient
+from tests.test_upload_event_loop import _parking_parse
 
 AUTO = "Auto-detect"
 ONE_BASED = "1-based (GFF/GTF/VCF)"
@@ -236,3 +239,162 @@ def test_no_rejected_clear_advances_the_write_order_high_water_mark():
     )
     assert cleared.status_code == 200
     assert "query" not in _session(tab).data
+
+
+# ---------------------------------------------------------------------------
+# No-op clears commit nothing (issue #64)
+# ---------------------------------------------------------------------------
+
+
+def _post_in_thread(target, sink):
+    def run():
+        sink.append(target())
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread
+
+
+def _upload_query(tab):
+    return tab.post(
+        "/api/upload",
+        files={"file": ("regions.tsv", QUERY, "text/plain")},
+        data={"role": "query", "coord_system": AUTO},
+    )
+
+
+def test_named_noop_clear_does_not_supersede_an_inflight_upload(monkeypatch):
+    """A clear that removes nothing is not a committed write (issue #64).
+
+    The annotation side materialises the session without loading ``query``.
+    A query upload then starts and parks mid-parse; the named clear of the
+    still-empty query side must not advance ``write_done`` and strand that
+    earlier-started upload with a spurious 409.
+    """
+    tab = _tab()
+    _upload(tab, "annot", ANNOT)
+    session = _session(tab)
+    high_water = dict(session.write_done)
+
+    with _parking_parse(monkeypatch, park_indices={1}) as (entered, release, watchdog):
+        uploads: list = []
+        uploader = _post_in_thread(lambda: _upload_query(tab), uploads)
+        assert entered.wait(10.0), "the in-flight query upload never reached its parse"
+
+        noop = tab.post(
+            "/api/dataset/clear",
+            json={"role": "query", "revision": "no-such-revision"},
+        )
+        assert noop.status_code == 200, noop.text
+        assert noop.json() == {
+            "status": "success",
+            "cleared": "query",
+            "was_loaded": False,
+        }
+        assert _session(tab).write_done == high_water
+
+        release.set()
+        uploader.join(10.0)
+
+    assert not watchdog.is_set()
+    assert uploads and uploads[0].status_code == 200, uploads and uploads[0].text
+    stored = _session(tab).data["query"]
+    assert stored["rev"] == uploads[0].json()["revision"]
+
+
+def test_duplicate_clear_of_an_already_cleared_revision_is_a_noop():
+    tab = _tab()
+    uploaded = _upload(tab, "query", QUERY)
+    first = tab.post(
+        "/api/dataset/clear",
+        json={"role": "query", "revision": uploaded["revision"]},
+    )
+    assert first.status_code == 200
+    assert first.json()["was_loaded"] is True
+    committed = dict(_session(tab).write_done)
+    assert committed["query"] > 0
+
+    repeated = tab.post(
+        "/api/dataset/clear",
+        json={"role": "query", "revision": uploaded["revision"]},
+    )
+
+    assert repeated.status_code == 200
+    assert repeated.json()["was_loaded"] is False
+    assert _session(tab).write_done == committed
+
+
+def test_matching_clear_of_a_loaded_side_advances_the_mark():
+    tab = _tab()
+    uploaded = _upload(tab, "query", QUERY)
+    high_water_before = _session(tab).write_done.get("query", 0)
+
+    cleared = tab.post(
+        "/api/dataset/clear",
+        json={"role": "query", "revision": uploaded["revision"]},
+    )
+
+    assert cleared.status_code == 200
+    assert cleared.json()["was_loaded"] is True
+    assert "query" not in _session(tab).data
+    assert _session(tab).write_done["query"] > high_water_before
+
+
+def test_stale_clear_against_a_newer_upload_is_refused_and_advances_nothing():
+    tab = _tab()
+    stale = _upload(tab, "query", QUERY)
+    newer = _upload(tab, "query", QUERY, ONE_BASED)
+    committed = dict(_session(tab).write_done)
+
+    response = tab.post(
+        "/api/dataset/clear",
+        json={"role": "query", "revision": stale["revision"]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "revision_conflict"
+    assert _session(tab).data["query"]["rev"] == newer["revision"]
+    assert _session(tab).write_done == committed
+
+
+def test_noop_clear_is_scoped_to_its_own_side(monkeypatch):
+    """A query no-op clear leaves an in-flight annotation upload alone."""
+    tab = _tab()
+    uploaded = _upload(tab, "query", QUERY)
+    cleared = tab.post(
+        "/api/dataset/clear",
+        json={"role": "query", "revision": uploaded["revision"]},
+    )
+    assert cleared.status_code == 200
+    committed = dict(_session(tab).write_done)
+
+    with _parking_parse(monkeypatch, park_indices={1}) as (entered, release, watchdog):
+        annots: list = []
+        uploader = _post_in_thread(
+            lambda: tab.post(
+                "/api/upload",
+                files={"file": ("annot.bed", ANNOT, "text/plain")},
+                data={"role": "annot", "coord_system": AUTO},
+            ),
+            annots,
+        )
+        assert entered.wait(10.0), "the in-flight annotation upload never reached its parse"
+
+        noop = tab.post(
+            "/api/dataset/clear",
+            json={"role": "query", "revision": uploaded["revision"]},
+        )
+        assert noop.status_code == 200
+        assert noop.json()["was_loaded"] is False
+        assert _session(tab).write_done == committed
+
+        release.set()
+        uploader.join(10.0)
+
+    assert not watchdog.is_set()
+    assert annots and annots[0].status_code == 200, annots and annots[0].text
+    session = _session(tab)
+    assert "query" not in session.data
+    assert session.data["annot"]["rev"] == annots[0].json()["revision"]
+    assert session.write_done["annot"] > committed.get("annot", 0)
+    assert session.write_done["query"] == committed.get("query", 0)

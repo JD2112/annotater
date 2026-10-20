@@ -805,8 +805,10 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
 
     A rejected clear (409/428) commits nothing and does not advance the
     write-order high-water mark, so it cannot make an in-flight upload look
-    superseded. A successful clear binds only the named revision, so a newer
-    upload from any tab survives it.
+    superseded. A no-op clear (nothing stored for the side, even with a named
+    revision) removes nothing and likewise records nothing, so it cannot
+    supersede an in-flight upload either (issue #64). A successful clear binds
+    only the named revision, so a newer upload from any tab survives it.
     """
     if req.role not in WRITE_ROLES:
         raise HTTPException(status_code=400, detail="Role must be 'query' or 'annot'")
@@ -834,10 +836,13 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
                 [req.role],
             )
         was_loaded = entry is not None
-        session.data.pop(req.role, None)
-        # The removal is itself a committed write for ordering purposes, so an
-        # older in-flight upload cannot resurrect a just-cleared side.
-        record_write_committed(session, req.role, write_stamp)
+        if was_loaded:
+            session.data.pop(req.role, None)
+            # The removal is itself a committed write for ordering purposes, so
+            # an older in-flight upload cannot resurrect a just-cleared side.
+            # A no-op clear removed nothing and must not advance the mark, or
+            # it would strand an in-flight upload that arrived earlier (#64).
+            record_write_committed(session, req.role, write_stamp)
         # A result derived from the discarded dataset is stale the moment it
         # is discarded (finding F5). A result derived from any other revision
         # (or side) is left alone.
