@@ -12,11 +12,18 @@ of these, plan around them.
 - **No intentional persistence** — parsed data and results exist only in
   application memory for the active session; download what you need
   ([Data handling](#data-handling)).
-- **File size limit: 200 MB per file by default** (Streamlit's
-  `server.maxUploadSize`, which AnnotateR does not override). The
-  SciLifeLab Serve platform documents a lower 100 MB limit for Streamlit
-  apps ([Uploading files](using/uploading-files.md#file-limits),
-  [Deployment](deployment.md#environment-configuration)).
+- **File size limit: 500 MB per file by default** in the current
+  React/FastAPI application. The limit is the API's own `MAX_FILE_SIZE_MB`
+  setting, which the server publishes in `GET /api/meta` and the uploader
+  enforces (a larger file is rejected, never truncated); an operator can
+  change it with `MAX_FILE_SIZE_MB`
+  ([Uploading files](using/uploading-files.md#file-limits),
+  [Deployment](deployment.md#environment-configuration)). The older
+  Streamlit generation has its own, separate limit of 200 MB (Streamlit's
+  `server.maxUploadSize`), which does not apply to the current application.
+  SciLifeLab Serve documents a lower platform limit for Streamlit apps; the
+  platform limit for the current application depends on its Serve app type
+  and must be confirmed at deployment time.
 - **In-memory, single-session processing** — there is no job queue;
   very large runs are bounded by the deployment's resources and any
   deployment timeout. In the [AnnotateR benchmark](benchmark.md),

@@ -37,6 +37,15 @@ const META = {
   ],
 };
 
+// The bundled sample catalog served by GET /api/sample-datasets. The frontend
+// reads the sample ids, names and declared operations from this endpoint, so
+// the fixture mirrors the server's catalog shape exactly.
+const SAMPLE_CATALOG = [
+  { id: 'gene_overlap', name: 'Gene Overlap Analysis', mode: 'overlap' },
+  { id: 'closest_variants', name: 'Closest Variants Proximity', mode: 'closest' },
+  { id: 'stranded_features', name: 'Strand-Specific Features', mode: 'overlap' },
+];
+
 const dataset = (filename, format, totalRows, revision) => ({
   filename,
   format,
@@ -120,6 +129,7 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
       vi.fn((url, options) => {
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
         if (u === '/api/upload') {
           return Promise.resolve(jsonResponse(dataset('q.tsv', 'bed', 2, 'query-rev-1')));
         }
@@ -167,6 +177,7 @@ describe('N2: the coordinate-system declaration is baked in at upload time', () 
       vi.fn((url, options) => {
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
         if (u === '/api/upload') {
           // Alternate responses by the role field in the form body.
           const role = String(options?.body?.get?.('role') ?? '');
@@ -218,6 +229,7 @@ describe('N3: in-flight execute responses and execution locking', () => {
       vi.fn((url) => {
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
         if (u === '/api/load-sample') return Promise.resolve(jsonResponse(SAMPLE));
         if (u === '/api/execute') {
           return new Promise((resolve) => executeResolvers.push(resolve));
@@ -282,6 +294,7 @@ const pendingBackend = () => {
   const fetchStub = vi.fn((url, options) => {
     const u = String(url);
     if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
     if (u === '/api/upload') {
       return new Promise((resolve, reject) => {
         uploads.push({
@@ -563,6 +576,7 @@ const sampleBackend = (payload) => {
     vi.fn((url, options) => {
       const u = String(url);
       if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+      if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
       if (u === '/api/load-sample') return Promise.resolve(jsonResponse(payload));
       if (u === '/api/dataset/clear') {
         clears.push(JSON.parse(options.body));
@@ -583,6 +597,7 @@ const sampleUploadBackend = (payload = SAMPLE) => {
     vi.fn((url, options) => {
       const u = String(url);
       if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+      if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
       if (u === '/api/load-sample') return Promise.resolve(jsonResponse(payload));
       if (u === '/api/upload') {
         const role = options.body.get('role');
@@ -736,6 +751,7 @@ describe('#54 / F1: sample metadata is displayed but never becomes user intent',
       vi.fn((url, options) => {
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
         if (u === '/api/upload') {
           return Promise.resolve(jsonResponse(dataset('newer.tsv', 'bed', 2, 'newer-rev')));
         }
@@ -774,6 +790,7 @@ describe('#54 / F1: sample metadata is displayed but never becomes user intent',
       vi.fn((url, options) => {
         const u = String(url);
         if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+        if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
         if (u === '/api/upload') {
           const role = options.body.get('role');
           return Promise.resolve(
@@ -859,6 +876,7 @@ const revisionBackend = () => {
       return Promise.resolve(scripted);
     }
     if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
     if (u === '/api/upload') {
       const role = options.body.get('role');
       const name = options.body.get('file').name;
@@ -1032,6 +1050,7 @@ const conflictBackend = () => {
   const fetchStub = vi.fn((url, options) => {
     const u = String(url);
     if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
     if (u === '/api/upload') {
       return new Promise((resolve, reject) => {
         uploads.push({

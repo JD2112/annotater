@@ -1,10 +1,15 @@
 # Downloading and exporting results
 
-The **"Download results"** section exports **exactly the rows
-currently shown** above it: if you use the Show filter to narrow the
-table, the download is narrowed to the same rows ("Exports the rows
-currently shown above (use the display filter to narrow the export)").
-The canonical result itself is never mutated by filtering.
+The **"Download results"** section exports the **complete result**, narrowed
+by the same filter that narrows the table above it: if you use the display
+filter to narrow the table, the download is narrowed to the same rows, over
+the whole result and not only over the rows the table happens to display
+("Exports the rows currently shown above (use the display filter to narrow
+the export)"). The canonical result itself is never mutated by filtering.
+
+The table is a **preview** of the first rows of the result, so an export
+can contain more rows than the table shows. The download is always the
+complete, filtered result.
 
 ## The four export buttons
 
@@ -113,8 +118,10 @@ formats.
 
 - Use **CSV** for spreadsheet work and **TSV** for tabular text
   pipelines; use **TSV** if any of your metadata columns contain commas.
-- To export *all* rows (not just the filtered view), set the Show
-  filter to **All** first.
+- To export *all* rows (not just the filtered view), set the display
+  filter to **All** first. The export always contains every row of the
+  result, even when the table above it shows only a preview of the first
+  rows.
 - Download both engines' outputs for the same configuration and diff
   them if you want to sanity-check a run — they are contractually
   identical ([Choosing an annotation engine](../using/engines.md)).

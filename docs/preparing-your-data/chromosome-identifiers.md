@@ -40,9 +40,10 @@ Bedtools and Polars-Bio receive exactly the same normalized tables.
 
 ## Step 1 — choose the genome assembly
 
-In the sidebar, **Genome assembly** starts on *Select genome assembly*
-and nothing is preselected. Choose the assembly your input files were
-made with. It is not inferred from your files and is never defaulted.
+In the sidebar, **Genome assembly** starts on *No assembly (keep chromosome
+names as provided)* and nothing is preselected. Choose the assembly your
+input files were made with. It is not inferred from your files and is never
+defaulted.
 
 - The selector is a searchable list. Click it and type: the filter
   matches the text of the displayed option, which contains the organism
@@ -332,7 +333,8 @@ chosen naming are reported, not dropped.
   0.6 GB in memory. That is a worst case, not typical use; realistic
   mappings with hundreds to thousands of rows are tiny.
 - Uploads are also subject to the deployment's own per-file upload limit
-  (Streamlit's default is 200 MB).
+  (`MAX_FILE_SIZE_MB`, 500 MB by default in the current React/FastAPI
+  application; the older Streamlit generation allows 200 MB).
 
 If you selected **Custom chromosome mapping…** and leave the naming on
 **Keep original names**, no file is needed and an uploaded file is not

@@ -18,18 +18,23 @@ You need both files before a run is possible.
 
 | Constraint | Value |
 |---|---|
-| Maximum file size | **200 MB per file** by default (Streamlit's `server.maxUploadSize`; the AnnotateR image does not override it) |
+| Maximum file size | **500 MB per file** by default in the current React/FastAPI application (the API's own `MAX_FILE_SIZE_MB` setting) |
 | Maximum number of files | **2** (one per role) |
 | Acceptance | determined by **file extension** (the formats are documented in [Supported file formats](../preparing-your-data/supported-formats.md)) |
 
 A file that exceeds the size limit or has an unrecognized extension is
 rejected by the uploader with an error message.
 
-The limit is a Streamlit server setting, not an AnnotateR setting; an
-operator can change it with `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (in MB)
-([Deployment](../deployment.md#environment-configuration)). On
-SciLifeLab Serve the platform documents a lower limit of **100 MB** for
-Streamlit apps, which then applies instead.
+The limit is an AnnotateR setting in the current application, not a Streamlit
+server setting: an operator can change it with `MAX_FILE_SIZE_MB` (in MB)
+([Deployment](../deployment.md#environment-configuration)). The server
+publishes the limit it enforces in `GET /api/meta`, and the uploader hint in
+the interface shows that same number, so the two can never disagree. The
+older Streamlit generation has its own, separate limit of 200 MB
+(`STREAMLIT_SERVER_MAX_UPLOAD_SIZE`), which does not apply to the current
+application. On SciLifeLab Serve the platform documents a lower limit of
+**100 MB** for Streamlit apps, which then applies instead; the platform
+limit for the current application depends on its Serve app type.
 
 Uploaded files are processed by the running AnnotateR server; a
 temporary copy used for parsing is deleted immediately afterwards
@@ -91,7 +96,7 @@ and [Coordinate systems](../preparing-your-data/coordinate-systems.md).
 
 | Symptom | Usually means |
 |---|---|
-| Uploader rejects the file before parsing | wrong extension, or file > 200 MB |
+| Uploader rejects the file before parsing | wrong extension, or file larger than the upload limit (500 MB by default in the current application) |
 | Zero-row preview, with no "empty file" message | header-only, comment-only or empty file; the parsers return a table with no rows and AnnotateR shows no dedicated error for it |
 | Error mentioning a `track` line or "expected at least 3 tab-separated fields" at line 1 | UCSC `track`/`browser` lines are not supported; remove them |
 | Parsing error with a line number | malformed row — see the format-specific "Common errors" in [Supported file formats](../preparing-your-data/supported-formats.md) |

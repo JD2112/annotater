@@ -38,7 +38,7 @@ Sanity checks:
   annotations) — see
   [FAQ → Why is my result table bigger than my input?](../faq.md).
 
-### Show filter
+### Display filter
 
 **All / Matched only / Unmatched only**, with a caption "Showing X of Y
 rows". The filter **narrows what is displayed and downloaded** — it
@@ -47,6 +47,12 @@ full table, and the canonical data is never mutated
 ([Downloading and exporting results](export.md)).
 
 ### The result table
+
+The table is a **preview**: it shows only the first **100 rows** of the
+result, and the panel says so. The downloads contain the **complete**
+result, narrowed by the same display filter
+([Downloading and exporting results](export.md)). Use the downloads for
+the full data set.
 
 The first columns of the canonical schema, in order: `coord_chr`,
 `coord_start`, `coord_end`, (strand and query metadata when present),

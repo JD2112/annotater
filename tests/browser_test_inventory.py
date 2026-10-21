@@ -21,6 +21,8 @@ EXPECTED_BROWSER_TESTS: tuple[str, ...] = (
     f"{BROWSER_TEST_MODULE}::test_separate_browser_sessions_stay_independent",
     f"{BROWSER_TEST_MODULE}::test_sample_load_shows_provenance_without_hijacking_the_declaration",
     f"{BROWSER_TEST_MODULE}::test_custom_registry_is_not_adopted_across_tabs_and_clears_its_results",
+    f"{BROWSER_TEST_MODULE}::test_a_replaced_dataset_never_leaves_a_stale_result",
+    f"{BROWSER_TEST_MODULE}::test_a_failed_upload_can_be_retried_with_the_same_file",
 )
 
 BROWSER_REQUIRED_ENV = "ANNOTATER_BROWSER_REQUIRED"

@@ -50,6 +50,15 @@ const META = {
   ],
 };
 
+// The bundled sample catalog served by GET /api/sample-datasets. The frontend
+// reads the sample ids, names and declared operations from this endpoint, so
+// the fixture mirrors the server's catalog shape exactly.
+const SAMPLE_CATALOG = [
+  { id: 'gene_overlap', name: 'Gene Overlap Analysis', mode: 'overlap' },
+  { id: 'closest_variants', name: 'Closest Variants Proximity', mode: 'closest' },
+  { id: 'stranded_features', name: 'Strand-Specific Features', mode: 'overlap' },
+];
+
 const dataset = (filename, format, totalRows, revision) => ({
   filename,
   format,
@@ -216,6 +225,7 @@ const registryBackend = () => {
   const fetchStub = vi.fn((url, options = {}) => {
     const u = String(url);
     if (u === '/api/meta') return Promise.resolve(jsonResponse(META));
+    if (u === '/api/sample-datasets') return Promise.resolve(jsonResponse(SAMPLE_CATALOG));
     if (u === '/api/registry' && options.method === 'POST') {
       const name = options.body.get('file').name;
       const content = options.body.get('file');
