@@ -671,6 +671,88 @@ class TestResultInvalidation:
         assert kept.status_code == 200, kept.text
         assert registry_metadata(client)["revision"] == revision_b
 
+    def test_a_result_read_or_export_in_the_cleanup_gap_refuses_stale_provenance(
+        self, monkeypatch
+    ):
+        # M22d: B's commit and its result cleanup are not one atomic step.
+        # While B's cleanup is paused, result A is still physically stored,
+        # but its provenance (registry A) is no longer the session's current
+        # registry (B). Reads and exports must refuse it instead of serving
+        # stale data under the wrong mapping.
+        lifecycle = install_lifecycle(monkeypatch)
+        client = TestClient(app)
+        query_rev, annot_rev = load_datasets(client)
+        revision_a = upload_mapping(
+            client, MAPPING_ONE).json()["registry"]["revision"]
+        run_a = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            registry_rev=revision_a)
+        assert run_a.status_code == 200, run_a.text
+        result_a = run_a.json()["result_revision"]
+
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+        real_invalidate = api_registry.invalidate_stale_results
+
+        def paused_cleanup(session, **kwargs):
+            cleanup_started.set()
+            assert release_cleanup.wait(10)
+            return real_invalidate(session, **kwargs)
+
+        monkeypatch.setattr(
+            api_registry, "invalidate_stale_results", paused_cleanup)
+
+        outcome = {}
+
+        def upload_b():
+            outcome["b"] = upload_mapping(second_tab(client), MAPPING_TWO)
+
+        worker = threading.Thread(target=upload_b)
+        worker.start()
+        assert cleanup_started.wait(10)
+
+        try:
+            # B is committed (the pause is after commit) and A's result is
+            # still physically present: the refusal must come from the
+            # provenance guard, not from the cleanup having run.
+            session = api_server.store.get(
+                client.cookies.get(SESSION_COOKIE_NAME))
+            with session.lock:
+                assert session.data["result"]["rev"] == result_a
+            assert registry_metadata(client)["revision"] != revision_a
+
+            read = client.get(
+                "/api/results/data", params={"result_rev": result_a})
+            assert read.status_code == 409, read.text
+            assert read.json()["detail"]["code"] == "revision_conflict"
+            assert read.json()["detail"]["stale"] == ["result"]
+            assert "chr1" not in read.text
+
+            exported = client.get(
+                "/api/export/csv", params={"result_rev": result_a})
+            assert exported.status_code == 409, exported.text
+            assert exported.json()["detail"]["code"] == "revision_conflict"
+            assert exported.json()["detail"]["stale"] == ["result"]
+            assert exported.headers["content-type"].startswith(
+                "application/json")
+            assert "chr1" not in exported.text
+        finally:
+            release_cleanup.set()
+            worker.join(10)
+
+        assert outcome["b"].status_code == 200, outcome["b"].text
+
+        with session.lock:
+            assert "result" not in session.data
+        revision_b = outcome["b"].json()["registry"]["revision"]
+        assert registry_metadata(client)["revision"] == revision_b
+        stats = lifecycle.stats()
+        assert stats.retained_bytes == 2 * MIB
+        assert stats.accounted_bytes == 2 * MIB
+        assert stats.transient_parse_bytes == 0
+        assert stats.reserved_retained_bytes == 0
+        assert stats.active_parses == 0
+
 
 # ---------------------------------------------------------------------------
 # Admission (413 / 429 / 409)
