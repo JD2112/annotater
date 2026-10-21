@@ -286,7 +286,19 @@ budgets, serialised parse admission, explicit replacement semantics,
 execution leases and expiry cleanup. The authoritative contract, including
 the formulas, error semantics, M2.1c Linux measurements and limitations, is
 [Custom-registry resource lifecycle](technical/registry-resource-lifecycle.md).
-No public endpoint consumes this lifecycle yet.
+
+### Custom chromosome registries over HTTP (M2.2b)
+
+The FastAPI backend exposes the lifecycle as three session-scoped
+endpoints — `POST /api/registry` (upload and validate), `GET
+/api/registry` (metadata; never the content) and `DELETE /api/registry`
+(revision-scoped clear) — and binds a run to a mapping with the optional
+`registry_rev` of `POST /api/execute`. A run uses exactly one chromosome
+source: the session's custom mapping, a bundled assembly, or none at all
+when the names are kept as provided. The endpoint contract, the error
+semantics and the result provenance are documented in
+[Custom chromosome registries: the HTTP contract](technical/registry-api.md).
+The React frontend does not use these endpoints yet.
 
 ## 4. Coordinate model
 

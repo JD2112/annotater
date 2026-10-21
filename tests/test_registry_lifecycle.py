@@ -1448,3 +1448,97 @@ def test_concurrent_admissions_cannot_oversubscribe_the_retained_pool():
     assert stats.retained_bytes <= stats.retained_limit
     assert stats.accounted_bytes <= stats.combined_limit
     assert stats.active_parses == 0
+
+
+# ---------------------------------------------------------------------------
+# Commit-time materialisation, liveness and supersession guards
+# ---------------------------------------------------------------------------
+
+
+def test_commit_time_materialisation_is_not_called_for_a_refused_write():
+    # F1: an anonymous write materialises its session only at the successful
+    # commit. A refused parse must never reach the materialisation callback,
+    # so it cannot allocate a session slot or evict a live session.
+    materialised: list[str] = []
+
+    def materialize() -> str:
+        materialised.append("called")
+        return "new-session"
+
+    life = make_lifecycle()
+    life._loader = lambda data: (_ for _ in ()).throw(ValueError("bad"))
+
+    with pytest.raises(ValueError):
+        life.register("", CONTENT_A, materialize=materialize)
+
+    assert materialised == []
+    assert life.stats().accounted_bytes == 0
+    assert life.current_revision("new-session") is None
+
+
+def test_commit_time_materialisation_creates_one_live_session_on_success():
+    store = SessionStore(ttl_seconds=1000.0, max_sessions=4)
+    life = RegistryLifecycle(
+        make_budget(), is_live=store.contains, loader=load_custom_registry)
+    store.set_on_evict(life.release_session)
+    materialised: list[str] = []
+
+    def materialize() -> str:
+        session = store.create()
+        materialised.append(session.token)
+        return session.token
+
+    written = life.register("", CONTENT_A, materialize=materialize)
+
+    assert len(materialised) == 1
+    assert store.contains(materialised[0]) is True
+    assert life.current_revision(materialised[0]) == written.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_A)
+
+
+def test_materialize_is_only_valid_for_a_session_that_does_not_exist():
+    life = make_lifecycle()
+    with pytest.raises(ValueError):
+        life.register(
+            "session", CONTENT_A, materialize=lambda: "another-session")
+
+
+def test_current_metadata_requires_a_live_session_even_without_cleanup():
+    # M19: the liveness check is defence in depth. The eviction callback
+    # normally removes the slot, but a store that does not call it (or a
+    # callback that failed) must not expose metadata for a dead session.
+    store = SessionStore(ttl_seconds=1000.0, max_sessions=4)
+    life = RegistryLifecycle(
+        make_budget(), is_live=store.contains, loader=load_custom_registry)
+    session = store.create()
+    life.register(session.token, CONTENT_A)
+    assert life.current_metadata(session.token) is not None
+
+    store.drop(session.token)  # no on_evict wiring: the slot survives
+    assert len(life) == 1
+    assert life.current_metadata(session.token) is None
+    assert life.current_revision(session.token) is None
+    assert life.current_registry(session.token) is None
+
+    life.release_session(session.token)
+    assert life.stats().accounted_bytes == 0
+
+
+def test_an_earlier_clear_for_revision_cannot_remove_a_later_registry():
+    # M21: clear_for_revision must honour the arrival-order high-water mark
+    # before touching the registry, exactly like clear and register. The HTTP
+    # layer reserves a fresh ticket at call time, so this guard is a direct
+    # lifecycle-caller contract rather than a reachable HTTP interleaving.
+    life = make_lifecycle()
+    life.register("session", CONTENT_A)
+    earlier = life.reserve_write("session")
+    later = life.reserve_write("session")
+    committed = life.register("session", CONTENT_B, ticket=later)
+
+    with pytest.raises(RegistryWriteConflict):
+        life.clear_for_revision(
+            "session", ticket=earlier,
+            expected_revision=committed.revision)
+
+    assert life.current_revision("session") == committed.revision
+    assert life.stats().retained_bytes == retained_for(CONTENT_B)
