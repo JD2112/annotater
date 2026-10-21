@@ -1,6 +1,6 @@
 import { beforeAll, afterEach, describe, it, expect, vi } from 'vitest';
 import React from 'react';
-import { render, screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, cleanup, act, within } from '@testing-library/react';
 import App from './App.jsx';
 
 // recharts' ResponsiveContainer relies on ResizeObserver, which jsdom does not
@@ -163,6 +163,14 @@ const renderApp = async () => {
 };
 
 const runButton = () => screen.getByRole('button', { name: 'Run annotation' });
+const removeButton = () => screen.getByRole('button', { name: 'Remove mapping' });
+const assemblySelect = () => selectWithOption('Custom chromosome mapping');
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((res) => { resolve = res; });
+  return { promise, resolve };
+};
 
 // A deterministic registry backend. Queue an entry to script one response;
 // otherwise the endpoint answers immediately with an incrementing revision.
@@ -737,5 +745,187 @@ describe('M2.3 custom chromosome mapping: independence from datasets', () => {
     await waitFor(() => expect(backend.calls.registryClears).toHaveLength(1));
     expect(screen.getByText('a.bed')).toBeTruthy();
     expect(backend.calls.datasetClears.map((c) => c.role)).toEqual(['query']);
+  });
+});
+
+describe('M2.3 custom chromosome mapping: operation guards and failure preservation', () => {
+  it('disables Run while the registry is uploading or being removed', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+    uploadRegistry();
+    await waitFor(() => expect(screen.getByText('reg-rev-1')).toBeTruthy());
+    await loadBoth();
+    expect(runButton().disabled).toBe(false);
+
+    const uploading = deferred();
+    backend.queue.registryUpload.push(uploading.promise);
+    uploadRegistry('replacement.tsv');
+    await waitFor(() => expect(registryInput().disabled).toBe(true));
+    expect(runButton().disabled).toBe(true);
+    expect(removeButton().disabled).toBe(true);
+
+    await act(async () =>
+      uploading.resolve(
+        jsonResponse({
+          status: 'success',
+          registry: REGISTRY('reg-rev-2', 'digest-new'),
+          reused: false,
+        }),
+      ),
+    );
+    await waitFor(() => expect(runButton().disabled).toBe(false));
+
+    const removing = deferred();
+    backend.queue.registryDelete.push(removing.promise);
+    fireEvent.click(removeButton());
+    await waitFor(() => expect(removeButton().disabled).toBe(true));
+    expect(runButton().disabled).toBe(true);
+
+    await act(async () =>
+      removing.resolve(jsonResponse({ status: 'success', cleared: true, registry: null })),
+    );
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Remove mapping' })).toBeNull());
+    expect(runButton().disabled).toBe(true);
+  });
+
+  it('disables the registry controls while an execution is in flight', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+    uploadRegistry();
+    await waitFor(() => expect(screen.getByText('reg-rev-1')).toBeTruthy());
+    await loadBoth();
+
+    const executing = deferred();
+    backend.queue.execute.push(executing.promise);
+    fireEvent.click(runButton());
+
+    await waitFor(() => expect(registryInput().disabled).toBe(true));
+    expect(removeButton().disabled).toBe(true);
+    expect(assemblySelect().disabled).toBe(true);
+
+    await act(async () =>
+      executing.resolve(
+        jsonResponse({
+          ...EXEC_RESULT(REGISTRY('reg-rev-1', 'digest-1', 2)),
+          query_revision: 'query-rev-1',
+          annot_revision: 'annot-rev-2',
+        }),
+      ),
+    );
+    await waitFor(() => expect(registryInput().disabled).toBe(false));
+    expect(removeButton().disabled).toBe(false);
+    expect(assemblySelect().disabled).toBe(false);
+  });
+
+  it('disables the assembly selector while the registry is being uploaded or removed', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+
+    const uploading = deferred();
+    backend.queue.registryUpload.push(uploading.promise);
+    uploadRegistry();
+    await waitFor(() => expect(assemblySelect().disabled).toBe(true));
+    expect(registryInput().disabled).toBe(true);
+
+    await act(async () =>
+      uploading.resolve(
+        jsonResponse({
+          status: 'success',
+          registry: REGISTRY('reg-rev-1', 'digest-1', 2),
+          reused: false,
+        }),
+      ),
+    );
+    await waitFor(() => expect(assemblySelect().disabled).toBe(false));
+
+    const removing = deferred();
+    backend.queue.registryDelete.push(removing.promise);
+    fireEvent.click(removeButton());
+    await waitFor(() => expect(assemblySelect().disabled).toBe(true));
+
+    await act(async () =>
+      removing.resolve(jsonResponse({ status: 'success', cleared: true, registry: null })),
+    );
+    await waitFor(() => expect(assemblySelect().disabled).toBe(false));
+  });
+
+  it('keeps the existing registry when a replacement upload fails at the network layer', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+    uploadRegistry();
+    await waitFor(() => expect(screen.getByText('reg-rev-1')).toBeTruthy());
+
+    backend.queue.registryUpload.push(Promise.reject(new TypeError('Failed to fetch')));
+    uploadRegistry('offline.tsv');
+
+    await waitFor(() => expect(screen.getByText(/Network error uploading/i)).toBeTruthy());
+    expect(screen.getByText('reg-rev-1')).toBeTruthy();
+    expect(backend.calls.registryUploads).toHaveLength(2);
+    expect(backend.calls.registryClears).toEqual([]);
+  });
+
+  it('clears the stale registry when execution reports session_expired', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+    uploadRegistry();
+    await waitFor(() => expect(screen.getByText('reg-rev-1')).toBeTruthy());
+    await loadBoth();
+
+    backend.queue.execute.push(
+      Promise.resolve(
+        errorResponse(409, {
+          code: 'session_expired',
+          message: 'the session expired before the run committed',
+          stale: ['registry'],
+        }),
+      ),
+    );
+    fireEvent.click(runButton());
+
+    await waitFor(() => expect(screen.getByText(/session expired/i)).toBeTruthy());
+    expect(screen.queryByText('reg-rev-1')).toBeNull();
+    expect(runButton().disabled).toBe(true);
+    expect(screen.getByText('q.bed')).toBeTruthy();
+    expect(screen.getByText('a.bed')).toBeTruthy();
+  });
+
+  it('keeps the existing mapping and its result when a replacement is refused', async () => {
+    const backend = registryBackend();
+    await renderApp();
+    chooseChromosomeSource();
+    chooseNaming('UCSC names');
+    uploadRegistry('one.tsv');
+    await waitFor(() => expect(screen.getByText('reg-rev-1')).toBeTruthy());
+    await loadBoth();
+    await runOnce();
+
+    backend.queue.registryUpload.push(
+      Promise.resolve(
+        errorResponse(400, {
+          code: 'invalid_mapping',
+          message: 'invalid custom chromosome mapping: duplicate sequence',
+          stale: [],
+          issues: [{ code: 'duplicate', message: 'row 2 duplicates row 1', rows: [2], columns: [] }],
+          more: 0,
+        }),
+      ),
+    );
+    uploadRegistry('bad-replacement.tsv');
+
+    await waitFor(() => expect(screen.getByText(/duplicate sequence/i)).toBeTruthy());
+    const panel = screen.getByLabelText('Custom chromosome mapping registry');
+    expect(within(panel).getByText('reg-rev-1')).toBeTruthy();
+    expect(screen.getByText(/executed in/i)).toBeTruthy();
+    expect(backend.calls.registryClears).toEqual([]);
   });
 });
