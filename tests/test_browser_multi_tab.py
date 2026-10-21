@@ -477,3 +477,89 @@ def test_sample_load_shows_provenance_without_hijacking_the_declaration(new_cont
     page.wait_for_selector("text=Analysis complete")
     result = page.locator("text=/Analysis complete.*regions matched/").inner_text()
     assert "0 of 1 regions matched" in result
+
+
+def test_custom_registry_is_not_adopted_across_tabs_and_clears_its_results(
+    new_context, base_url, tmp_path
+):
+    """M2.3: a custom mapping is explicit, tab-scoped and removable.
+
+    Tab A uploads a custom mapping and runs with it. Tab B, in the same
+    browser session, may select the custom source but must not see or adopt
+    tab A's mapping: the resource is session-scoped at the API, while the
+    control state belongs to the tab that uploaded it. Removing the mapping
+    in tab A withdraws the result derived from it.
+    """
+    context = new_context()
+    tab_a = _open_tab(context, base_url)
+
+    mapping = tmp_path / "mapping.tsv"
+    mapping.write_text(
+        "assembly\tucsc\tensembl\tgenbank\trefseq\n"
+        "1\tchr1\t1\tCM000001.1\tNC_000001.1\n"
+    )
+    query = tmp_path / "custom_query.bed"
+    annot = tmp_path / "custom_annot.bed"
+    query.write_text("chr1\t100\t200\tq\n")
+    annot.write_text("1\t100\t200\tgene\n")
+
+    assembly = tab_a.locator("select").filter(
+        has=tab_a.locator("option[value='__custom_chromosome_mapping__']")
+    ).nth(0)
+    assembly.select_option(label="Custom chromosome mapping")
+    tab_a.locator("select").filter(
+        has=tab_a.locator("option[value='ucsc']")
+    ).nth(0).select_option("ucsc")
+
+    panel_a = tab_a.get_by_label("Custom chromosome mapping registry")
+    assert panel_a.get_by_text("none", exact=True).is_visible()
+    assert tab_a.get_by_role("button", name="Run annotation").is_disabled()
+
+    with tab_a.expect_response(
+        lambda response: response.url.endswith("/api/registry")
+        and response.request.method == "POST"
+    ) as upload_info:
+        tab_a.get_by_label("Custom chromosome mapping TSV").set_input_files(mapping)
+    registry = upload_info.value.json()["registry"]
+    assert registry["source"] == "custom"
+    assert registry["assembly"] is None
+    tab_a.wait_for_selector("text=/Custom chromosome mapping loaded/")
+    assert panel_a.get_by_text(registry["revision"]).is_visible()
+
+    # A second tab in the same session selects the source, but never fetches
+    # or adopts the mapping tab A uploaded.
+    tab_b = _open_tab(context, base_url)
+    tab_b.locator("select").filter(
+        has=tab_b.locator("option[value='__custom_chromosome_mapping__']")
+    ).nth(0).select_option(label="Custom chromosome mapping")
+    tab_b.locator("select").filter(
+        has=tab_b.locator("option[value='ucsc']")
+    ).nth(0).select_option("ucsc")
+    panel_b = tab_b.get_by_label("Custom chromosome mapping registry")
+    assert panel_b.get_by_text("none", exact=True).is_visible()
+    assert panel_b.locator("text=Revision").count() == 0
+    assert tab_b.get_by_role("button", name="Run annotation").is_disabled()
+
+    # Tab A's custom mapping supplies the chromosome identity: the annotation
+    # "1" resolves to the query's UCSC "chr1".
+    tab_a.bring_to_front()
+    dataset_inputs = tab_a.locator("input[type=file]:not([aria-label])")
+    dataset_inputs.nth(1).set_input_files(annot)
+    tab_a.wait_for_selector("text=Parsed custom_annot.bed")
+    dataset_inputs.nth(0).set_input_files(query)
+    tab_a.wait_for_selector("text=Parsed custom_query.bed")
+    tab_a.click("button:has-text('Run annotation')")
+    tab_a.wait_for_selector("text=Analysis complete")
+    result = tab_a.locator("text=/Analysis complete.*regions matched/").inner_text()
+    assert "1 of 1 regions matched" in result
+
+    # Reports identify the custom mapping and never claim an assembly.
+    assert tab_a.locator("text=/Custom chromosome mapping:/").count() >= 1
+    assert tab_a.locator(f"text={registry['revision']}").count() >= 1
+    assert tab_a.locator("text=/Bundled assembly:/").count() == 0
+
+    tab_a.get_by_role("button", name="Remove mapping").click()
+    tab_a.wait_for_selector("text=Custom chromosome mapping removed.")
+    assert tab_a.locator("text=No results yet").count() == 1
+    assert panel_a.get_by_text("none", exact=True).is_visible()
+    assert tab_a.get_by_role("button", name="Run annotation").is_disabled()

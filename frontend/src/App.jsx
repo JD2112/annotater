@@ -41,6 +41,22 @@ const COORD_SYSTEM_LABELS = {
 };
 const coordSystemLabel = (token) => COORD_SYSTEM_LABELS[token] || null;
 
+// A custom chromosome mapping is an alternative chromosome source, not a
+// genome assembly (SPEC 5.1.1). The sentinel is only a UI value: the execute
+// payload sends `registry_rev` and never an assembly id for it.
+const CUSTOM_REGISTRY_SOURCE = '__custom_chromosome_mapping__';
+const KEEP_ORIGINAL_NAMES = 'Keep original names';
+
+// The Retry-After header is authoritative for 429 refusals. It is displayed to
+// the user and never turned into an automatic retry (the registry errors are
+// either temporary-but-user-controlled or permanent).
+function retryAfterSeconds(res) {
+  const raw = res?.headers?.get?.('Retry-After');
+  if (raw == null) return null;
+  const seconds = Number(raw);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
 // ---------------------------------------------------------------------------
 // Scientific report rendering (Task 14.3)
 //
@@ -174,6 +190,50 @@ function ChromosomeNormalizationReport({ report, meta }) {
   );
 }
 
+// Chromosome-source provenance of a completed run. It is read from the
+// execute response only -- never from the controls -- so changing a selector
+// after a run can never relabel that run's result (SPEC 5.1.1 item 7).
+function RegistryProvenance({ registry, meta }) {
+  if (!registry) return null;
+  const common = 'border border-slate-200 rounded-lg p-3.5 bg-slate-50/30 flex flex-col gap-1 text-[11px] text-slate-600';
+  if (registry.source === 'custom') {
+    return (
+      <div className={common} aria-label="Chromosome source provenance">
+        <span className="text-xs font-bold text-slate-700">Chromosome source</span>
+        <p>
+          Custom chromosome mapping: <strong>{registry.name || 'Custom chromosome mapping'}</strong>
+        </p>
+        <p>
+          Revision <code className="font-mono">{registry.revision}</code> · digest{' '}
+          <code className="font-mono">{registry.digest}</code> ·{' '}
+          {Number(registry.row_count || 0).toLocaleString()} sequence{registry.row_count === 1 ? '' : 's'}
+        </p>
+      </div>
+    );
+  }
+  if (registry.source === 'bundled') {
+    const label = assemblyLabel(meta, registry.assembly);
+    return (
+      <div className={common} aria-label="Chromosome source provenance">
+        <span className="text-xs font-bold text-slate-700">Chromosome source</span>
+        <p>
+          Bundled assembly: <strong>{registry.assembly}</strong>
+          {label && label !== registry.assembly ? <> · {label}</> : null}
+        </p>
+      </div>
+    );
+  }
+  if (registry.source === 'none') {
+    return (
+      <div className={common} aria-label="Chromosome source provenance">
+        <span className="text-xs font-bold text-slate-700">Chromosome source</span>
+        <p>Keep original names · no chromosome registry</p>
+      </div>
+    );
+  }
+  return null;
+}
+
 // Sentinel end-column choice for single-position inputs (old Streamlit
 // behaviour: a custom mapped file may have no end column; then each interval
 // is a 1-length position). It maps to a null end_col at the API boundary.
@@ -204,6 +264,17 @@ export default function App() {
   const [queryUploadKey, setQueryUploadKey] = useState(0);
   const [annotUploadKey, setAnnotUploadKey] = useState(0);
 
+  // Custom chromosome mapping (M2.2b API). The registry revision is tracked
+  // separately from query_rev/annot_rev and result revisions: it belongs to a
+  // different resource. This tab only ever adopts a registry from its own
+  // successful upload -- never from GET /api/registry after another tab
+  // uploaded one -- so it can never silently run on another tab's mapping.
+  const [registry, setRegistry] = useState(null);
+  const [registryBusy, setRegistryBusy] = useState(false);
+  const [registryMessage, setRegistryMessage] = useState(null);
+  const [registryUploadKey, setRegistryUploadKey] = useState(0);
+  const registryGeneration = useRef(0);
+
   // Configuration Parameters matching original Streamlit app exactly
   const [engine, setEngine] = useState('bedtools');
   const [mode, setMode] = useState('overlap');
@@ -221,6 +292,14 @@ export default function App() {
   // Advanced options (collapsed accordion)
   const [showAdvanced, setShowAdvanced] = useState(false);
   const selectedAssemblyInfo = meta?.assemblies?.find(a => a.id === genomeAssembly);
+  // Chromosome normalization is active only when a naming target is chosen
+  // ("Keep original names" normalizes nothing and claims no registry).
+  const normalizingChromosomes = chrHandling !== KEEP_ORIGINAL_NAMES;
+  const customRegistrySelected = genomeAssembly === CUSTOM_REGISTRY_SOURCE;
+  // A run that needs a custom mapping cannot start without the revision this
+  // tab owns; a stale/unavailable mapping must never be guessed.
+  const customRegistryUnavailable =
+    customRegistrySelected && normalizingChromosomes && !registry;
   const [useStrand, setUseStrand] = useState(false);
   const [minOverlap, setMinOverlap] = useState(0.0);
   const [selectedFeatures, setSelectedFeatures] = useState(['gene']);
@@ -295,6 +374,15 @@ export default function App() {
     const stale = detail?.stale || [];
     if (stale.includes('query')) resetSide('query');
     if (stale.includes('annot')) resetSide('annot');
+    if (stale.includes('registry')) {
+      // The mapping this tab displayed was replaced or cleared elsewhere. It
+      // is not adopted and cannot be used again without a fresh upload.
+      setRegistry(null);
+      setRegistryMessage({
+        type: 'warning',
+        text: `Changed in another tab: ${detail?.message || 'this tab no longer owns the active custom chromosome mapping.'}`,
+      });
+    }
     clearResults();
     setStatusMessage({
       type: 'warning',
@@ -304,6 +392,94 @@ export default function App() {
 
   const errorText = (data, fallback) =>
     (typeof data?.detail === 'string' ? data.detail : data?.detail?.message) || fallback;
+
+  // A registry-derived result is invalidated only by the registry change it
+  // actually used. A bundled-assembly or keep-original-names result is
+  // unrelated to the custom mapping and stays valid (SPEC 5.1.1 item 9).
+  // `mode` says how to compare the result's provenance with the revision:
+  // "replaced" keeps a result derived from the revision now installed,
+  // "cleared" drops a result derived from the revision being removed, and
+  // "stale" drops any custom-registry result (its mapping is no longer ours).
+  const invalidateRegistryResults = (revision, mode) => {
+    const provenance = execResult?.registry;
+    if (provenance?.source !== 'custom') return;
+    if (mode === 'replaced' && provenance.revision === revision) return;
+    if (mode === 'cleared' && provenance.revision !== revision) return;
+    clearResults();
+  };
+
+  const registryErrorDetail = (data) =>
+    (data?.detail && typeof data.detail === 'object' ? data.detail : {});
+
+  // Registry failures are rendered beside the control that caused them. The
+  // valid registry and unrelated result stay untouched unless the server says
+  // this tab's revision is stale; permanent errors are never retried
+  // automatically, and a Retry-After is shown rather than acted upon.
+  const applyRegistryError = (res, data, action) => {
+    const detail = registryErrorDetail(data);
+    const code = detail.code;
+    const message = errorText(data, 'Custom chromosome mapping request failed');
+    const retryAfter = retryAfterSeconds(res);
+
+    if (code === 'revision_conflict' || code === 'session_expired') {
+      setRegistry(null);
+      invalidateRegistryResults();
+      setRegistryUploadKey((k) => k + 1);
+      setRegistryMessage({
+        type: 'warning',
+        code,
+        text: code === 'session_expired'
+          ? `The session expired: ${message} Upload the custom chromosome mapping again.`
+          : `Changed in another tab: ${message} Upload the mapping again to continue.`,
+        recovery: 'reupload',
+      });
+      return;
+    }
+
+    if (code === 'replacement_requires_clear') {
+      // Permanent: the old registry is still valid and is deliberately kept.
+      // The recovery is an explicit clear, then a fresh upload.
+      setRegistryMessage({
+        type: 'error',
+        code,
+        text: `${message} Remove the active mapping first, then upload the new mapping again.`,
+        recovery: 'clear',
+      });
+      return;
+    }
+
+    if (res.status === 429) {
+      setRegistryMessage({
+        type: 'warning',
+        code,
+        text: retryAfter
+          ? `${message} Retry after ${retryAfter} second${retryAfter === 1 ? '' : 's'}.`
+          : message,
+        retryAfter,
+      });
+      return;
+    }
+
+    if (code === 'revision_required') {
+      setRegistryMessage({
+        type: 'error',
+        code,
+        text: `${message} Upload the custom chromosome mapping again.`,
+        recovery: 'reupload',
+      });
+      return;
+    }
+
+    setRegistryMessage({
+      type: 'error',
+      code,
+      text: message,
+      issues: Array.isArray(detail.issues) ? detail.issues : [],
+      more: Number(detail.more) || 0,
+      // The prior registry is preserved: a failed upload cannot destroy it.
+      recovery: action === 'upload' ? 'retry' : null,
+    });
+  };
 
   // Drops one side's dataset locally and remounts its file picker.
   const resetSide = (role) => {
@@ -516,6 +692,97 @@ export default function App() {
     }
   };
 
+  // Upload or replace the session's custom chromosome mapping. It is a
+  // source of chromosome identity, not a dataset: it never touches query or
+  // annotation state, and a failed upload never removes the valid mapping
+  // this tab already displays.
+  const handleRegistryUpload = async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const generation = ++registryGeneration.current;
+    const isCurrent = () => registryGeneration.current === generation;
+    setRegistryBusy(true);
+    setRegistryMessage({ type: 'info', text: `Validating custom chromosome mapping ${file.name}...` });
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('/api/registry', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      // A newer upload/clear/conflict owns the registry state now: this
+      // response, success or failure, must not install or discard anything.
+      if (!isCurrent()) return;
+      if (res.ok) {
+        const next = data.registry;
+        setRegistry(next);
+        // Identical content reuses the revision; a result derived from that
+        // same registry stays valid. Different content invalidates only a
+        // result derived from the replaced custom mapping.
+        if (next?.revision && execResult?.registry?.source === 'custom') {
+          invalidateRegistryResults(next.revision, 'replaced');
+        }
+        setRegistryMessage({
+          type: 'success',
+          code: data.reused ? 'reused' : null,
+          text: data.reused
+            ? 'This exact mapping is already active; the registry revision was preserved.'
+            : `Custom chromosome mapping loaded (${Number(next?.row_count || 0).toLocaleString()} sequence${next?.row_count === 1 ? '' : 's'}).`,
+        });
+      } else {
+        applyRegistryError(res, data, 'upload');
+      }
+    } catch {
+      if (!isCurrent()) return;
+      setRegistryMessage({
+        type: 'error',
+        text: 'Network error uploading the custom chromosome mapping. The active mapping was left unchanged; try again.',
+      });
+    } finally {
+      if (isCurrent()) {
+        setRegistryBusy(false);
+        // Remount the picker so choosing the same file again re-uploads it.
+        setRegistryUploadKey((k) => k + 1);
+      }
+    }
+  };
+
+  // Remove the active mapping with the revision this tab owns. A clear that
+  // names a stale revision is refused by the server and must never remove a
+  // newer mapping from another tab.
+  const handleRegistryClear = async () => {
+    const owned = registry;
+    if (!owned?.revision) return;
+
+    const generation = ++registryGeneration.current;
+    const isCurrent = () => registryGeneration.current === generation;
+    setRegistryBusy(true);
+    setRegistryMessage({ type: 'info', text: 'Removing the custom chromosome mapping...' });
+    try {
+      const params = new URLSearchParams({ registry_rev: owned.revision });
+      const res = await fetch(`/api/registry?${params}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!isCurrent()) return;
+      if (res.ok) {
+        setRegistry(null);
+        invalidateRegistryResults(owned.revision, 'cleared');
+        setRegistryMessage({ type: 'success', text: 'Custom chromosome mapping removed.' });
+      } else {
+        applyRegistryError(res, data, 'clear');
+      }
+    } catch {
+      if (!isCurrent()) return;
+      setRegistryMessage({
+        type: 'error',
+        text: 'Network error removing the custom chromosome mapping. The active mapping was left unchanged; try again.',
+      });
+    } finally {
+      if (isCurrent()) setRegistryBusy(false);
+    }
+  };
+
   // Handle Applying Column Mapping
   const handleApplyMapping = async () => {
     const generation = datasetGeneration.current.query;
@@ -577,6 +844,13 @@ export default function App() {
   // Execute Pipeline
   const handleExecute = async () => {
     if (!queryData || !annotData || datasetBusy) return;
+    if (customRegistryUnavailable || registryBusy) {
+      setStatusMessage({
+        type: 'error',
+        text: 'Upload a custom chromosome mapping before normalizing chromosome names, or keep the original names.',
+      });
+      return;
+    }
     const generation = ++runGeneration.current;
     activeExecGeneration.current = generation;
     setIsExecuting(true);
@@ -592,8 +866,19 @@ export default function App() {
           feature_types: selectedFeatures,
           use_strand: useStrand,
           min_overlap: minOverlap,
-          assembly: genomeAssembly && genomeAssembly !== 'Auto-detect' ? genomeAssembly : null,
-          chr_naming: chrHandling && chrHandling !== 'Keep original names' ? chrHandling : null,
+          // One run uses exactly one chromosome source: a custom mapping
+          // (registry_rev) or a bundled assembly, never both. Keeping the
+          // original names claims neither.
+          assembly: customRegistrySelected
+            ? null
+            : (genomeAssembly && genomeAssembly !== 'Auto-detect' ? genomeAssembly : null),
+          chr_naming: normalizingChromosomes ? chrHandling : null,
+          // Only a run that actually normalizes with this tab's custom
+          // mapping names its revision. A bundled source never sends it,
+          // even when a mapping is stored in the session.
+          registry_rev: customRegistrySelected && normalizingChromosomes
+            ? registry?.revision
+            : null,
           // The exact datasets this tab displays (release-gate finding F1).
           query_rev: queryData.revision,
           annot_rev: annotData.revision,
@@ -603,7 +888,14 @@ export default function App() {
       // Review finding N3: if an invalidating event (or a newer run) happened
       // after this run started, its response is stale and must not land.
       if (runGeneration.current !== generation) return;
-      if (isRevisionConflict(res, data)) {
+      if (data?.detail?.code === 'session_expired') {
+        setRegistry(null);
+        clearResults();
+        setStatusMessage({
+          type: 'warning',
+          text: `The session expired: ${errorText(data, 'this tab is out of date')}. Upload the custom chromosome mapping and datasets again.`,
+        });
+      } else if (isRevisionConflict(res, data)) {
         handleRevisionConflict(data.detail);
       } else if (res.ok) {
         setExecResult(data);
@@ -924,11 +1216,12 @@ export default function App() {
                 </label>
                 <select
                   value={genomeAssembly}
-                  disabled={isExecuting}
+                  disabled={isExecuting || registryBusy}
                   onChange={(e) => { setGenomeAssembly(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
                   <option value="Auto-detect">Select genome assembly (Auto-detect)</option>
+                  <option value={CUSTOM_REGISTRY_SOURCE}>Custom chromosome mapping</option>
                   {meta?.assemblies?.map(a => (
                     <option key={a.id} value={a.id}>
                       {a.display_label}
@@ -942,13 +1235,116 @@ export default function App() {
                 )}
               </div>
 
+              {customRegistrySelected && (
+                <div
+                  className="border border-slate-200 rounded-lg p-3 bg-slate-50/60 flex flex-col gap-2"
+                  aria-label="Custom chromosome mapping registry"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-semibold text-slate-800">Custom chromosome mapping</span>
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                      registry
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        : 'bg-slate-100 text-slate-500 border-slate-200'
+                    }`}>
+                      {registry ? 'active' : 'none'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-normal">
+                    TSV with header <code className="font-mono">assembly · ucsc · ensembl · genbank · refseq</code>.
+                    AnnotateR checks that it is structurally unambiguous, not that the names are biologically correct.
+                  </p>
+
+                  {registry && (
+                    <div className="rounded-md border border-slate-200 bg-white p-2 flex flex-col gap-1 text-[10px] text-slate-600">
+                      <span className="text-xs font-bold text-slate-700">{registry.name || 'Custom chromosome mapping'}</span>
+                      <span>
+                        {Number(registry.row_count || 0).toLocaleString()} sequence{registry.row_count === 1 ? '' : 's'}
+                      </span>
+                      <span className="break-all">
+                        Revision <code className="font-mono">{registry.revision}</code>
+                      </span>
+                      <span className="break-all">
+                        Digest <code className="font-mono">{registry.digest}</code>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleRegistryClear}
+                        disabled={registryBusy || isExecuting}
+                        className="mt-1 self-start px-2 py-1 rounded-md border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-700 font-semibold cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        Remove mapping
+                      </button>
+                    </div>
+                  )}
+
+                  <label className="border border-dashed border-slate-300 hover:border-slate-400 rounded-lg p-2.5 flex items-center justify-center gap-1.5 bg-white text-[11px] font-semibold text-slate-700 cursor-pointer transition-colors">
+                    <Upload className="w-3.5 h-3.5 text-slate-500" />
+                    {registry ? 'Replace custom chromosome mapping (TSV)' : 'Upload custom chromosome mapping (TSV)'}
+                    <input
+                      key={`registry-upload-${registryUploadKey}`}
+                      type="file"
+                      className="hidden"
+                      aria-label="Custom chromosome mapping TSV"
+                      disabled={registryBusy || isExecuting}
+                      onChange={handleRegistryUpload}
+                      accept=".tsv,text/tab-separated-values"
+                    />
+                  </label>
+
+                  {registryMessage && (
+                    <div
+                      role={registryMessage.type === 'error' || registryMessage.type === 'warning' ? 'alert' : 'status'}
+                      className={`rounded-md border p-2 text-[10px] leading-normal ${
+                        registryMessage.type === 'error'
+                          ? 'bg-rose-50 border-rose-200 text-rose-800'
+                          : registryMessage.type === 'success'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : registryMessage.type === 'warning'
+                              ? 'bg-amber-50 border-amber-200 text-amber-900'
+                              : 'bg-blue-50 border-blue-200 text-blue-800'
+                      }`}
+                    >
+                      <span className="font-medium">{registryMessage.text}</span>
+                      {registryMessage.issues?.length > 0 && (
+                        <ul className="mt-1 list-disc pl-4 font-mono">
+                          {registryMessage.issues.slice(0, 5).map((issue, idx) => (
+                            <li key={idx}>
+                              {issue.message}
+                              {issue.rows?.length ? ` (rows: ${issue.rows.join(', ')})` : ''}
+                              {issue.columns?.length ? ` (columns: ${issue.columns.join(', ')})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      {registryMessage.more > 0 && (
+                        <span className="block mt-1 font-medium">
+                          ... and {registryMessage.more.toLocaleString()} more problem{registryMessage.more === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {!registry && normalizingChromosomes && (
+                    <span className="text-[10px] text-amber-800 font-medium">
+                      Upload a mapping before running; the Run button stays disabled until one is active.
+                    </span>
+                  )}
+                  {registry && !normalizingChromosomes && (
+                    <span className="text-[10px] text-slate-500">
+                      Chromosome names are kept as provided. Choose a naming target above to apply this mapping.
+                    </span>
+                  )}
+                </div>
+              )}
+
               <div>
                 <label className="font-semibold text-slate-800 flex items-center gap-1 mb-1">
                   Chromosome naming <HelpCircle className="w-3 h-3 text-slate-400" />
                 </label>
                 <select
                   value={chrHandling}
-                  disabled={isExecuting}
+                  disabled={isExecuting || registryBusy}
                   onChange={(e) => { setChrHandling(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
@@ -959,7 +1355,7 @@ export default function App() {
                   ))}
                 </select>
                 <span className="text-[10px] text-slate-400 block mt-1">
-                  Changes sequence identifiers according to assembly registry.
+                  Changes sequence identifiers according to the selected registry.
                 </span>
               </div>
             </div>
@@ -1174,9 +1570,9 @@ export default function App() {
             <div>
               <button
                 onClick={handleExecute}
-                disabled={!queryData || !annotData || datasetBusy || isExecuting}
+                disabled={!queryData || !annotData || datasetBusy || isExecuting || customRegistryUnavailable || registryBusy}
                 className={`py-2 px-5 rounded-lg font-semibold text-xs transition-all cursor-pointer ${
-                  !queryData || !annotData || datasetBusy || isExecuting
+                  !queryData || !annotData || datasetBusy || isExecuting || customRegistryUnavailable || registryBusy
                     ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
                     : 'bg-[#004e92] hover:bg-[#003768] text-white shadow-xs'
                 }`}
@@ -1186,7 +1582,11 @@ export default function App() {
               <p className="text-xs text-slate-500 mt-2">
                 {!queryData || !annotData 
                   ? 'Upload both a query file and an annotation file to enable the annotation run.' 
-                  : 'Files ready. Click Run annotation to execute the relational interval match.'}
+                  : customRegistryUnavailable
+                    ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
+                    : registryBusy
+                      ? 'Wait for the custom chromosome mapping request to finish before running.'
+                      : 'Files ready. Click Run annotation to execute the relational interval match.'}
               </p>
             </div>
           </section>
@@ -1257,6 +1657,10 @@ export default function App() {
                     <span className="text-[10px] text-slate-500 block mt-0.5">No overlap</span>
                   </div>
                 </div>
+
+                {/* Chromosome-source provenance of this exact run, read from
+                    the execute response rather than the current controls. */}
+                <RegistryProvenance registry={execResult.registry} meta={meta} />
 
                 {/* Chromosome normalization report (only when names changed) */}
                 <ChromosomeNormalizationReport
