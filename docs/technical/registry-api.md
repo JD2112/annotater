@@ -23,8 +23,11 @@ came from.
 All three use the ordinary session cookie: the mapping belongs to the
 session that uploaded it, is never shared between sessions, never persisted
 and never written to the bundled registry data. A read allocates no
-session; a write allocates one (and gives it back when the write stores
-nothing).
+session. An anonymous write materialises its session only at the successful
+commit: an invalid mapping, a 413/429 refusal, a superseded write or a
+cancelled parse allocates no session, issues no cookie and cannot evict a
+live session from the bounded store. A successful write materialises
+exactly one session and issues its cookie.
 
 ### `POST /api/registry`
 
@@ -69,6 +72,14 @@ A different mapping **replaces** the session's mapping and invalidates
 every result derived from the previous content (SPEC §5.1.1 item 9). A
 result derived from a bundled assembly, or from keeping the names as
 provided, is unrelated to the custom mapping and stays valid.
+
+The invalidation is atomic with respect to the session's committed state:
+the upload compares the stored result against the **current** committed
+registry revision, read under the session lock in the same critical
+section that removes the result. A delayed cleanup from an earlier write
+therefore sees a newer registry and leaves a result produced with it
+alone. Identical content reuses the revision, so a same-digest re-upload
+never invalidates a valid result. `DELETE` uses the same rule.
 
 ### `GET /api/registry`
 

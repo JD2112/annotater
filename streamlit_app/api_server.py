@@ -127,9 +127,31 @@ _RESULT_REPLACED = (
 
 
 def _bound_result(session: Session, result_rev: Optional[str], missing: str) -> Dict[str, Any]:
-    """The stored result, only if it is the revision the client displays."""
+    """The stored result, only if it is the revision the client displays.
+
+    A custom-registry result is additionally checked against the session's
+    *current* committed registry revision under the same session lock. That
+    makes "the registry was replaced/cleared" and "its result may be served"
+    mutually exclusive even before the upload/clear cleanup runs, so a stale
+    result is never exported under the wrong registry provenance (review
+    finding F2). Bundled-assembly and keep-original-names results are not
+    bound to the custom mapping and are unaffected.
+    """
     with session.lock:
         result = session.data.get("result")
+        if (
+            result is not None
+            and result_rev
+            and result.get("rev") == result_rev
+        ):
+            provenance = result.get("registry")
+            if (
+                provenance
+                and provenance.get("source") == "custom"
+                and provenance.get("revision")
+                != registry_lifecycle.current_revision(session.token)
+            ):
+                raise _revision_conflict(_RESULT_REPLACED, ["result"])
     if result is None:
         if result_rev:
             raise _revision_conflict(_RESULT_REPLACED, ["result"])
@@ -215,13 +237,16 @@ def bind_session_store(target: SessionStore) -> SessionStore:
 
 
 def _release_failed_session(request: Request, session: Session) -> None:
-    """Give back the session slot a refused registry write allocated.
+    """Discard a session created at the registry commit that then failed.
 
-    A custom mapping is parsed inside the registry lifecycle (the admission
-    must be decided before a mapping is parsed), so the session exists
-    before the mapping is known to be valid. A write that stored nothing
-    must not consume session capacity (review finding N4): the slot is
-    returned and no cookie is issued for the discarded session.
+    A registry write materialises its session only at the successful
+    commit (``RegistryLifecycle.register(materialize=...)``), so a refused,
+    superseded or cancelled write never allocates one and never evicts a
+    live session (review findings N4, F1). This is only the catastrophic
+    post-materialisation escape hatch for an unexpected failure between
+    creating the session and committing the registry. It can only ever drop
+    the new session itself -- never a pre-existing one -- and no cookie is
+    issued for it.
     """
     store.drop(session.token)
     request.state.new_session_token = None

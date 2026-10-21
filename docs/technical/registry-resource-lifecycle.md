@@ -130,6 +130,15 @@ Session liveness is re-checked at commit and on `clear`, `acquire` and the
 identical-digest fast path. A write that finishes after its session expired or
 was evicted commits nothing and cannot recreate a lifecycle slot.
 
+An anonymous write owns no session yet, so it has no liveness to re-check at
+commit. It supplies the narrow commit-time `materialize` callback instead
+(below): the session is created inside the successful commit, after the
+mapping was admitted and parsed. A refused or superseded write never reaches
+the callback, and a cancellation observed before the commit aborts the write,
+so neither allocates a session slot or evicts a live session. (A cancellation
+that arrives only after the commit has already succeeded is a completed
+write whose response was lost, not a refused one.)
+
 ## Session expiry cleanup
 
 Slots are released by:
@@ -193,8 +202,8 @@ pinned by `tests/test_registry_api.py`.
 
 ## Additions in M2.2b
 
-The HTTP layer needed two read/decision primitives that the M2.2a contract
-did not have to express. Both are additive; no existing behaviour changed.
+The HTTP layer needed three primitives that the M2.2a contract did not have
+to express. All are additive; no existing behaviour changed.
 
 * **`RegistryLifecycle.current_metadata(token)`** returns the committed
   registry's identity (revision, content digest, display name, sequence
@@ -211,4 +220,14 @@ did not have to express. Both are additive; no existing behaviour changed.
   without removing anything, and it leaves the same tombstone as
   `clear`, so an in-flight write that arrived earlier cannot resurrect a
   mapping afterwards. The original `clear` is unchanged.
+* **`RegistryLifecycle.register(..., materialize=...)`** is the
+  commit-time materialisation primitive for an anonymous write. It is
+  called exactly once, under the lifecycle lock, immediately before the
+  successful commit, and must store the session and return its token. It is
+  mutually exclusive with a non-empty token. Because admission, parsing and
+  every refusal happen first, a write that stores nothing never creates a
+  session; because the callback runs before the commit, a successful write
+  materialises exactly one session. This is not a create-then-drop
+  strategy: no session exists to drop on any ordinary refusal path, and a
+  dropped session is always the request's own new one, never a victim.
 

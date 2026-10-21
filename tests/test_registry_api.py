@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from types import SimpleNamespace
 
 import anyio
@@ -24,7 +25,11 @@ from fastapi.testclient import TestClient
 
 from streamlit_app import api_registry, api_server
 from streamlit_app.api_server import app
-from streamlit_app.api_sessions import SESSION_COOKIE_NAME, SessionStore
+from streamlit_app.api_sessions import (
+    SESSION_COOKIE_NAME,
+    SessionStore,
+    anonymous_session,
+)
 from streamlit_app.core.chrom_registry import (
     RegistryBudget,
     RegistryBudgetConfig,
@@ -70,14 +75,17 @@ def digest_of(content: bytes) -> str:
 # ---------------------------------------------------------------------------
 
 
-def install_lifecycle(monkeypatch, *, loader=None, **budget_overrides):
+def install_lifecycle(
+    monkeypatch, *, loader=None, max_sessions=256, **budget_overrides
+):
     """Install a fresh store and a small-budget registry lifecycle.
 
     The budgets are deliberately tiny: one tiny mapping costs 2 MiB
     retained and 9 MiB transient with the approved estimator, so a few
     mappings exhaust the pool and the admission branches are reachable
     without allocating a large registry. The loader can be replaced to
-    block a parse at a chosen point.
+    block a parse at a chosen point. ``max_sessions`` bounds the store so
+    the eviction/slot-handback cases can use the smallest possible store.
     """
     values = {
         "retained_bytes": 8 * MIB,
@@ -94,7 +102,7 @@ def install_lifecycle(monkeypatch, *, loader=None, **budget_overrides):
         is_live=lambda token: api_server.store.contains(token),
         loader=loader or load_custom_registry,
     )
-    store = SessionStore()
+    store = SessionStore(max_sessions=max_sessions)
     store.set_on_evict(lifecycle.release_session)
     monkeypatch.setattr(api_server, "store", store)
     monkeypatch.setattr(api_server, "registry_lifecycle", lifecycle)
@@ -123,6 +131,14 @@ def second_tab(client) -> TestClient:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def wait_for_parse_release(lifecycle, timeout=10.0):
+    """Wait until an abandoned parse worker has released its reservation."""
+    deadline = time.monotonic() + timeout
+    while lifecycle.stats().active_parses and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert lifecycle.stats().active_parses == 0
 
 
 def upload_mapping(client, content=MAPPING_ONE, name="mapping.tsv"):
@@ -274,6 +290,210 @@ class TestUpload:
 
 
 # ---------------------------------------------------------------------------
+# Lazy session allocation (review finding F1)
+# ---------------------------------------------------------------------------
+
+
+class TestLazySessionAllocation:
+    """A write that stores nothing must neither allocate nor evict a session.
+
+    ``SessionStore(max_sessions=1)`` makes an accidental allocation by an
+    anonymous request immediately visible: the store's LRU rule drops the
+    only live session. These tests pin both halves of the contract -- a
+    refused write leaves the victim untouched, and a successful write
+    materialises exactly one session and issues its cookie.
+    """
+
+    def _victim(self):
+        victim = TestClient(app)
+        query_rev, annot_rev = load_datasets(victim)
+        token = victim.cookies.get(SESSION_COOKIE_NAME)
+        assert token is not None
+        assert len(api_server.store) == 1
+        return victim, token, query_rev, annot_rev
+
+    def _assert_victim_intact(self, victim, token, query_rev, annot_rev):
+        assert len(api_server.store) == 1
+        assert api_server.store.contains(token) is True
+        # A second tab of the same browser (its own TestClient) proves the
+        # victim's datasets are still there without racing the upload thread.
+        run = run_execution(
+            second_tab(victim), query_rev=query_rev, annot_rev=annot_rev,
+            assembly="hg38")
+        assert run.status_code == 200, run.text
+
+    def test_an_invalid_anonymous_upload_does_not_evict_a_live_session(
+        self, monkeypatch
+    ):
+        lifecycle = install_lifecycle(monkeypatch, max_sessions=1)
+        victim, token, query_rev, annot_rev = self._victim()
+
+        anonymous = TestClient(app)
+        response = upload_mapping(anonymous, b"seq_id\tucsc\n1\tchr1\n")
+
+        assert response.status_code == 400
+        assert response.headers.get("set-cookie") is None
+        assert anonymous.cookies.get(SESSION_COOKIE_NAME) is None
+        self._assert_victim_intact(victim, token, query_rev, annot_rev)
+        assert registry_metadata(anonymous) is None
+        assert lifecycle.stats().accounted_bytes == 0
+
+    def test_a_413_anonymous_upload_does_not_evict_a_live_session(
+        self, monkeypatch
+    ):
+        lifecycle = install_lifecycle(
+            monkeypatch, max_sessions=1, retained_bytes=1 * MIB)
+        victim, token, query_rev, annot_rev = self._victim()
+
+        anonymous = TestClient(app)
+        response = upload_mapping(anonymous)
+
+        assert response.status_code == 413
+        assert response.json()["detail"]["code"] == "registry_too_large"
+        assert response.headers.get("set-cookie") is None
+        self._assert_victim_intact(victim, token, query_rev, annot_rev)
+        assert lifecycle.stats().accounted_bytes == 0
+
+    def test_a_429_anonymous_upload_does_not_evict_a_live_session(
+        self, monkeypatch
+    ):
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_loader(content):
+            started.set()
+            release.wait(10)
+            return load_custom_registry(content)
+
+        lifecycle = install_lifecycle(
+            monkeypatch, max_sessions=1, loader=blocking_loader)
+        monkeypatch.setattr(api_registry, "PARSE_WAIT_SECONDS", 0.05)
+        victim, token, query_rev, annot_rev = self._victim()
+
+        outcome = {}
+
+        def upload():
+            outcome["response"] = upload_mapping(victim, MAPPING_TWO)
+
+        worker = threading.Thread(target=upload)
+        worker.start()
+        assert started.wait(10)
+
+        anonymous = TestClient(app)
+        response = upload_mapping(anonymous, MAPPING_ONE)
+
+        assert response.status_code == 429
+        assert response.json()["detail"]["code"] == "parse_busy"
+        assert response.headers.get("set-cookie") is None
+        assert api_server.store.contains(token) is True
+        self._assert_victim_intact(victim, token, query_rev, annot_rev)
+
+        release.set()
+        worker.join(10)
+        # The victim's own upload still commits: its session was not evicted.
+        assert outcome["response"].status_code == 200
+        assert registry_metadata(victim) is not None
+        assert lifecycle.stats().active_parses == 0
+
+    def test_a_cancelled_anonymous_upload_does_not_evict_a_live_session(
+        self, monkeypatch
+    ):
+        release = threading.Event()
+
+        def blocking_loader(content):
+            release.wait(10)
+            return load_custom_registry(content)
+
+        lifecycle = install_lifecycle(
+            monkeypatch, max_sessions=1, loader=blocking_loader)
+        victim, token, query_rev, annot_rev = self._victim()
+
+        materialised = []
+
+        def materialize(request, current):
+            materialised.append(current)
+            return api_server.store.create()
+
+        async def scenario():
+            with anyio.move_on_after(0.05):
+                await api_registry.upload_custom_registry(
+                    _FakeRequest(),
+                    _FakeUpload(MAPPING_ONE),
+                    anonymous_session(),
+                    lifecycle=lifecycle,
+                    materialize=materialize,
+                    parse_limiter=lambda: anyio.CapacityLimiter(1),
+                )
+
+        timer = threading.Timer(0.2, release.set)
+        timer.start()
+        try:
+            anyio.run(scenario)
+        finally:
+            timer.cancel()
+            release.set()
+        wait_for_parse_release(lifecycle)
+
+        assert materialised == []
+        assert lifecycle.stats().accounted_bytes == 0
+        self._assert_victim_intact(victim, token, query_rev, annot_rev)
+
+    def test_a_successful_anonymous_upload_materialises_exactly_one_session(
+        self, monkeypatch
+    ):
+        lifecycle = install_lifecycle(monkeypatch, max_sessions=1)
+
+        anonymous = TestClient(app)
+        response = upload_mapping(anonymous)
+
+        assert response.status_code == 200, response.text
+        token = anonymous.cookies.get(SESSION_COOKIE_NAME)
+        assert token is not None
+        assert response.headers.get("set-cookie")
+        assert len(api_server.store) == 1
+        assert api_server.store.contains(token) is True
+        assert registry_metadata(anonymous)["revision"] == (
+            response.json()["registry"]["revision"])
+        assert lifecycle.stats().retained_bytes == 2 * MIB
+        assert lifecycle.stats().active_parses == 0
+
+    def test_a_failed_upload_preserves_an_existing_session_and_its_datasets(
+        self, monkeypatch
+    ):
+        # Mutation M5: releasing the session on a failed write even when the
+        # request did not create it would delete this user's session and its
+        # datasets. The guard must hold for every refusal.
+        lifecycle = install_lifecycle(monkeypatch)
+        client = TestClient(app)
+        query_rev, annot_rev = load_datasets(client)
+        token = client.cookies.get(SESSION_COOKIE_NAME)
+
+        # A session that owns datasets but no registry: a failed write must
+        # not hand its slot back as if the request had created it.
+        response = upload_mapping(client, b"seq_id\tucsc\n1\tchr1\n")
+        assert response.status_code == 400
+        assert api_server.store.contains(token) is True
+        assert len(api_server.store) == 1
+        run = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            assembly="hg38")
+        assert run.status_code == 200, run.text
+
+        # A session that owns a registry as well: a refused replacement
+        # leaves both the session and the committed registry untouched.
+        revision = upload_mapping(client).json()["registry"]["revision"]
+        refused = upload_mapping(client, b"seq_id\tucsc\n1\tchr1\n")
+        assert refused.status_code == 400
+        assert api_server.store.contains(token) is True
+        assert registry_metadata(client)["revision"] == revision
+        run = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            registry_rev=revision)
+        assert run.status_code == 200, run.text
+        assert lifecycle.stats().retained_bytes == 2 * MIB
+
+
+# ---------------------------------------------------------------------------
 # Clear
 # ---------------------------------------------------------------------------
 
@@ -335,6 +555,121 @@ class TestClear:
             "/api/results/data", params={"result_rev": result_rev})
         assert stale.status_code == 409
         assert stale.json()["detail"]["code"] == "revision_conflict"
+
+
+# ---------------------------------------------------------------------------
+# Atomic result invalidation (review finding F2)
+# ---------------------------------------------------------------------------
+
+
+class TestResultInvalidation:
+    def test_a_delayed_cleanup_cannot_delete_a_newer_result(
+        self, monkeypatch
+    ):
+        # Upload A commits, but its result cleanup is parked before it runs.
+        # Upload B commits and a run stores a result with B. Releasing A's
+        # cleanup must compare against the *current* registry (B), not the
+        # revision A committed, so B's result and export survive.
+        lifecycle = install_lifecycle(monkeypatch)
+        client = TestClient(app)
+        query_rev, annot_rev = load_datasets(client)
+
+        real_invalidate = api_registry.invalidate_stale_results
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+        calls = []
+
+        def delayed_cleanup(session, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                cleanup_started.set()
+                assert release_cleanup.wait(10)
+            return real_invalidate(session, **kwargs)
+
+        monkeypatch.setattr(
+            api_registry, "invalidate_stale_results", delayed_cleanup)
+
+        outcome = {}
+
+        def upload_a():
+            outcome["a"] = upload_mapping(client, MAPPING_ONE)
+
+        worker = threading.Thread(target=upload_a)
+        worker.start()
+        assert cleanup_started.wait(10)
+
+        upload_b = upload_mapping(client, MAPPING_TWO)
+        assert upload_b.status_code == 200, upload_b.text
+        revision_b = upload_b.json()["registry"]["revision"]
+
+        run = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            registry_rev=revision_b)
+        assert run.status_code == 200, run.text
+        result_b = run.json()["result_revision"]
+
+        release_cleanup.set()
+        worker.join(10)
+        assert outcome["a"].status_code == 200, outcome["a"].text
+
+        kept = client.get(
+            "/api/results/data", params={"result_rev": result_b})
+        assert kept.status_code == 200, kept.text
+        exported = client.get(
+            "/api/export/csv", params={"result_rev": result_b})
+        assert exported.status_code == 200, exported.text
+        assert "chr1" in exported.text
+        assert registry_metadata(client)["revision"] == revision_b
+        assert lifecycle.stats().retained_bytes == 2 * MIB
+
+    def test_a_delayed_clear_cannot_delete_a_newer_result(self, monkeypatch):
+        install_lifecycle(monkeypatch)
+        client = TestClient(app)
+        query_rev, annot_rev = load_datasets(client)
+        revision_a = upload_mapping(client).json()["registry"]["revision"]
+
+        real_invalidate = api_registry.invalidate_stale_results
+        cleanup_started = threading.Event()
+        release_cleanup = threading.Event()
+        calls = []
+
+        def delayed_cleanup(session, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                cleanup_started.set()
+                assert release_cleanup.wait(10)
+            return real_invalidate(session, **kwargs)
+
+        monkeypatch.setattr(
+            api_registry, "invalidate_stale_results", delayed_cleanup)
+
+        outcome = {}
+
+        def clear_a():
+            outcome["clear"] = client.delete(
+                "/api/registry", params={"registry_rev": revision_a})
+
+        worker = threading.Thread(target=clear_a)
+        worker.start()
+        assert cleanup_started.wait(10)
+
+        upload_b = upload_mapping(client, MAPPING_TWO)
+        assert upload_b.status_code == 200, upload_b.text
+        revision_b = upload_b.json()["registry"]["revision"]
+        run = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            registry_rev=revision_b)
+        assert run.status_code == 200, run.text
+        result_b = run.json()["result_revision"]
+
+        release_cleanup.set()
+        worker.join(10)
+        assert outcome["clear"].status_code == 200, outcome["clear"].text
+
+        kept = client.get(
+            "/api/results/data", params={"result_rev": result_b})
+        assert kept.status_code == 200, kept.text
+        assert registry_metadata(client)["revision"] == revision_b
 
 
 # ---------------------------------------------------------------------------
@@ -450,9 +785,14 @@ class TestLiveness:
             return load_custom_registry(content)
 
         lifecycle = install_lifecycle(monkeypatch, loader=blocking_loader)
-        # A session that expires while the mapping is being parsed.
+        # An existing session that expires while its mapping is being
+        # parsed. (An anonymous request owns no session, so "the session
+        # expires during the parse" can only apply to an existing one.)
         store = _ExpiringStore(lifecycle)
         monkeypatch.setattr(api_server, "store", store)
+        load_datasets(client)
+        token = client.cookies.get(SESSION_COOKIE_NAME)
+        assert store.contains(token) is True
 
         outcome = {}
 
@@ -469,11 +809,14 @@ class TestLiveness:
         response = outcome["response"]
         assert response.status_code == 409
         assert response.json()["detail"]["code"] == "session_expired"
-        # Nothing was committed and nothing leaked.
-        assert lifecycle.current_revision("") is None
+        # Nothing was committed, the session's registry slot is gone and
+        # every reservation was released.
+        assert store.contains(token) is False
+        assert lifecycle.current_revision(token) is None
         assert lifecycle.stats().retained_bytes == 0
         assert lifecycle.stats().active_parses == 0
         assert lifecycle.stats().transient_parse_bytes == 0
+        assert lifecycle.stats().reserved_retained_bytes == 0
 
     def test_clear_during_an_in_flight_upload_supersedes_it(
         self, monkeypatch, client
@@ -514,6 +857,51 @@ class TestLiveness:
         # The superseded upload did not resurrect a registry.
         assert registry_metadata(client) is None
         assert lifecycle.stats().retained_bytes == 0
+
+    def test_arrival_order_is_reserved_before_the_body_is_read(
+        self, monkeypatch, client
+    ):
+        # Mutation M9: taking the arrival-order ticket after reading the body
+        # lets a clear that arrives while the body is still being read commit
+        # a higher stamp, after which the older upload would no longer look
+        # superseded and could resurrect a registry.
+        lifecycle = install_lifecycle(monkeypatch)
+        load_datasets(client)
+
+        body_started = threading.Event()
+        release_body = threading.Event()
+        real_read = api_registry._read_mapping
+
+        async def blocking_read(file, *, max_bytes):
+            body_started.set()
+            assert release_body.wait(10)
+            return await real_read(file, max_bytes=max_bytes)
+
+        monkeypatch.setattr(api_registry, "_read_mapping", blocking_read)
+
+        outcome = {}
+
+        def upload():
+            outcome["response"] = upload_mapping(client, MAPPING_TWO)
+
+        worker = threading.Thread(target=upload)
+        worker.start()
+        assert body_started.wait(10)
+
+        # A later-started clear commits while the earlier upload has not even
+        # finished reading its body. The upload must still be superseded.
+        cleared = second_tab(client).delete("/api/registry")
+        assert cleared.status_code == 200
+        assert cleared.json()["cleared"] is False
+
+        release_body.set()
+        worker.join(10)
+
+        response = outcome["response"]
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "revision_conflict"
+        assert registry_metadata(client) is None
+        assert lifecycle.stats().accounted_bytes == 0
 
 
 def _store_with_ttl(lifecycle, ttl_seconds: float) -> SessionStore:
@@ -717,6 +1105,120 @@ class TestExecution:
         # The lease was released: only the current registry is charged.
         assert lifecycle.stats().retained_bytes == 2 * MIB
         assert lifecycle.stats().active_parses == 0
+
+    def test_clear_during_the_run_discards_the_result_and_releases_the_lease(
+        self, monkeypatch, client
+    ):
+        lifecycle = install_lifecycle(monkeypatch)
+        query_rev, annot_rev = load_datasets(client)
+        revision = upload_mapping(client).json()["registry"]["revision"]
+
+        started = threading.Event()
+        release = threading.Event()
+        real_execute = api_server.execute_annotation_core
+
+        def blocking_execute(request):
+            started.set()
+            assert release.wait(10)
+            return real_execute(request)
+
+        monkeypatch.setattr(
+            api_server, "execute_annotation_core", blocking_execute)
+
+        outcome = {}
+
+        def run():
+            outcome["response"] = run_execution(
+                client, query_rev=query_rev, annot_rev=annot_rev,
+                registry_rev=revision)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert started.wait(10)
+
+        # Another tab clears the mapping while the run is executing.
+        cleared = second_tab(client).delete(
+            "/api/registry", params={"registry_rev": revision})
+        assert cleared.status_code == 200
+        assert cleared.json()["cleared"] is True
+        # The retired mapping stays charged while the run still holds it.
+        assert lifecycle.stats().retained_bytes == 2 * MIB
+
+        release.set()
+        worker.join(10)
+
+        response = outcome["response"]
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert detail["code"] == "revision_conflict"
+        assert detail["stale"] == ["registry"]
+        session = api_server.store.get(
+            client.cookies.get(SESSION_COOKIE_NAME))
+        assert "result" not in session.data
+        assert registry_metadata(client) is None
+        # The lease was released: nothing stays charged.
+        assert lifecycle.stats().accounted_bytes == 0
+        assert lifecycle.stats().active_parses == 0
+
+    def test_same_digest_reupload_during_the_run_keeps_the_result(
+        self, monkeypatch, client
+    ):
+        # Mutation M13: deleting the stored result on *every* upload would
+        # invalidate a result that is still bound to the unchanged registry.
+        lifecycle = install_lifecycle(monkeypatch)
+        query_rev, annot_rev = load_datasets(client)
+        first = upload_mapping(client).json()["registry"]
+        revision = first["revision"]
+        before = run_execution(
+            client, query_rev=query_rev, annot_rev=annot_rev,
+            registry_rev=revision)
+        assert before.status_code == 200, before.text
+        old_result = before.json()["result_revision"]
+
+        started = threading.Event()
+        release = threading.Event()
+        real_execute = api_server.execute_annotation_core
+
+        def blocking_execute(request):
+            started.set()
+            assert release.wait(10)
+            return real_execute(request)
+
+        monkeypatch.setattr(
+            api_server, "execute_annotation_core", blocking_execute)
+
+        outcome = {}
+
+        def run():
+            outcome["response"] = run_execution(
+                client, query_rev=query_rev, annot_rev=annot_rev,
+                registry_rev=revision)
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        assert started.wait(10)
+
+        again = upload_mapping(second_tab(client))
+        assert again.status_code == 200, again.text
+        assert again.json()["reused"] is True
+        assert again.json()["registry"]["revision"] == revision
+
+        # The result stored before the identical re-upload is still valid.
+        kept = client.get(
+            "/api/results/data", params={"result_rev": old_result})
+        assert kept.status_code == 200, kept.text
+
+        release.set()
+        worker.join(10)
+        response = outcome["response"]
+        assert response.status_code == 200, response.text
+        assert response.json()["registry"]["revision"] == revision
+        new_result = response.json()["result_revision"]
+        assert client.get(
+            "/api/results/data", params={"result_rev": new_result}
+        ).status_code == 200
+        assert registry_metadata(client)["revision"] == revision
+        assert lifecycle.stats().retained_bytes == 2 * MIB
 
     @pytest.mark.parametrize("engine", ["bedtools", "polars-bio"])
     def test_both_engines_normalize_with_the_custom_mapping(
@@ -1005,6 +1507,10 @@ class TestAccounting:
             timer.cancel()
             release.set()
 
+        # ``run_sync`` is abandoned on cancellation, so the worker may still
+        # be finishing the parse it started. Wait for it before inspecting
+        # the accounting.
+        wait_for_parse_release(lifecycle)
         stats = lifecycle.stats()
         # No parse reservation and no transient charge survive the
         # cancellation: the accounting is exactly the committed registry.

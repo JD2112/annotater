@@ -56,6 +56,7 @@ frontend already understands for revision conflicts -- with the additional
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
@@ -253,6 +254,10 @@ async def _read_mapping(file: UploadFile, *, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+class _WriteCancelled(Exception):
+    """Raised inside the worker when the request was cancelled before commit."""
+
+
 async def upload_custom_registry(
     request: Request,
     file: UploadFile,
@@ -274,8 +279,7 @@ async def upload_custom_registry(
     # Arrival-order stamp (the issue #55 pattern): the stamp is taken
     # before the slow parse, so a write that started earlier can never
     # overwrite one that started later. An anonymous request owns no
-    # session yet and cannot race with anything, so it is stamped when its
-    # session is created.
+    # session yet and cannot race with anything.
     ticket = lifecycle.reserve_write(session.token) if session.token else None
 
     content = await _read_mapping(file, max_bytes=DEFAULT_MAX_BYTES)
@@ -288,12 +292,32 @@ async def upload_custom_registry(
             f"{DEFAULT_MAX_ROWS:,} sequences.",
         )
 
-    # First state write: the registry belongs to a session, so the session
-    # is materialised here. The mapping is parsed inside the lifecycle (the
-    # admission must be decided before a mapping is parsed), so a mapping
-    # that is refused afterwards gives its session slot back below.
+    # An anonymous write does not materialise its session here. The session
+    # is created by ``_commit_token`` only at the successful commit, inside
+    # the lifecycle (see ``register(materialize=...)``). Invalid mappings,
+    # 413/429 refusals, superseded writes and cancelled parses therefore
+    # never allocate a session slot and can never evict a live session
+    # (review finding F1). ``created`` records that any session a failed
+    # commit created is ours alone and must be handed back; in every normal
+    # refusal path no session exists yet.
     created = not session.token
-    session = materialize(request, session)
+
+    # A cancelled request must not materialise a session either. The worker
+    # thread cannot observe task cancellation directly, so the coroutine
+    # records it when the cancelled ``run_sync`` returns and the worker
+    # re-checks the flag immediately before committing. ``run_sync`` is
+    # abandoned on cancellation: the worker finishes releasing its parse
+    # reservation instead of outliving a commit it is no longer allowed to
+    # make.
+    cancelled = threading.Event()
+
+    def _commit_token() -> str:
+        nonlocal session
+        if cancelled.is_set():
+            raise _WriteCancelled()
+        stored = materialize(request, session)
+        session = stored
+        return stored.token
 
     def _register():
         return lifecycle.register(
@@ -302,6 +326,7 @@ async def upload_custom_registry(
             ticket=ticket,
             wait_seconds=(
                 PARSE_WAIT_SECONDS if wait_seconds is None else wait_seconds),
+            materialize=_commit_token if created else None,
         )
 
     try:
@@ -310,19 +335,31 @@ async def upload_custom_registry(
         # thread-pool limiter) so the event loop keeps serving other
         # sessions while this mapping is parsed (issue #55).
         result = await anyio.to_thread.run_sync(
-            _register, limiter=parse_limiter())
-    except Exception as exc:
-        if created and release_session is not None:
-            # Nothing was stored: a refused write must not consume session
-            # capacity (review finding N4).
-            if lifecycle.current_revision(session.token) is None:
-                release_session(request, session)
+            _register, limiter=parse_limiter(), abandon_on_cancel=True)
+    except BaseException as exc:
+        cancelled.set()
+        if not isinstance(exc, Exception):
+            raise
+        if (
+            created
+            and session.token
+            and release_session is not None
+            and lifecycle.current_revision(session.token) is None
+        ):
+            # Only a catastrophic failure *after* commit-time
+            # materialisation can leave a session behind. It is our own new
+            # session (never a victim), so dropping it restores no other
+            # session's state and is not a substitute for lazy allocation.
+            release_session(request, session)
         raise translate_registry_error(exc) from None
 
     # A change of the mapping content invalidates every result derived from
-    # the previous content (SPEC 5.1.1 §9). Identical content changes
-    # nothing, so the result stays valid.
-    invalidate_stale_results(session, current_revision=result.revision)
+    # the previous content (SPEC 5.1.1 §9). The check is made against the
+    # session's *current* committed revision under the session lock, so a
+    # slow cleanup from an earlier write cannot delete a result produced
+    # with a newer registry. Identical content changes nothing, so the
+    # result stays valid.
+    invalidate_stale_results(session, lifecycle=lifecycle)
     return {
         "status": "success",
         "registry": custom_registry_payload(
@@ -413,9 +450,11 @@ def clear_custom_registry(
         )
 
     # A result derived from the cleared mapping is stale the moment the
-    # mapping is discarded (SPEC 5.1.1 §9). A result derived from anything
-    # else is left alone.
-    invalidate_stale_results(session, current_revision=None)
+    # mapping is discarded (SPEC 5.1.1 §9). A result derived from a newer
+    # registry -- or from anything else -- is left alone; the check reads
+    # the current committed revision under the session lock, exactly like
+    # the upload path.
+    invalidate_stale_results(session, lifecycle=lifecycle)
     return {"status": "success", "cleared": outcome.cleared, "registry": None}
 
 
@@ -427,15 +466,21 @@ def clear_custom_registry(
 def invalidate_stale_results(
     session: Session,
     *,
-    current_revision: Optional[str],
+    lifecycle: RegistryLifecycle,
 ) -> bool:
     """Drop a stored result that was derived from a *different* custom map.
 
+    The comparison is against the session's **current** committed registry
+    revision, read while holding the session lock -- the same critical
+    section that removes the result. A cleanup that is delayed past a newer
+    upload therefore sees the newer revision and leaves a result produced
+    with it alone; a result derived from the replaced content is dropped.
     Only custom-registry results are affected: a bundled-assembly result or
     a keep-original-names result is unrelated to the session's custom
     mapping and stays valid. Returns whether a result was dropped.
     """
     with session.lock:
+        current_revision = lifecycle.current_revision(session.token)
         result = session.data.get("result")
         if result is None:
             return False

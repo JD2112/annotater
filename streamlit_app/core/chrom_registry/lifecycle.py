@@ -1047,6 +1047,7 @@ class RegistryLifecycle:
         *,
         ticket: RegistryWriteTicket | None = None,
         wait_seconds: float = DEFAULT_PARSE_WAIT_SECONDS,
+        materialize: Callable[[], str] | None = None,
     ) -> RegistryWriteResult:
         """Commit a custom mapping for ``token`` (build or reuse by digest).
 
@@ -1060,48 +1061,68 @@ class RegistryLifecycle:
         refused with a retryable 429 instead. Any failure, supersession or
         expired session releases the reservation and never advances the
         high-water mark.
+
+        ``materialize`` is the commit-time materialisation primitive for a
+        request that does not own a stored session yet (an anonymous write).
+        It is called exactly once, under the lifecycle lock, after the
+        mapping has been admitted and parsed and immediately before the
+        commit; it must store the session and return its token. A request
+        that ends in an invalid mapping, a 413, a 429 or a cancelled parse
+        never reaches it, so no session is created or evicted for a write
+        that stores nothing. It is mutually exclusive with a non-empty
+        ``token``.
         """
         data = _as_bytes(content)
         if not token:
-            raise RegistrySessionExpired(
-                "a custom registry requires a stored session")
+            if materialize is None:
+                raise RegistrySessionExpired(
+                    "a custom registry requires a stored session")
+        elif materialize is not None:
+            raise ValueError(
+                "materialize is only valid for a session that does not exist")
         if ticket is not None and ticket.token != token:
             raise ValueError("write ticket belongs to another session")
-        if ticket is None:
+        if token and ticket is None:
             # Callers that did not reserve before parsing are still ordered by
             # the moment they entered this write.
             ticket = self.reserve_write(token)
         digest = hashlib.sha256(data).hexdigest()
         moment = self._clock()
 
-        # Fast path: identical content already committed -> no parse at all.
-        with self._lock:
-            if not self._is_live(token):
-                self._drop_slot_locked(token)
-                raise RegistrySessionExpired(
-                    "the session expired before the registry write committed")
-            slot = self._slots.get(token)
-            if slot is not None and self._superseded(slot, ticket):
-                raise RegistryWriteConflict(
-                    "a later-started registry write already committed for this "
-                    "session; this older write was discarded")
-            if (
-                slot is not None
-                and slot.entry is not None
-                and slot.entry.digest == digest
-            ):
-                self._commit_stamp_locked(slot, ticket, moment)
-                return RegistryWriteResult(
-                    revision=slot.entry.revision,
-                    digest=digest,
-                    reused=True,
-                    registry=slot.entry.registry,
+        if token:
+            # Fast path: identical content already committed -> no parse at
+            # all. An anonymous write owns no registry yet, so it has no
+            # digest to reuse and no slot to order against.
+            with self._lock:
+                if not self._is_live(token):
+                    self._drop_slot_locked(token)
+                    raise RegistrySessionExpired(
+                        "the session expired before the registry write "
+                        "committed")
+                slot = self._slots.get(token)
+                if slot is not None and self._superseded(slot, ticket):
+                    raise RegistryWriteConflict(
+                        "a later-started registry write already committed for "
+                        "this session; this older write was discarded")
+                if (
+                    slot is not None
+                    and slot.entry is not None
+                    and slot.entry.digest == digest
+                ):
+                    self._commit_stamp_locked(slot, ticket, moment)
+                    return RegistryWriteResult(
+                        revision=slot.entry.revision,
+                        digest=digest,
+                        reused=True,
+                        registry=slot.entry.registry,
+                    )
+                previous_retained = (
+                    slot.entry.retained_bytes
+                    if slot is not None and slot.entry is not None
+                    else 0
                 )
-            previous_retained = (
-                slot.entry.retained_bytes
-                if slot is not None and slot.entry is not None
-                else 0
-            )
+        else:
+            previous_retained = 0
 
         estimate = estimate_registry(
             count_custom_mapping_rows(data), len(data))
@@ -1114,7 +1135,29 @@ class RegistryLifecycle:
             registry = self._loader(data)
 
             with self._lock:
-                if not self._is_live(token):
+                if materialize is not None:
+                    # A brand-new session is stored here, at the successful
+                    # commit, and no failure path above can reach this point.
+                    # Materialising only now is what guarantees that a
+                    # refused write never consumes a session slot or evicts a
+                    # live session. The liveness probe closes the remaining
+                    # window in which a concurrent create evicted the new
+                    # session before it could be committed.
+                    token = materialize()
+                    if not token:
+                        raise RegistrySessionExpired(
+                            "the session could not be materialised for the "
+                            "registry commit; nothing was committed")
+                    if token in self._slots:
+                        raise ValueError(
+                            "materialize returned a token that already has "
+                            "registry lifecycle state")
+                    if not self._is_live(token):
+                        raise RegistrySessionExpired(
+                            "the session was evicted before the registry "
+                            "commit; nothing was committed")
+                    moment = self._clock()
+                elif not self._is_live(token):
                     # A stale completion must not resurrect an evicted session.
                     self._drop_slot_locked(token)
                     raise RegistrySessionExpired(
