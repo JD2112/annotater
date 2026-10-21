@@ -650,13 +650,15 @@ def test_a_failed_upload_can_be_retried_with_the_same_file(new_context, base_url
         lambda r: uploads.append(r.status) if "/api/upload" in r.url else None,
     )
 
-    page.locator("input[type=file]").nth(0).set_input_files(bad)
-    page.wait_for_selector("text=Uploading and parsing bad.bed")
-    page.wait_for_timeout(1000)
+    with page.expect_response(lambda r: "/api/upload" in r.url) as first:
+        page.locator("input[type=file]").nth(0).set_input_files(bad)
+    assert first.value.status == 400
+    # The refusal is reported and stays on screen.
+    page.wait_for_selector("text=/canonical intervals require end > start/")
     assert uploads == [400], uploads
-    assert page.get_by_role("alert").count() >= 1
 
     # The same file, selected again, must be sent again.
-    page.locator("input[type=file]").nth(0).set_input_files(bad)
-    page.wait_for_timeout(1500)
+    with page.expect_response(lambda r: "/api/upload" in r.url) as second:
+        page.locator("input[type=file]").nth(0).set_input_files(bad)
+    assert second.value.status == 400
     assert uploads == [400, 400], uploads
