@@ -904,6 +904,40 @@ class RegistryWriteResult:
     registry: ChromosomeRegistry
 
 
+@dataclass(frozen=True)
+class RegistryMetadata:
+    """The committed registry's identity, without its content.
+
+    A caller (the HTTP layer) reports this to a client so it can bind a
+    later request to exactly this registry revision. The mapping content is
+    never part of it: only the digest, the display name and the number of
+    sequences are.
+    """
+
+    revision: str
+    digest: str
+    name: str
+    row_count: int
+    retained_bytes: int
+
+
+@dataclass(frozen=True)
+class RegistryClearResult:
+    """The outcome of a revision-scoped clear.
+
+    ``cleared`` is True only when a registry was removed. ``current_revision``
+    is the revision that is committed after the call (None when nothing is
+    committed). ``reason`` is None on success or a no-op,
+    ``"revision_required"`` when a registry exists but the caller named no
+    revision, and ``"revision_mismatch"`` when the named revision is not
+    the committed one.
+    """
+
+    cleared: bool
+    current_revision: str | None
+    reason: str | None
+
+
 @dataclass
 class _RegistrySlot:
     token: str
@@ -1167,8 +1201,8 @@ class RegistryLifecycle:
                 self._slots[token] = slot
             if self._superseded(slot, ticket):
                 raise RegistryWriteConflict(
-                    "a later-started registry write already committed for this "
-                    "session; this older clear was discarded")
+                    "a later-started registry write already committed for "
+                    "this session; this older clear was discarded")
             current = slot.entry.revision if slot.entry is not None else None
             if expected_revision is not None and current != expected_revision:
                 raise RegistryWriteConflict(
@@ -1181,6 +1215,74 @@ class RegistryLifecycle:
             slot.last_used = moment
             self._commit_stamp_locked(slot, ticket, moment)
             return removed
+
+    def clear_for_revision(
+        self,
+        token: str,
+        *,
+        ticket: RegistryWriteTicket | None = None,
+        expected_revision: str | None = None,
+    ) -> RegistryClearResult:
+        """Remove the session's registry, atomically, for the named revision.
+
+        This is the revision-scoped clear of the HTTP contract, and it is
+        atomic: the "is there a registry, and is it the one the caller
+        names?" decision and the removal happen under one lock, so a registry
+        committed between the caller's own check and this call can never be
+        removed by a clear that did not name it.
+
+        * nothing committed -> nothing removed, and a tombstone is left so an
+          in-flight earlier write cannot resurrect a registry afterwards;
+        * a registry is committed and ``expected_revision`` is None -> nothing
+          is removed and ``reason`` is ``"revision_required"``: a removal must
+          name the revision it owns;
+        * a registry is committed and ``expected_revision`` differs -> nothing
+          is removed and ``reason`` is ``"revision_mismatch"``;
+        * a registry is committed and ``expected_revision`` matches -> it is
+          retired (its accounting is released when its last lease ends).
+
+        A refused clear commits nothing and does not advance the committed
+        write-order stamp, so it can never make an in-flight upload look
+        superseded.
+        """
+        if not token:
+            raise RegistrySessionExpired(
+                "a custom registry requires a stored session")
+        if ticket is not None and ticket.token != token:
+            raise ValueError("write ticket belongs to another session")
+        if ticket is None:
+            ticket = self.reserve_write(token)
+        moment = self._clock()
+        with self._lock:
+            if not self._is_live(token):
+                self._drop_slot_locked(token)
+                raise RegistrySessionExpired(
+                    "the session expired before the registry clear committed")
+            slot = self._slots.get(token)
+            if slot is None:
+                slot = _RegistrySlot(token=token, last_used=moment)
+                self._slots[token] = slot
+            if self._superseded(slot, ticket):
+                raise RegistryWriteConflict(
+                    "a later-started registry write already committed for "
+                    "this session; this older clear was discarded")
+            current = slot.entry.revision if slot.entry is not None else None
+            if current is None:
+                # Nothing to remove, but the tombstone is still written: an
+                # in-flight write that arrived earlier must not resurrect a
+                # registry after this clear.
+                slot.last_used = moment
+                self._commit_stamp_locked(slot, ticket, moment)
+                return RegistryClearResult(False, None, None)
+            if expected_revision is None:
+                return RegistryClearResult(False, current, "revision_required")
+            if expected_revision != current:
+                return RegistryClearResult(False, current, "revision_mismatch")
+            slot.entry.retire()
+            slot.entry = None
+            slot.last_used = moment
+            self._commit_stamp_locked(slot, ticket, moment)
+            return RegistryClearResult(True, None, None)
 
     def acquire(
         self,
@@ -1226,6 +1328,29 @@ class RegistryLifecycle:
                 return None
             slot = self._slots.get(token)
             return slot.entry.registry if slot and slot.entry else None
+
+    def current_metadata(self, token: str) -> RegistryMetadata | None:
+        """The committed registry's identity, or None when there is none.
+
+        The identity is what a client needs to bind a later request to
+        exactly this registry (its revision, its content digest, its display
+        name and its sequence count). The mapping content itself is never
+        part of it.
+        """
+        with self._lock:
+            if not token or not self._is_live(token):
+                return None
+            slot = self._slots.get(token)
+            entry = slot.entry if slot else None
+            if entry is None:
+                return None
+            return RegistryMetadata(
+                revision=entry.revision,
+                digest=entry.digest,
+                name=entry.registry.name,
+                row_count=len(entry.registry),
+                retained_bytes=entry.retained_bytes,
+            )
 
     def release_session(self, token: str) -> None:
         """Release a session's slot (session expiry or LRU eviction)."""

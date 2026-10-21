@@ -26,6 +26,7 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from streamlit_app import api_registry
 from streamlit_app.api_sessions import (
     SECURE_SESSION_COOKIE_NAME,
     SESSION_COOKIE_NAME,
@@ -191,13 +192,40 @@ app.add_middleware(
 store = SessionStore()
 _SESSION_TTL_SECONDS = int(store.ttl_seconds)
 
-#: Process-wide custom-registry accounting and session-scoped lifecycle. No
-#: public endpoint uses it yet (M2.2a is an internal foundation); wiring the
-#: eviction callback now guarantees that session expiry/LRU eviction releases
-#: registry accounting as soon as a registry is attached.
+#: Process-wide custom-registry accounting and session-scoped lifecycle
+#: (M2.2a). The ``/api/registry`` endpoints (M2.2b) are its public surface.
+#: Wiring the eviction callback guarantees that session expiry/LRU eviction
+#: releases registry accounting as soon as a registry is attached.
 registry_lifecycle = RegistryLifecycle(
     is_live=lambda token: store.contains(token))
 store.set_on_evict(registry_lifecycle.release_session)
+
+
+def bind_session_store(target: SessionStore) -> SessionStore:
+    """Attach the registry lifecycle's cleanup to a session store.
+
+    Session expiry and LRU eviction must release a session's custom
+    registry (and its accounting) immediately. The callback is installed by
+    the store *outside* its own lock, so it can take the lifecycle lock
+    without a re-entrant deadlock. Tests that replace the store use this
+    helper so the wiring survives the replacement.
+    """
+    target.set_on_evict(registry_lifecycle.release_session)
+    return target
+
+
+def _release_failed_session(request: Request, session: Session) -> None:
+    """Give back the session slot a refused registry write allocated.
+
+    A custom mapping is parsed inside the registry lifecycle (the admission
+    must be decided before a mapping is parsed), so the session exists
+    before the mapping is known to be valid. A write that stored nothing
+    must not consume session capacity (review finding N4): the slot is
+    returned and no cookie is issued for the discarded session.
+    """
+    store.drop(session.token)
+    request.state.new_session_token = None
+
 
 # ---------------------------------------------------------------------------
 # Dedicated parsing capacity (issue #55)
@@ -861,6 +889,76 @@ def clear_dataset(req: DatasetClearRequest, session: Session = Depends(get_sessi
     return {"status": "success", "cleared": req.role, "was_loaded": was_loaded}
 
 
+# ---------------------------------------------------------------------------
+# Custom chromosome registries (M2.2b)
+#
+# A custom chromosome mapping is a source of chromosome identity, not a
+# genome assembly (SPEC 5.1.1). It is session-scoped: it is never
+# persisted, never shared between sessions and never written to the bundled
+# registry data. The registry lifecycle (resource accounting, admission,
+# write ordering, leases, expiry cleanup) is the M2.2a foundation, reused
+# unchanged; this layer only maps it onto HTTP.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/registry")
+async def upload_registry(
+    request: Request,
+    file: UploadFile = File(...),
+    session: Session = Depends(get_session),
+):
+    """Uploads and validates a custom chromosome mapping for this session.
+
+    The mapping must be a UTF-8 TSV with the header
+    ``assembly<TAB>ucsc<TAB>ensembl<TAB>genbank<TAB>refseq``. It is
+    validated structurally (never repaired) and admitted against the
+    custom-mapping resource budget.
+
+    The response carries the mapping's metadata -- its revision, content
+    digest, display name and sequence count -- and never its content. An
+    identical upload reuses the committed revision without parsing again
+    (``reused`` is then true); a different mapping replaces the session's
+    registry, which invalidates every result derived from the previous
+    content.
+    """
+    return await api_registry.upload_custom_registry(
+        request,
+        file,
+        session,
+        lifecycle=registry_lifecycle,
+        materialize=_materialize_session,
+        parse_limiter=_parse_limiter,
+        release_session=_release_failed_session,
+    )
+
+
+@app.get("/api/registry")
+def get_registry(session: Session = Depends(get_session)):
+    """Returns the current session's custom chromosome mapping metadata.
+
+    ``registry`` is null when the session has no custom mapping. The
+    mapping's content is never returned. A read allocates no session.
+    """
+    return api_registry.current_registry(
+        session, lifecycle=registry_lifecycle)
+
+
+@app.delete("/api/registry")
+def delete_registry(
+    registry_rev: Optional[str] = Query(None, max_length=_REVISION_MAX_LENGTH),
+    session: Session = Depends(get_session),
+):
+    """Discards the session's custom chromosome mapping.
+
+    The revision the client owns must be named, exactly like a dataset
+    clear: a stored mapping without a named revision is refused with 428
+    and a stale revision with 409, and neither removes anything. Clearing
+    invalidates every result derived from the discarded mapping.
+    """
+    return api_registry.clear_custom_registry(
+        session, lifecycle=registry_lifecycle, registry_rev=registry_rev)
+
+
 class ColumnMappingRequest(BaseModel):
     chr_col: str
     start_col: str
@@ -1020,6 +1118,11 @@ class ExecutionRequest(BaseModel):
     # Revisions of the datasets the client displays and means to run on.
     query_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
     annot_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
+    # Revision of the session's custom chromosome mapping, when the run
+    # normalizes chromosome names with a custom mapping instead of a bundled
+    # genome assembly. Naming it binds the run to exactly that mapping (and
+    # only that mapping).
+    registry_rev: Optional[str] = Field(None, max_length=_REVISION_MAX_LENGTH)
 
 
 @app.post("/api/execute")
@@ -1030,6 +1133,16 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     ``streamlit_app.core.execution`` service (the same one the Streamlit GUI
     uses). This endpoint maps the request onto that service and serializes the
     outcome; it contains no scientific logic of its own.
+
+    Chromosome source (SPEC 5.1.1): a run normalizes chromosome names with
+    exactly one source -- the session's custom mapping (``registry_rev``) or
+    a bundled genome assembly (``assembly``) -- or with none at all, when
+    the names are kept as provided. Naming both is refused, and a run never
+    mixes the two sources. A custom mapping is bound by revision: the run
+    needs the named revision to be the session's current one, and the
+    registry's identity is checked again before the result is stored, so a
+    mapping that was replaced or cleared during the run discards the result
+    instead of storing a stale one.
     """
     claimed = {"query": req.query_rev, "annot": req.annot_rev}
     with session.lock:
@@ -1050,7 +1163,37 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
             f"Nothing was run. Re-upload {'them' if plural else 'it'} in this tab.",
             stale,
         )
+    # A run normalizes chromosome names with exactly one source. Naming
+    # both a custom mapping and a bundled assembly is refused; a run that
+    # keeps the names as provided normalizes nothing and therefore has no
+    # source to mix.
+    normalizing = req.chr_naming is not None
+    if normalizing and req.registry_rev is not None and req.assembly is not None:
+        # One run, one chromosome source: a custom mapping and a bundled
+        # assembly are never combined.
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "registry_source_conflict",
+                "message": (
+                    "Choose one chromosome source for this run: a custom "
+                    "chromosome mapping (registry_rev) or a bundled genome "
+                    "assembly (assembly), not both."
+                ),
+                "stale": [],
+            },
+        )
     query, annot = stored["query"], stored["annot"]
+
+    # A custom mapping is bound by revision and leased for the duration of
+    # the run, so its accounting survives a concurrent replacement. The run
+    # itself happens outside the session lock.
+    binding = None
+    registry = None
+    if normalizing and req.registry_rev is not None:
+        binding = api_registry.bind_custom_registry(
+            registry_lifecycle, session.token, req.registry_rev)
+        registry = binding.registry
 
     request = AnnotationRequest(
         query=query["df"],
@@ -1064,6 +1207,7 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
         feature_types=tuple(req.feature_types or ()),
         chr_naming=req.chr_naming,
         assembly=req.assembly,
+        registry=registry,
         coord_vcf_header_lines=query.get("vcf_header_lines"),
     )
 
@@ -1075,6 +1219,11 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
         raise HTTPException(status_code=500, detail=exc.message)
     except AnnotationError as exc:
         raise HTTPException(status_code=400, detail=exc.message)
+    finally:
+        # Every failure path releases the lease, so a failed run never keeps
+        # a registry's accounting alive.
+        if binding is not None:
+            binding.release()
 
     result_df = outcome.result_df
 
@@ -1093,10 +1242,24 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
     # are ones the previous response contract could not carry; they are kept
     # for the results/export endpoints and surfaced to the client.
     result_rev = new_revision()
+    # Provenance of the chromosome source this run used: the custom mapping
+    # it was bound to, the bundled assembly it normalized with, or nothing at
+    # all (names kept as provided). A custom mapping has no assembly
+    # identity (SPEC 5.1.1 §7).
+    if binding is not None:
+        registry_provenance = binding.provenance()
+    elif outcome.chromosome_normalization is not None:
+        registry_provenance = api_registry.bundled_registry_payload(
+            outcome.chromosome_normalization.assembly_id,
+            outcome.chromosome_normalization.registry_name,
+        )
+    else:
+        registry_provenance = api_registry.no_registry_payload()
     result_entry = {
         "rev": result_rev,
         "query_rev": query["rev"],
         "annot_rev": annot["rev"],
+        "registry": registry_provenance,
         "df": result_df,
         "coord_format": query.get("format"),
         "vcf_header_lines": outcome.vcf_header_lines,
@@ -1128,6 +1291,19 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
                 "Re-upload and run again.",
                 moved,
             )
+        if binding is not None and not api_registry.binding_is_current(
+            registry_lifecycle, binding
+        ):
+            # The custom mapping was replaced or cleared in another tab
+            # while this run was executing: the result belongs to a mapping
+            # this session no longer uses, so it is discarded, not stored.
+            raise _revision_conflict(
+                "The custom chromosome mapping was replaced or cleared in "
+                "another tab of this browser session while this run was "
+                "executing; its result was discarded. Upload the mapping "
+                "again and run again.",
+                ["registry"],
+            )
         session.data["result"] = result_entry
 
     # Generate Chart Data
@@ -1157,6 +1333,10 @@ def execute_annotation(req: ExecutionRequest, session: Session = Depends(get_ses
         "result_revision": result_rev,
         "query_revision": query["rev"],
         "annot_revision": annot["rev"],
+        # Which chromosome source this run used: the custom mapping it was
+        # bound to (revision, digest, name, sequence count), the bundled
+        # assembly it normalized with, or nothing (names kept as provided).
+        "registry": registry_provenance,
         "stats": {
             "query_count": query_count,
             "result_count": len(result_df),

@@ -33,6 +33,17 @@ class RevisionClient(TestClient):
                 for role in ("query", "annot"):
                     if role in self.revisions:
                         body.setdefault(f"{role}_rev", self.revisions[role])
+                # A custom chromosome mapping is bound to a run by revision,
+                # exactly like a dataset: the tab echoes the revision of the
+                # mapping it displays. A bundled assembly is a different
+                # chromosome source, so it is never combined with one.
+                registry_rev = self.revisions.get("registry")
+                if (
+                    registry_rev
+                    and "assembly" not in body
+                    and body.get("chr_naming")
+                ):
+                    body.setdefault("registry_rev", registry_rev)
                 kwargs["json"] = body
         elif method == "POST" and path == "/api/apply-mapping":
             body = kwargs.get("json")
@@ -64,7 +75,14 @@ class RevisionClient(TestClient):
         return response
 
     def _record(self, method, path, response):
-        if method != "POST" or response.status_code != 200:
+        if response.status_code != 200:
+            return
+        if method == "DELETE" and path == "/api/registry":
+            # Like the frontend, a tab that discards the custom mapping also
+            # drops the result it displayed for it.
+            self.revisions.pop("registry", None)
+            return
+        if method != "POST":
             return
         try:
             body = response.json()
@@ -84,3 +102,7 @@ class RevisionClient(TestClient):
             # result it displayed for it.
             self.revisions.pop(body.get("cleared"), None)
             self.revisions.pop("result", None)
+        elif path == "/api/registry":
+            registry = body.get("registry")
+            if registry:
+                self.revisions["registry"] = registry["revision"]
