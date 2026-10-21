@@ -918,7 +918,6 @@ class RegistryMetadata:
     digest: str
     name: str
     row_count: int
-    retained_bytes: int
 
 
 @dataclass(frozen=True)
@@ -1201,8 +1200,8 @@ class RegistryLifecycle:
                 self._slots[token] = slot
             if self._superseded(slot, ticket):
                 raise RegistryWriteConflict(
-                    "a later-started registry write already committed for "
-                    "this session; this older clear was discarded")
+                    "a later-started registry write already committed for this "
+                    "session; this older clear was discarded")
             current = slot.entry.revision if slot.entry is not None else None
             if expected_revision is not None and current != expected_revision:
                 raise RegistryWriteConflict(
@@ -1349,7 +1348,6 @@ class RegistryLifecycle:
                 digest=entry.digest,
                 name=entry.registry.name,
                 row_count=len(entry.registry),
-                retained_bytes=entry.retained_bytes,
             )
 
     def release_session(self, token: str) -> None:
