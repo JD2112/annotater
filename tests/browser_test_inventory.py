@@ -20,6 +20,7 @@ EXPECTED_BROWSER_TESTS: tuple[str, ...] = (
     f"{BROWSER_TEST_MODULE}::test_cross_tab_cleanup_cannot_wipe_a_newer_upload",
     f"{BROWSER_TEST_MODULE}::test_separate_browser_sessions_stay_independent",
     f"{BROWSER_TEST_MODULE}::test_sample_load_shows_provenance_without_hijacking_the_declaration",
+    f"{BROWSER_TEST_MODULE}::test_custom_registry_is_not_adopted_across_tabs_and_clears_its_results",
 )
 
 BROWSER_REQUIRED_ENV = "ANNOTATER_BROWSER_REQUIRED"
