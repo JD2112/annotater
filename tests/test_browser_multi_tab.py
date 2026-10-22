@@ -563,3 +563,102 @@ def test_custom_registry_is_not_adopted_across_tabs_and_clears_its_results(
     assert tab_a.locator("text=No results yet").count() == 1
     assert panel_a.get_by_text("none", exact=True).is_visible()
     assert tab_a.get_by_role("button", name="Run annotation").is_disabled()
+
+
+def test_a_replaced_dataset_never_leaves_a_stale_result(new_context, base_url, files, tmp_path):
+    """M2.5 audit finding F8: an old result is never presented or exported
+    as if it belonged to a newly uploaded dataset.
+
+    A dataset *clear* drops the result derived from the cleared revision,
+    while a dataset *replacement* keeps it (the result belongs to the run
+    that produced it). The two are safe together because the interface
+    withdraws its own displayed result on every invalidating event. This
+    test pins that behaviour in a real browser:
+
+    * re-uploading a side in the same tab withdraws the displayed result, so
+      no stale table and no stale export survive the upload;
+    * when another tab replaces the datasets, the tab that still displays
+      the old result exports *its own* rows -- never the other tab's data
+      -- and once the other tab has run, the export becomes a visible
+      conflict instead of a download.
+    """
+    context = new_context(accept_downloads=True)
+    tab_a = _open_tab(context, base_url)
+    assert "0 of 1 regions matched" in _load_and_run(tab_a, files, one_based=False)
+    assert tab_a.get_by_role("button", name="CSV", exact=True).count() == 1
+
+    # A replacement upload in the same tab withdraws the displayed result.
+    other = tmp_path / "other.tsv"
+    other.write_text("chr1\t100\t200\tr1\n")
+    tab_a.locator("input[type=file]").nth(0).set_input_files(other)
+    tab_a.wait_for_selector("text=Parsed other.tsv")
+    assert tab_a.locator("text=No results yet").count() == 1
+    assert tab_a.get_by_role("button", name="CSV", exact=True).count() == 0
+
+    # Run again, so this tab displays a result of its own (the replaced
+    # query is still loaded).
+    tab_a.click("button:has-text('Run annotation')")
+    tab_a.wait_for_selector("text=Analysis complete")
+    assert "0 of 1 regions matched" in tab_a.locator(
+        "text=/Analysis complete.*regions matched/"
+    ).inner_text()
+
+    # Another tab replaces the datasets (without running).
+    tab_b = _open_tab(context, base_url)
+    tab_b.locator("input[type=file]").nth(1).set_input_files(files / "annot.bed")
+    tab_b.wait_for_selector("text=Parsed annot.bed")
+    tab_b.locator("input[type=file]").nth(0).set_input_files(files / "regions.tsv")
+    tab_b.wait_for_selector("text=Parsed regions.tsv")
+
+    # This tab still displays its own result and exports its own rows --
+    # never the other tab's data.
+    with tab_a.expect_download() as info:
+        tab_a.get_by_role("button", name="CSV", exact=True).click()
+    exported = Path(info.value.path()).read_text()
+    assert MATCH_ROW not in exported
+    assert "chr1,100,200" in exported
+
+    # Once the other tab has run, the session's result is that tab's, so
+    # this tab's export is a visible conflict and never a download.
+    tab_b.click("button:has-text('Run annotation')")
+    tab_b.wait_for_selector("text=Analysis complete")
+    downloads = []
+    tab_a.on("download", lambda d: downloads.append(d))
+    tab_a.get_by_role("button", name="CSV", exact=True).click()
+    tab_a.wait_for_timeout(2500)
+    assert downloads == [], "a superseded result must not be downloaded"
+    assert "Changed in another tab" in tab_a.get_by_role("alert").inner_text()
+
+
+def test_a_failed_upload_can_be_retried_with_the_same_file(new_context, base_url, tmp_path):
+    """M2.5: a refused upload must be retryable with the very same file.
+
+    A native file input keeps its previous selection, and selecting the
+    same file again fires no change event. Without remounting the picker
+    after a refusal, the user's second attempt silently did nothing -- the
+    interface showed the error again and again with no new request. The
+    previously loaded dataset must survive the refusal.
+    """
+    context = new_context()
+    page = _open_tab(context, base_url)
+
+    bad = tmp_path / "bad.bed"
+    bad.write_text("chr1\t100\t50\tbroken\n")
+    uploads = []
+    page.on(
+        "response",
+        lambda r: uploads.append(r.status) if "/api/upload" in r.url else None,
+    )
+
+    with page.expect_response(lambda r: "/api/upload" in r.url) as first:
+        page.locator("input[type=file]").nth(0).set_input_files(bad)
+    assert first.value.status == 400
+    # The refusal is reported and stays on screen.
+    page.wait_for_selector("text=/canonical intervals require end > start/")
+    assert uploads == [400], uploads
+
+    # The same file, selected again, must be sent again.
+    with page.expect_response(lambda r: "/api/upload" in r.url) as second:
+        page.locator("input[type=file]").nth(0).set_input_files(bad)
+    assert second.value.status == 400
+    assert uploads == [400, 400], uploads

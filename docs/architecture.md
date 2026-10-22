@@ -262,6 +262,41 @@ re-uploads the affected file, reloads the sample or re-runs in that tab.
 Exports are fetched with the displayed `result_rev`, so a superseded result is
 never downloaded.
 
+#### What invalidates a stored result (and what deliberately does not)
+
+A result is identified by its own `result_rev`, not by the datasets that
+produced it. Two different events therefore have deliberately different
+effects on a stored result:
+
+- **A dataset *clear*** drops the result derived from exactly the cleared
+  revision. The result of another revision is left alone.
+- **A dataset *replacement*** (an upload, a sample load or an applied
+  mapping that stores a new table for a side) does **not** drop a stored
+  result. The result belongs to the run that produced it, and a tab that
+  still displays that run keeps displaying it and keeps being able to
+  export it.
+
+This asymmetry is intentional and is pinned by
+`tests/test_multi_tab_revisions.py`. It is safe because the two halves of
+the contract fit together:
+
+- The UI withdraws its own displayed result on **every** invalidating
+  event — a new upload, a sample load, an applied mapping, a coordinate
+  declaration change, a change of engine, operation, join, chromosome
+  source or naming target. A tab therefore never shows an old result
+  beside a newly uploaded dataset, and never exports one as if it
+  belonged to the new dataset.
+- The server binds every read and export to the `result_rev` the client
+  displays. A tab whose result was superseded by *another tab's run* gets
+  a 409 conflict, never another tab's rows.
+
+The remaining server-side case is a tab that keeps displaying a result
+whose dataset another tab has since replaced. That tab's export contains
+the rows of **its own** displayed run — not the other tab's data — and its
+next run is refused with a 409 because its dataset revision no longer
+matches. No result is ever attributed to a dataset it was not derived
+from.
+
 ### Parsing concurrency (React/FastAPI)
 
 Upload parsing is CPU- and memory-heavy. `POST /api/upload` runs detection,

@@ -45,12 +45,15 @@ the sidebar feeds that one run.
   detection; Auto-detect may infer a known format from the content, and
   otherwise a custom table is read as 0-based half-open. The declaration
   is applied exactly once. See [Coordinate systems](../preparing-your-data/coordinate-systems.md).
-- **Genome assembly** (searchable dropdown) — starts on *Select genome
-  assembly*; nothing is preselected. Choose one of the
+- **Genome assembly** (searchable dropdown) — starts on *No assembly (keep
+  chromosome names as provided)*; nothing is preselected and nothing is ever
+  detected or guessed. Choose one of the
   [bundled genome assemblies](../preparing-your-data/bundled-assemblies.md),
   or **Custom chromosome mapping…**, which shows one **Chromosome mapping
   file** uploader for your own `.tsv` table. It is needed only when
-  chromosome names are normalized.
+  chromosome names are normalized: with *No assembly* selected, the run is
+  available only while the naming is **Keep original names**; choosing a
+  naming target first asks for an assembly or a custom mapping.
 - **Chromosome naming** (dropdown) — **Keep original names** (default;
   identifiers are not normalized and no assembly is needed), **UCSC
   names**, **Ensembl names**, **NCBI RefSeq accessions**, **GenBank

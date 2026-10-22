@@ -490,6 +490,11 @@ def get_metadata():
         "app_name": Settings.APP_NAME,
         "version": Settings.VERSION,
         "default_engine": active_default or DEFAULT_ENGINE,
+        # The authoritative per-file upload limit this server enforces on
+        # POST /api/upload. The client renders it instead of repeating a
+        # number, so the UI can never drift from the enforced limit
+        # (audit finding F1/F5).
+        "max_file_size_mb": Settings.get_max_file_size_bytes() // (1024 * 1024),
         "engines": engines,
         "modes": [
             {"key": k, "label": k.title(), "description": v["description"]}

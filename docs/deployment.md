@@ -683,7 +683,7 @@ the React/FastAPI image has not been deployed.
 | `docker build` fails in `pip install` on an Apple Silicon host | Building arm64-native. Build with `--platform linux/amd64` (the `Dockerfile` already pins amd64; on Apple Silicon enable amd64 emulation in Docker Desktop — Rosetta when available — for the faster path). |
 | Serve keeps serving an old version | Reused an image tag. Publish a **new unique tag** and update the Image field. |
 | Serve app never becomes available | Image tag not pulled (private GHCR package, image deleted, or typo in the Image field). The image must stay publicly available at all times. |
-| Uploads above ~100 MB are rejected on Serve | Platform upload limit (Streamlit apps). When running the image yourself, the limit is Streamlit's 200 MB default; change it with `STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (see [Upload size](#upload-size)). |
+| Uploads above the platform limit are rejected on Serve | Platform upload limit. The platform documents 100 MB for its Streamlit app type; the React/FastAPI generation's platform limit depends on the Serve app type and must be confirmed at deployment time (see [Upload size](#upload-size)). When running the image yourself, the React/FastAPI limit is `MAX_FILE_SIZE_MB` (default 500 MB). |
 | bedtools engine errors only in the container | `bedtools` not on `PATH` inside the image — run `scripts/docker_smoke.sh`; it asserts version 2.31.x. |
 | App is slow on Serve | Default 2 vCPU/4 GB allocation. Request more resources via serve@scilifelab.se with a concrete workload example. |
 | Positions ≥ 2³¹ error from the Bedtools engine | pybedtools packs coordinates into a 32-bit field (see [benchmark docs](benchmark.md) / Limitations). Not reachable with natural chromosomes. |

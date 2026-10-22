@@ -51,7 +51,7 @@ genome build/assembly).
 
 | Symptom | Usually | Fix |
 |---|---|---|
-| Uploader rejects the file | extension not in the accepted list (for example a GFF3/GTF file in the query uploader, or a VCF in the annotation uploader), or file larger than the upload limit (200 MB by default; 100 MB on SciLifeLab Serve) | use the other uploader or save with an accepted extension; split very large files |
+| Uploader rejects the file | extension not in the accepted list (for example a GFF3/GTF file in the query uploader, or a VCF in the annotation uploader), or file larger than the upload limit (`MAX_FILE_SIZE_MB`, 500 MB by default in the current React/FastAPI application; the older Streamlit generation allows 200 MB, and SciLifeLab Serve documents a lower platform limit for Streamlit apps) | use the other uploader or save with an accepted extension; split very large files |
 | Zero-row preview, no error message | header-only, comment-only or empty file (there is no dedicated "empty file" message) | check the file has data rows |
 | Error at line 1 of a `.bed` ("expected at least 3 tab-separated fields") | UCSC `track`/`browser` line (unsupported) or a header line | delete the `track`/`browser`/header line |
 | Attribute value cut off in a GFF3/GTF | a `#` inside the attributes column starts a comment | remove or percent-encode (`%23`) the `#` |

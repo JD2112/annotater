@@ -47,6 +47,20 @@ const coordSystemLabel = (token) => COORD_SYSTEM_LABELS[token] || null;
 const CUSTOM_REGISTRY_SOURCE = '__custom_chromosome_mapping__';
 const KEEP_ORIGINAL_NAMES = 'Keep original names';
 
+// "No genome assembly" is the default chromosome source. It is deliberately
+// NOT called "Auto-detect": AnnotateR never detects or guesses an assembly
+// (SPEC 5.1 item 9). This source means "no assembly": chromosome names are
+// used exactly as provided and no registry is claimed. It is only sufficient
+// for a run while the names are kept as provided; a naming target needs a
+// real assembly or a custom mapping (audit finding F4).
+const NO_ASSEMBLY = 'no-assembly';
+const NO_ASSEMBLY_LABEL = 'No assembly (keep chromosome names as provided)';
+
+// The number of result rows the execute response carries as a preview. The
+// results table renders exactly these rows; the export endpoints always serve
+// the complete result (audit finding F3).
+const RESULT_PREVIEW_ROWS = 100;
+
 // The Retry-After header is authoritative for 429 refusals. It is displayed to
 // the user and never turned into an automatic retry (the registry errors are
 // either temporary-but-user-controlled or permanent).
@@ -55,6 +69,14 @@ function retryAfterSeconds(res) {
   if (raw == null) return null;
   const seconds = Number(raw);
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+// The upload limit is whatever the server enforces; the server publishes it in
+// /api/meta so the hint can never claim a different number than the one that
+// is actually enforced (audit finding F1/F5).
+function uploadLimitLabel(meta) {
+  const mb = Number(meta?.max_file_size_mb);
+  return Number.isFinite(mb) && mb > 0 ? `${mb}MB per file` : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +264,12 @@ const NO_END_COLUMN = 'None (single positions)';
 export default function App() {
   // App Metadata & Engines
   const [meta, setMeta] = useState(null);
+  // The bundled sample datasets come from GET /api/sample-datasets: the
+  // catalog is the single authoritative source for their ids, names and
+  // declared operation. Nothing about a sample is duplicated here (audit
+  // finding F2).
+  const [samples, setSamples] = useState([]);
+  const [sampleId, setSampleId] = useState('');
   
   // File states
   const [queryData, setQueryData] = useState(null);
@@ -283,7 +311,7 @@ export default function App() {
   // Input Options
   const [coordSystem, setCoordSystem] = useState('Auto-detect');
   const [annotSystem, setAnnotSystem] = useState('Auto-detect');
-  const [genomeAssembly, setGenomeAssembly] = useState('Auto-detect');
+  const [genomeAssembly, setGenomeAssembly] = useState(NO_ASSEMBLY);
   // Must be one of meta.naming_options values ('Keep original names' means
   // no normalization, matching the Streamlit default). Sending the label
   // ('Ensembl names') with no assembly would be rejected by the backend.
@@ -296,10 +324,15 @@ export default function App() {
   // ("Keep original names" normalizes nothing and claims no registry).
   const normalizingChromosomes = chrHandling !== KEEP_ORIGINAL_NAMES;
   const customRegistrySelected = genomeAssembly === CUSTOM_REGISTRY_SOURCE;
-  // A run that needs a custom mapping cannot start without the revision this
-  // tab owns; a stale/unavailable mapping must never be guessed.
-  const customRegistryUnavailable =
-    customRegistrySelected && normalizingChromosomes && !registry;
+  // A naming target needs a chromosome source that can actually resolve names:
+  // a bundled assembly, or a custom mapping this tab owns. With no assembly
+  // selected there is nothing to normalize against, so the run cannot start
+  // (the backend refuses it with `assembly_required`; this is the client-side
+  // guard that turns that runtime error into guidance, audit finding F4).
+  const bundledAssemblySelected = Boolean(selectedAssemblyInfo);
+  const chromosomeSourceUnavailable =
+    normalizingChromosomes &&
+    (customRegistrySelected ? !registry : !bundledAssemblySelected);
   const [useStrand, setUseStrand] = useState(false);
   const [minOverlap, setMinOverlap] = useState(0.0);
   const [selectedFeatures, setSelectedFeatures] = useState(['gene']);
@@ -481,6 +514,18 @@ export default function App() {
     });
   };
 
+  // Remount one side's file picker WITHOUT touching the loaded dataset.
+  // A native file input keeps its previous selection, and selecting the
+  // same file again fires no change event, so after a failed upload the
+  // user could not retry the very same file (the previous dataset must
+  // survive the failure, so the side itself is not reset). Remounting the
+  // input gives the picker an empty selection again, exactly as the
+  // invalidation path does.
+  const remountPicker = (role) => {
+    if (role === 'query') setQueryUploadKey((k) => k + 1);
+    else setAnnotUploadKey((k) => k + 1);
+  };
+
   // Drops one side's dataset locally and remounts its file picker.
   const resetSide = (role) => {
     if (role === 'query') {
@@ -539,8 +584,48 @@ export default function App() {
       .catch(err => console.error("Could not fetch metadata:", err));
   }, []);
 
+  // The bundled sample catalog. It is fetched separately from /api/meta so
+  // the sample ids, names and declared operations have exactly one source.
+  // `samplesReady` resolves with the catalog entries, so a click on "Load
+  // Sample Data" that arrives before the catalog has landed still loads the
+  // catalog's first entry instead of failing or naming an id from nowhere.
+  const samplesReady = useRef(Promise.resolve([]));
+  useEffect(() => {
+    let cancelled = false;
+    samplesReady.current = fetch('/api/sample-datasets')
+      .then(res => res.json())
+      .then(list => {
+        const entries = Array.isArray(list) ? list.filter(s => s && s.id) : [];
+        if (cancelled) return entries;
+        setSamples(entries);
+        // Preselect the first entry so the sample button is usable as soon
+        // as the catalog has arrived; the user can pick another one.
+        setSampleId(prev => (prev && entries.some(s => s.id === prev) ? prev : (entries[0]?.id ?? '')));
+        return entries;
+      })
+      .catch(err => {
+        console.error("Could not fetch the sample dataset catalog:", err);
+        return [];
+      });
+    return () => { cancelled = true; };
+  }, []);
+
   // Handle Sample Loading
   const handleLoadSample = async () => {
+    // The selected sample, or the catalog's first entry when the catalog has
+    // not been consulted yet. The id always comes from
+    // GET /api/sample-datasets; nothing about a sample is hard-coded here.
+    const entries = sampleId ? samples : await samplesReady.current;
+    const selectedId = sampleId || entries.find(s => s && s.id)?.id;
+    if (!selectedId) {
+      setStatusMessage({ type: 'error', text: 'No bundled sample dataset is available.' });
+      return;
+    }
+    // The selected sample's catalog entry is authoritative for its declared
+    // operation: the closest-proximity sample is only meaningful in
+    // `closest` mode, so the operation follows the catalog.
+    const sample = entries.find(s => s && s.id === selectedId);
+    const sampleMode = sample?.mode;
     // A sample load writes both sides at once. Bump both generations and treat
     // the pair as one unit: a response only lands if neither side has been
     // superseded in this tab since the request was sent, so a stale sample
@@ -563,7 +648,7 @@ export default function App() {
     setStatusMessage({ type: 'info', text: 'Loading bundled genomic sample datasets...' });
     try {
       const formData = new FormData();
-      formData.append('sample_id', 'gene_overlap');
+      formData.append('sample_id', selectedId);
       const res = await fetch('/api/load-sample', {
         method: 'POST',
         body: formData,
@@ -595,6 +680,11 @@ export default function App() {
         setQueryData(data.query);
         setAnnotData(data.annot);
         setMappingRequired(false);
+        // The operation follows the sample's declared operation from the
+        // catalog (the result was already withdrawn above). An operation the
+        // server does not offer is ignored rather than sent.
+        const knownMode = meta?.modes?.some(m => m.key === sampleMode);
+        if (knownMode && sampleMode !== mode) setMode(sampleMode);
         setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
       } else {
         setStatusMessage({ type: 'error', text: errorText(data, 'Failed to load sample dataset') });
@@ -670,6 +760,10 @@ export default function App() {
         }
         setStatusMessage({ type: 'success', text: `Parsed ${file.name} as ${data.format.toUpperCase()} (${data.total_rows.toLocaleString()} records)` });
       } else {
+        // The upload was refused. The previously loaded dataset (if any)
+        // stays exactly as it was, and the picker is remounted so the user
+        // can select the very same file again to retry.
+        remountPicker(role);
         setStatusMessage({ type: 'error', text: errorText(data, 'Upload parsing error') });
       }
     } catch {
@@ -844,10 +938,16 @@ export default function App() {
   // Execute Pipeline
   const handleExecute = async () => {
     if (!queryData || !annotData || datasetBusy) return;
-    if (customRegistryUnavailable || registryBusy) {
+    if (chromosomeSourceUnavailable || registryBusy) {
+      // The run button is disabled in this state, so this is the last line of
+      // defence (a keyboard activation or a programmatic call still lands
+      // here). The backend refuses the same combination with
+      // `assembly_required`; neither path ever guesses an assembly.
       setStatusMessage({
         type: 'error',
-        text: 'Upload a custom chromosome mapping before normalizing chromosome names, or keep the original names.',
+        text: customRegistrySelected
+          ? 'Upload a custom chromosome mapping before normalizing chromosome names, or keep the original names.'
+          : 'Select a genome assembly before normalizing chromosome names, or keep the original names.',
       });
       return;
     }
@@ -871,7 +971,7 @@ export default function App() {
           // original names claims neither.
           assembly: customRegistrySelected
             ? null
-            : (genomeAssembly && genomeAssembly !== 'Auto-detect' ? genomeAssembly : null),
+            : (genomeAssembly && genomeAssembly !== NO_ASSEMBLY ? genomeAssembly : null),
           chr_naming: normalizingChromosomes ? chrHandling : null,
           // Only a run that actually normalizes with this tab's custom
           // mapping names its revision. A bundled source never sends it,
@@ -1021,11 +1121,27 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2">
-            <button 
+            <label className="sr-only" htmlFor="sample-dataset-select">Bundled sample dataset</label>
+            <select
+              id="sample-dataset-select"
+              value={sampleId}
+              disabled={datasetBusy || isExecuting || samples.length === 0}
+              onChange={(e) => setSampleId(e.target.value)}
+              className="px-2 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed max-w-[16rem]"
+              title="Bundled example datasets"
+            >
+              {samples.length === 0 && (
+                <option value="">Loading sample datasets…</option>
+              )}
+              {samples.map(s => (
+                <option key={s.id} value={s.id}>{s.name}</option>
+              ))}
+            </select>
+            <button
               onClick={handleLoadSample}
               disabled={datasetBusy || isExecuting}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
-              title="Load example genomic variants and gene annotations"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              title="Load the selected bundled example dataset and its annotations"
             >
               Load Sample Data
             </button>
@@ -1220,7 +1336,7 @@ export default function App() {
                   onChange={(e) => { setGenomeAssembly(e.target.value); clearResults(); }}
                   className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  <option value="Auto-detect">Select genome assembly (Auto-detect)</option>
+                  <option value={NO_ASSEMBLY}>{NO_ASSEMBLY_LABEL}</option>
                   <option value={CUSTOM_REGISTRY_SOURCE}>Custom chromosome mapping</option>
                   {meta?.assemblies?.map(a => (
                     <option key={a.id} value={a.id}>
@@ -1231,6 +1347,13 @@ export default function App() {
                 {selectedAssemblyInfo && (
                   <span className="text-[10px] text-[#006FB7] font-medium block mt-1">
                     {selectedAssemblyInfo.scientific_name} · UCSC {selectedAssemblyInfo.ucsc_db}
+                  </span>
+                )}
+                {!selectedAssemblyInfo && !customRegistrySelected && (
+                  <span className="text-[10px] text-slate-500 block mt-1">
+                    No assembly is selected: chromosome names are used exactly as
+                    provided. AnnotateR never detects or guesses an assembly —
+                    pick one, or a custom mapping, before choosing a naming target.
                   </span>
                 )}
               </div>
@@ -1449,7 +1572,7 @@ export default function App() {
                     Upload
                   </div>
                   <span className="text-xs text-slate-600 font-semibold">
-                    {queryData ? queryData.filename : '100MB per file • BED, TXT, TSV, CSV, VCF'}
+                    {queryData ? queryData.filename : `${uploadLimitLabel(meta) || 'Per-file size limit'} • BED, TXT, TSV, CSV, VCF`}
                   </span>
                   {queryData && (
                     <span className="text-[11px] text-emerald-600 font-medium mt-0.5">
@@ -1482,7 +1605,7 @@ export default function App() {
                     Upload
                   </div>
                   <span className="text-xs text-slate-600 font-semibold">
-                    {annotData ? annotData.filename : '100MB per file • GTF, GFF, GFF3, BED, TXT, TSV, CSV'}
+                    {annotData ? annotData.filename : `${uploadLimitLabel(meta) || 'Per-file size limit'} • GTF, GFF, GFF3, BED, TXT, TSV, CSV`}
                   </span>
                   {annotData && (
                     <span className="text-[11px] text-emerald-600 font-medium mt-0.5">
@@ -1570,9 +1693,9 @@ export default function App() {
             <div>
               <button
                 onClick={handleExecute}
-                disabled={!queryData || !annotData || datasetBusy || isExecuting || customRegistryUnavailable || registryBusy}
+                disabled={!queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy}
                 className={`py-2 px-5 rounded-lg font-semibold text-xs transition-all cursor-pointer ${
-                  !queryData || !annotData || datasetBusy || isExecuting || customRegistryUnavailable || registryBusy
+                  !queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy
                     ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
                     : 'bg-[#004e92] hover:bg-[#003768] text-white shadow-xs'
                 }`}
@@ -1580,10 +1703,12 @@ export default function App() {
                 {isExecuting ? 'Running annotation...' : 'Run annotation'}
               </button>
               <p className="text-xs text-slate-500 mt-2">
-                {!queryData || !annotData 
-                  ? 'Upload both a query file and an annotation file to enable the annotation run.' 
-                  : customRegistryUnavailable
-                    ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
+                {!queryData || !annotData
+                  ? 'Upload both a query file and an annotation file to enable the annotation run.'
+                  : chromosomeSourceUnavailable
+                    ? (customRegistrySelected
+                      ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
+                      : 'Select a genome assembly, or keep the original chromosome names, before running.')
                     : registryBusy
                       ? 'Wait for the custom chromosome mapping request to finish before running.'
                       : 'Files ready. Click Run annotation to execute the relational interval match.'}
@@ -1692,6 +1817,19 @@ export default function App() {
                       Showing <strong>{displayedRows.length.toLocaleString()}</strong> rows preview
                     </span>
                   </div>
+
+                  {/* The table is a preview of the first rows of the result,
+                      never the whole result: the exports carry every row.
+                      The Display Filter applies to this preview; the export
+                      endpoints filter the complete result server-side. */}
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    Preview: this table shows only the first{' '}
+                    <strong>{RESULT_PREVIEW_ROWS.toLocaleString()}</strong> rows of the{' '}
+                    <strong>{Number(execResult.total_rows ?? 0).toLocaleString()}</strong>{' '}
+                    result rows. The downloaded CSV, TSV, Excel and VCF files contain
+                    the complete result. The Display Filter applies to this preview;
+                    an export applies the same filter to the complete result.
+                  </p>
 
                   <div className="overflow-x-auto max-h-96 border border-slate-100 rounded-lg">
                     <table className="w-full text-xs text-left">

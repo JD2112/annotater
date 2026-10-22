@@ -50,6 +50,11 @@ APP_TEXT = "\n".join(
     for source in (path.read_text("utf-8") for path in APP_SOURCES)
 )
 
+# The current React/FastAPI frontend renders the same user-facing concepts
+# with its own wording (audit finding F4).
+REACT_APP = ROOT / "frontend" / "src" / "App.jsx"
+REACT_TEXT = REACT_APP.read_text("utf-8")
+
 # Pages that are not published on the site (see mkdocs.yml exclude_docs).
 EXCLUDED = {"manual-plan.md", "release-plan-0.1.0.md", "FUTURE_FEATURES.md",
             "implementation-notes.md", "legacy.md", "semantic-examples.md"}
@@ -258,13 +263,19 @@ def test_documented_vcf_contig_behavior():
 
 def test_quoted_ui_texts_exist_in_the_application():
     guide = " ".join(GUIDE.read_text("utf-8").split())
-    for label in ("Select genome assembly", "Custom chromosome mapping…",
+    for label in ("Custom chromosome mapping…",
                   "Chromosome mapping file", "Keep original names",
                   "UCSC names", "Assembly names", "Ensembl names",
                   "NCBI RefSeq accessions", "GenBank accessions",
                   "Genome assembly", "Chromosome naming"):
         assert label in guide, label
         assert label in APP_TEXT, label
+    # The Streamlit generation labels its no-assembly option "Select genome
+    # assembly"; the guide describes the current React/FastAPI application,
+    # whose wording states the behaviour instead of implying detection (audit
+    # finding F4). Both labels are checked against the application that
+    # renders them.
+    assert "Select genome assembly" in APP_TEXT
     for message in (
             "Select the genome assembly before normalizing chromosome names.",
             "Upload a chromosome mapping file before normalizing chromosome names.",
@@ -276,6 +287,18 @@ def test_quoted_ui_texts_exist_in_the_application():
              "annotation data.")):
         assert message in guide, message
         assert message in APP_TEXT, message
+
+
+def test_the_react_no_assembly_option_is_quoted_in_the_guide():
+    """The React/FastAPI frontend's no-assembly option states the behaviour
+    instead of implying that an assembly is detected, and the guide quotes
+    the same wording (audit finding F4)."""
+    guide = " ".join(GUIDE.read_text("utf-8").split())
+    label = "No assembly (keep chromosome names as provided)"
+    assert label in guide, label
+    assert label in REACT_TEXT, label
+    # The old wording claimed detection and must not come back.
+    assert "Select genome assembly (Auto-detect)" not in REACT_TEXT
 
 
 # ---- trust boundary wording --------------------------------------------------------------
