@@ -23,6 +23,8 @@ EXPECTED_BROWSER_TESTS: tuple[str, ...] = (
     f"{BROWSER_TEST_MODULE}::test_custom_registry_is_not_adopted_across_tabs_and_clears_its_results",
     f"{BROWSER_TEST_MODULE}::test_a_replaced_dataset_never_leaves_a_stale_result",
     f"{BROWSER_TEST_MODULE}::test_a_failed_upload_can_be_retried_with_the_same_file",
+    f"{BROWSER_TEST_MODULE}::test_a_non_json_http_refusal_preserves_the_loaded_dataset",
+    f"{BROWSER_TEST_MODULE}::test_closest_sample_uses_its_declared_operation_without_meta",
 )
 
 BROWSER_REQUIRED_ENV = "ANNOTATER_BROWSER_REQUIRED"
