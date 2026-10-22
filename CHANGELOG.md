@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-rc4] - Unreleased (not published)
+
+> **Draft release notes — `0.1.0-rc4` is not published.** No RC4 image,
+> Git tag, GitHub Release, Zenodo DOI, or Serve deployment exists yet. Do
+> not treat this section as a publication announcement; recorded dates and
+> identifiers must come from the actual publication.
 
 ### Added
 - All three bundled sample datasets are now reachable from the React interface. The sample selector is populated from `GET /api/sample-datasets`, so the ids, names and declared operations have exactly one source (the server's catalog) and the frontend no longer hard-codes one of them. Loading a sample also applies the operation the catalog declares for it, so the closest-proximity sample is run as a closest search.
@@ -25,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The execute response and the stored result carry the run's chromosome provenance (`registry`): the custom mapping's revision, content digest, display name and sequence count; the canonical assembly id of a bundled run; or nothing at all for a run that kept the names as provided.
 
 ### Changed
+- Repository documentation now describes the React/FastAPI application as the current generation and the `0.1.0-rc4` image as planned and unpublished, while keeping `0.1.0-rc3` as the latest published pre-release. Local instructions use port 8000 and `/health`; the legacy Streamlit instructions remain for the published RC1–RC3 images. The Serve guide records the current 100 MB other/custom app upload limit and the single-replica/session-affinity requirement.
 - The React genome-assembly selector no longer calls its no-assembly option "Auto-detect": AnnotateR never detects or guesses an assembly, and the option now states what it does — "No assembly (keep chromosome names as provided)". Choosing a chromosome naming without a bundled assembly or a custom mapping now disables the Run button and explains why, instead of failing at run time with `assembly_required`. The backend check is unchanged and still refuses the same combination.
 - The results panel now states that the table is a preview of the first 100 rows, that the downloaded CSV, TSV, Excel and VCF files contain the complete result, and that the display filter applies to the preview while an export applies the same filter to the complete result. The preview itself is unchanged.
 - The manual pages now state the upload limit the current React/FastAPI application enforces (`MAX_FILE_SIZE_MB`, 500 MB by default) instead of Streamlit's 200 MB default, which belongs to the older Streamlit generation and is preserved as such in `docs/deployment.md`. The enforced limit is unchanged.

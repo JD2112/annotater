@@ -154,9 +154,9 @@ Two files per run, **500 MB per file** by default in the current
 React/FastAPI application (the API's own `MAX_FILE_SIZE_MB` setting, which
 the server publishes and enforces). The older Streamlit generation keeps its
 separate 200 MB limit (Streamlit's `server.maxUploadSize`). SciLifeLab Serve
-documents a lower platform limit of 100 MB for Streamlit apps, which applies
-there; the platform limit for the current application depends on its Serve
-app type
+currently documents a 100 MB per-file platform limit for both Streamlit and
+other/custom app types; when the current application runs there, set
+`MAX_FILE_SIZE_MB=100` to match that cap
 ([Uploading files](using/uploading-files.md#file-limits)).
 
 ### Why is Excel export missing?

@@ -117,7 +117,8 @@ Shared engine-contract tests should prefer parametrization where the same semant
 
 ### SciLifeLab Serve
 
-Re-checked against the current official documentation on **2026-09-25** (Task 8). Exact pages:
+Re-checked against the current official documentation (SciLifeLab Serve
+docs v5.3.0-beta, last updated **2026-09-23**). Exact pages:
 
 - **Streamlit app hosting (step-by-step guide, resource defaults, image/tag rules, upload limit, FAQ):** https://serve.scilifelab.se/docs/application-hosting/streamlit/
 - **Application hosting overview (port range 3000-9999, public code/data requirement, no databases):** https://serve.scilifelab.se/docs/application-hosting/
@@ -129,11 +130,13 @@ Verified requirements that drive the AnnotateR deployment (details and the
 build/test procedure are in [deployment.md](deployment.md)):
 
 - Streamlit apps must be packaged as Docker images; the main application file must be named **`app.py`** in the image working directory.
-- The app runs on **port 8501** (Serve asks for the port when creating the app; the overall platform range is 3000-9999).
+- The Streamlit app runs on **port 8501** (Serve asks for the port when creating the app; the overall platform range is 3000-9999).
+- Other/custom apps also use a Docker image, but have no `app.py` requirement and may listen on a port in the platform range (AnnotateR uses **8000**).
+- Custom images must run as non-root **UID 1000**, as the AnnotateR image does.
 - Build guidance uses `docker build --platform linux/amd64 -t <name>:<tag> .`.
 - Default resources: **2 vCPU / 4 GB RAM** (requestable up to 12 vCPU / 48 GB with a motivated example).
-- Images are pulled from a public registry (Docker Hub or GHCR) **at regular intervals** and must remain available; **each app version needs a unique image tag**.
-- Upload size limit for Streamlit apps: **100 MB**.
+- Images are pulled from a public registry (Docker Hub or GHCR) **at regular intervals** and must remain available; **each app version needs a unique image tag**, and a deployed tag cannot be replaced.
+- Upload size limit for Streamlit apps: **100 MB**; other/custom app types currently document the same **100 MB per file** limit.
 - No sensitive data; code must be public; permissions (Private/Project/Link are temporary — apps must become Public eventually); public URL `*.serve.scilifelab.se`.
 - Optional project **mount paths** for persistent storage (AnnotateR does not use them).
 
