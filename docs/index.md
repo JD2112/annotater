@@ -70,6 +70,7 @@ release:
 To cite the current release candidate specifically, use the version DOI
 `10.5281/zenodo.23415802`
 (<https://doi.org/10.5281/zenodo.23415802>). The in-app **Cite
-AnnotateR** button copies the Concept DOI form. Machine-readable metadata
-is maintained in
+AnnotateR** button copies the Concept DOI form. The built-in citation
+continues to identify RC3 until a version DOI is assigned to RC4; the
+Concept DOI is unaffected. Machine-readable metadata is maintained in
 [`CITATION.cff`](https://github.com/pyrevo/annotater/blob/main/CITATION.cff).

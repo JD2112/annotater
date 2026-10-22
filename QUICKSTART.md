@@ -31,10 +31,11 @@ planned `0.1.0-rc4` image is **not yet published**; the published
 `0.1.0-rc1`–`0.1.0-rc3` images are the legacy Streamlit generation.
 
 Note: `docker-compose.yml` maps port `8000` and mounts your local
-`streamlit_app/` and `data/` directories into the container, so Python
-changes are picked up without rebuilding. Frontend assets are built into
-the image, so frontend changes need a rebuild. (For an exact
-production-like run, build and run the image instead — see
+`streamlit_app/` and `data/` directories into the container. Python changes
+require a container restart to be re-read (`docker compose restart
+annotater`); reload is not enabled by default. Frontend assets are built into
+the image, so frontend changes need a rebuild (`docker compose up --build`).
+(For an exact production-like run, build and run the image instead — see
 [docs/deployment.md](docs/deployment.md).)
 
 ### Option 2: Local Installation (React/FastAPI)
@@ -88,9 +89,9 @@ The project includes example files in `data/examples/`:
 
 **Steps:**
 1. Open the app (http://localhost:8000; use 8501 only for the legacy Streamlit generation)
-2. Upload `example_coordinates.bed` as **Coordinate File**
-3. Upload `example_annotations.gff3` as **Annotation File**
-4. Click **"Run Annotation"**
+2. In **1. Upload**, choose `example_coordinates.bed` under **Query coordinates**
+3. Choose `example_annotations.gff3` under **Annotation features**
+4. In **2. Run annotation**, click **Run annotation**
 5. View and download results!
 
 ---
@@ -140,14 +141,14 @@ pytest
 
 ## 📂 Using Your Own Files
 
-### Coordinate File (Required)
+### Query coordinates (required)
 Upload one of:
 - BED file (`.bed`)
 - VCF file (`.vcf`)
 - Custom CSV/TSV table: after upload you map the chromosome, start and
   (optionally) end columns in the app
 
-### Annotation File (Required)
+### Annotation features (required)
 Upload one of:
 - GFF/GTF file (`.gff`, `.gtf`, `.gff3`)
 - BED file as annotations

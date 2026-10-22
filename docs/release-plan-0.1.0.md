@@ -102,10 +102,12 @@ Remaining release gate (in order):
     release candidate from the approved commit, verify it with the full
     suite, the container smokes and a separate Serve Other/Custom app, then
     publish `0.1.0-rc4` plus its `sha-<sha>` tag through `release-ghcr`.
-    Set the Serve app's `MAX_FILE_SIZE_MB=100` and keep one replica. Only
-    after the image is published should this section record the source
-    commit, digest, workflow run, publication date, and Serve verification.
-    RC4 has no Git tag, GitHub Release, Zenodo DOI, or Serve deployment yet.
+    Setting the Serve app's `MAX_FILE_SIZE_MB=100` is recommended for
+    validation, not a verified Serve requirement, and the app should keep
+    one replica. Only after the image is published should this section
+    record the source commit, digest, workflow run, publication date, and
+    Serve verification. RC4 has no Git tag, GitHub Release, Zenodo DOI, or
+    Serve deployment yet.
 6. Tag `v0.1.0` on the release commit.
 7. Create the GitHub Release from the tag, including the first-release
    summary (canonical coordinate contract; Bedtools and Polars-Bio
@@ -165,19 +167,33 @@ have been approved.
 ### Post-publication citation and release-metadata updates
 
 RC4 is not published, so the citation and release facts remain RC3 until it
-is. After an RC4 image and its immutable Git tag/GitHub Release/Zenodo record
-actually exist, update in one reviewed change:
+is. The built-in citation may continue to identify RC3 after the RC4 image
+is published, until a new RC4 version DOI exists. That is expected and is
+not a release blocker. The Concept DOI (`10.5281/zenodo.23415801`) stays
+unchanged and remains the general, version-independent citation.
 
-- `frontend/src/citation.js` and the README citation block to the new RC4
-  version and its version DOI (keep the Concept DOI unchanged);
-- `docs/index.md` and `docs/technical/scientific-contract.md` to identify
-  the new latest published pre-release;
-- this plan's RC4 table row and step 5d with the source commit, digest,
-  workflow run, release/tag date, Zenodo DOI, and Serve verification;
-- `CHANGELOG.md` to date the RC4 section and mark it released.
+After the RC4 image and its immutable Git tag/GitHub Release/Zenodo record
+actually exist, verify and update in one reviewed change:
+
+1. Open the RC4 Zenodo record and confirm the new version DOI. Do not invent
+   one.
+2. Confirm the Concept DOI still resolves to the latest archived version,
+   now RC4.
+3. Update `frontend/src/citation.js` `CITATION.version` and `versionDoi` to
+   the verified RC4 identifiers, and update the README version-specific
+   citation. Keep the Concept DOI unchanged.
+4. Update `docs/index.md` and `docs/technical/scientific-contract.md` to
+   identify the new latest published pre-release.
+5. Record the RC4 source commit, digest, workflow run, release/tag date,
+   Zenodo DOI, and Serve verification in this plan's RC4 table row and
+   step 5d.
+6. Date the `CHANGELOG.md` RC4 section and mark it released.
+7. Run the citation metadata tests and the documentation build.
 
 Do not change `CITATION.cff` to a versioned RC4 form until the release
 metadata exists; it remains version-independent for the final `v0.1.0`.
+Do not change `frontend/src/citation.js` or `CITATION.cff` before the RC4
+publication identifiers exist.
 
 Follow-up cleanup (not part of the release gate): final disposition of
 the legacy R files per `docs/legacy.md` (delete vs. move to `legacy/`).
