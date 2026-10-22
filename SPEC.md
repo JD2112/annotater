@@ -3,11 +3,11 @@
 **Status:** Release-candidate specification for v0.1.0 (normative scientific and backend contract)  
 **Project:** AnnotateR  
 **Canonical repository slug:** `annotater`  
-**Last updated:** 2026-09-24
+**Last updated:** 2026-10-22
 
 ## 1. Purpose
 
-AnnotateR is a Streamlit application for annotating genomic coordinates against genomic feature sets. The application supports multiple input formats and exposes interchangeable genomic interval backends.
+AnnotateR is a web application for annotating genomic coordinates against genomic feature sets. The current application is a React frontend served by a FastAPI backend. The legacy Streamlit frontend — the generation behind the published RC1–RC3 images — remains runnable from source. Both frontends use the same shared scientific core — format parsing, coordinate and chromosome normalization, the interchangeable Bedtools and Polars-Bio interval engines, and canonical result adaptation — so the scientific contract in this specification applies identically to both.
 
 The purpose of this contract is to make backend choice an implementation detail: for operations declared equivalent by this specification, the Bedtools and Polars-Bio engines must produce the same **AnnotateR canonical result**, independent of backend-specific schemas, suffixes, ordering, null sentinels, or dataframe implementation.
 
@@ -28,7 +28,7 @@ This specification is the source of truth for backend and scientific behavior. `
 - Bedtools and Polars-Bio backend parity;
 - deterministic canonical output schema;
 - differential/parity tests;
-- Streamlit integration after backend parity is established;
+- user-interface integration after backend parity is established (the first parity milestone named the Streamlit interface; both the current React/FastAPI frontend and the legacy Streamlit generation satisfy this item);
 - SciLifeLab Serve deployment compatibility.
 
 ### 3.2 Out of scope for the first parity milestone
@@ -39,6 +39,8 @@ This specification is the source of truth for backend and scientific behavior. `
 - replacing both backends with a third implementation;
 - changing scientific semantics merely to match current accidental output;
 - optimizing Polars-Bio parsing before engine parity is established.
+
+These exclusions record the scope of the first parity milestone; they do not override any normative requirement elsewhere in this specification.
 
 ## 4. Architectural invariants
 
@@ -401,7 +403,7 @@ Parity MUST be evaluated after canonicalization. Tests SHOULD compare values, da
 
 ## 11. UI and deployment constraints
 
-The Streamlit UI MUST select the annotation backend without changing scientific input semantics.
+The normative scientific requirements in this specification apply to every AnnotateR frontend: the current React frontend served by the FastAPI backend and the legacy Streamlit frontend. Each frontend MUST apply equivalent scientific input validation — including supported-format, coordinate-system, and chromosome-identifier checks — plus the same engine selection semantics, coordinate conventions, and chromosome normalization behavior, and MUST produce scientifically equivalent canonical results for the same inputs and options. Deployment and transport limits, such as maximum upload size, MAY differ between frontends. Selecting an engine MUST change execution only and MUST NOT change scientific input semantics.
 
 AnnotateR MUST retain containerized deployment compatibility with SciLifeLab Serve. Deployment-specific changes are deferred until backend correctness is protected by tests.
 
@@ -420,8 +422,8 @@ The initiative is complete when:
 3. a canonical interval and output contract is implemented;
 4. Bedtools and Polars-Bio satisfy the same parameterized parity tests for every supported operation claimed by the UI;
 5. unsupported semantics fail explicitly rather than silently returning approximate results;
-6. Streamlit selects either backend without changing canonical scientific results;
-7. documentation and SciLifeLab Serve deployment instructions reflect the final architecture;
+6. each frontend — the React/FastAPI application and the legacy Streamlit generation — selects either backend without changing canonical scientific results;
+7. documentation and SciLifeLab Serve deployment instructions reflect the final React/FastAPI architecture, including the legacy Streamlit generation that powered the published RC1–RC3 images and remains runnable from source;
 8. a correctness-first benchmark documents any performance difference without changing the semantic contract.
 
 ## 14. External references
