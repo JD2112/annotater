@@ -23,6 +23,7 @@ afterEach(() => {
 const jsonResponse = (payload) => ({
   ok: true,
   status: 200,
+  text: async () => JSON.stringify(payload),
   json: async () => payload,
 });
 
@@ -30,6 +31,12 @@ const META = {
   version: '9.9.9-test',
   default_engine: 'polars-bio',
   assemblies: [],
+  modes: [
+    { key: 'overlap', label: 'Overlap' },
+    { key: 'contains', label: 'Contains' },
+    { key: 'within', label: 'Within' },
+    { key: 'closest', label: 'Closest' },
+  ],
   naming_options: [
     { key: 'UCSC-style', label: 'UCSC-style (chr1, chrX, chrM)' },
     { key: 'Ensembl-style', label: 'Ensembl-style (1, X, MT)' },
@@ -505,7 +512,12 @@ describe('N2-R: the coordinate declaration cannot drift from an in-flight upload
     chooseFile('query', 'bad.bed');
     await waitFor(() => expect(backend.uploads).toHaveLength(2));
     await act(async () =>
-      backend.uploads[1].resolve({ ok: false, status: 400, json: async () => ({ detail: 'bad file' }) }),
+      backend.uploads[1].resolve({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ detail: 'bad file' }),
+        json: async () => ({ detail: 'bad file' }),
+      }),
     );
     await waitFor(() => expect(screen.getByText('bad file')).toBeTruthy());
     expect(screen.getByText('q.bed')).toBeTruthy();
@@ -857,6 +869,7 @@ describe('#54 / F1: sample metadata is displayed but never becomes user intent',
 const CONFLICT = (stale, message) => ({
   ok: false,
   status: 409,
+  text: async () => JSON.stringify({ detail: { code: 'revision_conflict', stale, message } }),
   json: async () => ({ detail: { code: 'revision_conflict', stale, message } }),
 });
 
@@ -1294,7 +1307,12 @@ describe('#51/#52: revision-safe cleanup never wipes a newer dataset', () => {
     await waitFor(() => expect(screen.getByText('newer.bed')).toBeTruthy());
 
     await act(async () =>
-      backend.uploads[2].resolve({ ok: false, status: 400, json: async () => ({ detail: 'bad file' }) }),
+      backend.uploads[2].resolve({
+        ok: false,
+        status: 400,
+        text: async () => JSON.stringify({ detail: 'bad file' }),
+        json: async () => ({ detail: 'bad file' }),
+      }),
     );
 
     expect(backend.clears).toEqual([]);

@@ -662,3 +662,95 @@ def test_a_failed_upload_can_be_retried_with_the_same_file(new_context, base_url
         page.locator("input[type=file]").nth(0).set_input_files(bad)
     assert second.value.status == 400
     assert uploads == [400, 400], uploads
+
+
+def test_a_non_json_http_refusal_preserves_the_loaded_dataset(new_context, base_url, files, tmp_path):
+    """Issue #82: a reverse-proxy 413 with an HTML body is a known refusal.
+
+    The server answered, so this must not take the unknown-outcome network
+    path that drops the tab's dataset and clears its revision. The loaded pair
+    survives, no /api/dataset/clear is sent, and the HTML page is never shown.
+    """
+    context = new_context()
+    page = _open_tab(context, base_url)
+    assert "0 of 1 regions matched" in _load_and_run(page, files, one_based=False)
+    assert page.locator("text=regions.tsv").count() == 1
+    assert page.locator("text=annot.bed").count() == 1
+
+    clears = []
+    page.on(
+        "request",
+        lambda request: clears.append(request)
+        if request.url.endswith("/api/dataset/clear")
+        and request.method == "POST"
+        else None,
+    )
+    page.route(
+        "**/api/upload",
+        lambda route: route.fulfill(
+            status=413,
+            content_type="text/html",
+            body="<!doctype html><html><body><h1>413 Request Entity Too Large</h1></body></html>",
+        ),
+    )
+
+    refused = tmp_path / "refused_upload.tsv"
+    refused.write_text("chr1\t100\t200\tr1\n")
+    page.locator("input[type=file]").nth(0).set_input_files(refused)
+
+    page.wait_for_selector("text=/HTTP 413/")
+    page.wait_for_timeout(500)
+
+    assert page.locator("text=regions.tsv").count() == 1
+    assert page.locator("text=annot.bed").count() == 1
+    assert clears == [], clears
+    assert "Request Entity Too Large" not in page.locator("body").inner_text()
+    assert page.get_by_role("button", name="Run annotation").is_enabled()
+
+    # The preserved dataset is still the one a run uses.
+    page.click("button:has-text('Run annotation')")
+    page.wait_for_selector("text=Analysis complete")
+    result = page.locator("text=/Analysis complete.*regions matched/").inner_text()
+    assert "0 of 1 regions matched" in result
+
+
+def test_closest_sample_uses_its_declared_operation_without_meta(new_context, base_url):
+    """Issue #83: the sample catalog, not /api/meta, decides the operation.
+
+    With /api/meta unavailable, loading the closest-variants sample must still
+    select and execute the closest operation instead of silently running the
+    previously selected overlap operation.
+    """
+    context = new_context()
+    page = context.new_page()
+    page.route("**/api/meta", lambda route: route.abort())
+    page.goto(base_url)
+    page.wait_for_selector("text=Run annotation")
+
+    page.wait_for_selector(
+        "#sample-dataset-select option[value='closest_variants']",
+        state="attached",
+    )
+    page.locator("#sample-dataset-select").select_option(label="Closest Variants Proximity")
+    page.get_by_role("button", name="Load Sample Data").click()
+    page.wait_for_selector("text=example_closest_variants.vcf")
+
+    operation = page.locator("select").filter(
+        has=page.locator("option[value='closest']")
+    ).nth(0)
+    assert operation.input_value() == "closest"
+    # The sample's applied coordinate convention stays provenance only.
+    coord = page.locator("select").filter(
+        has=page.locator("option[value='0-based (BED)']")
+    ).nth(0)
+    assert coord.input_value() == "Auto-detect"
+
+    with page.expect_request(
+        lambda request: request.url.endswith("/api/execute")
+        and request.method == "POST"
+    ) as request_info:
+        page.get_by_role("button", name="Run annotation").click()
+
+    assert request_info.value.post_data_json["mode"] == "closest"
+    page.wait_for_selector("text=Analysis complete")
+    assert page.locator("text=closest / left").count() >= 1

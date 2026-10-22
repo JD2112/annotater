@@ -41,6 +41,12 @@ const COORD_SYSTEM_LABELS = {
 };
 const coordSystemLabel = (token) => COORD_SYSTEM_LABELS[token] || null;
 
+// The operations this interface itself can send. /api/meta publishes the
+// server's list; when the metadata cannot be loaded this local list is the
+// fallback, so a bundled sample's declared operation is never silently
+// replaced by whatever operation happened to be selected before (issue #83).
+const UI_OPERATIONS = ['overlap', 'contains', 'within', 'closest'];
+
 // A custom chromosome mapping is an alternative chromosome source, not a
 // genome assembly (SPEC 5.1.1). The sentinel is only a UI value: the execute
 // payload sends `registry_rev` and never an assembly id for it.
@@ -69,6 +75,25 @@ function retryAfterSeconds(res) {
   if (raw == null) return null;
   const seconds = Number(raw);
   return Number.isFinite(seconds) && seconds > 0 ? seconds : null;
+}
+
+// Read any response body defensively. A server that answered with an HTTP
+// error and a non-JSON body (a reverse-proxy HTML page, a plain-text error,
+// an empty body or malformed JSON) has still answered: that is a known
+// refusal, not an unknown-outcome network failure (issue #82).
+async function readJsonResponse(res) {
+  let raw;
+  try {
+    raw = await res.text();
+  } catch {
+    return { data: null, isJson: false };
+  }
+  if (typeof raw !== 'string' || !raw.trim()) return { data: null, isJson: false };
+  try {
+    return { data: JSON.parse(raw), isJson: true };
+  } catch {
+    return { data: null, isJson: false };
+  }
 }
 
 // The upload limit is whatever the server enforces; the server publishes it in
@@ -306,6 +331,10 @@ export default function App() {
   // Configuration Parameters matching original Streamlit app exactly
   const [engine, setEngine] = useState('bedtools');
   const [mode, setMode] = useState('overlap');
+  // Issue #83: a loaded sample whose declared operation cannot be established
+  // safely leaves the run unavailable instead of silently running the
+  // previous operation.
+  const [sampleOperationIssue, setSampleOperationIssue] = useState(null);
   const [join, setJoin] = useState('left');
   
   // Input Options
@@ -526,8 +555,21 @@ export default function App() {
     else setAnnotUploadKey((k) => k + 1);
   };
 
+  // A sample-operation block belongs to the sample sides still displayed. It
+  // survives replacing or resetting only one side, so a partly replaced sample
+  // pair cannot become runnable under the previous operation; it clears once
+  // no sample side remains, or when the user explicitly chooses an operation.
+  const releaseSampleOperationSide = (role) => {
+    setSampleOperationIssue((prev) => {
+      if (!prev?.sides?.[role]) return prev;
+      const sides = { ...prev.sides, [role]: false };
+      return sides.query || sides.annot ? { ...prev, sides } : null;
+    });
+  };
+
   // Drops one side's dataset locally and remounts its file picker.
   const resetSide = (role) => {
+    releaseSampleOperationSide(role);
     if (role === 'query') {
       setQueryData(null);
       setMappingRequired(false);
@@ -653,24 +695,24 @@ export default function App() {
         method: 'POST',
         body: formData,
       });
-      const data = await res.json();
+      const { data, isJson } = await readJsonResponse(res);
       if (!isCurrent()) {
         // Superseded in this tab: the sample may still have committed
         // server-side. Clear only the revisions it reported (a newer dataset
         // that replaced either side answers 409 and survives); a superseded
         // HTTP error or conflict stored nothing, so no clear is sent.
-        if (res.ok) {
+        if (res.ok && isJson) {
           await clearServerDataset('query', data.query?.revision);
           await clearServerDataset('annot', data.annot?.revision);
         }
         return;
       }
-      if (isRevisionConflict(res, data)) {
+      if (isJson && isRevisionConflict(res, data)) {
         // A newer write to either side (from this tab or another tab of the
         // same browser session) won the race: drop the stale sides instead of
         // leaving them displayed as loaded.
         handleRevisionConflict(data.detail);
-      } else if (res.ok) {
+      } else if (res.ok && isJson) {
         // Store the datasets, including the coordinate system the backend
         // reports as applied per side. That value is shown as read-only
         // provenance on the sample card; it deliberately does NOT touch the
@@ -680,14 +722,45 @@ export default function App() {
         setQueryData(data.query);
         setAnnotData(data.annot);
         setMappingRequired(false);
-        // The operation follows the sample's declared operation from the
-        // catalog (the result was already withdrawn above). An operation the
-        // server does not offer is ignored rather than sent.
-        const knownMode = meta?.modes?.some(m => m.key === sampleMode);
-        if (knownMode && sampleMode !== mode) setMode(sampleMode);
-        setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
+        // The catalog is authoritative for the operation the sample declares
+        // (issue #83). /api/meta only says which operations the server offers;
+        // when it is unavailable the interface's own operation list is the
+        // fallback, never the previously selected operation. A declaration
+        // that cannot be established safely blocks the run below.
+        const declaredMode = typeof sampleMode === 'string' && sampleMode.trim()
+          ? sampleMode
+          : null;
+        // `meta === null` means the metadata request has not succeeded (yet);
+        // only then is the interface's own list the fallback. A loaded meta
+        // object without a valid modes list is not evidence that an operation
+        // is supported, so it fails closed instead.
+        const serverModes = Array.isArray(meta?.modes)
+          ? meta.modes.map(m => m.key)
+          : meta == null
+            ? null
+            : [];
+        const supportedModes = serverModes ?? UI_OPERATIONS;
+        if (declaredMode && supportedModes.includes(declaredMode)) {
+          setSampleOperationIssue(null);
+          setMode(declaredMode);
+          setStatusMessage({ type: 'success', text: `Sample dataset loaded successfully (${data.query.filename} & ${data.annot.filename})` });
+        } else {
+          const issue = declaredMode
+            ? `This bundled sample declares the "${declaredMode}" operation, which ${serverModes ? 'this server does not offer' : 'this interface cannot run'}. Run is disabled; choose a supported operation or load another sample.`
+            : 'This bundled sample does not declare an operation, so it cannot be run safely. Run is disabled; choose an operation explicitly or load another sample.';
+          setSampleOperationIssue({
+            message: issue,
+            sides: { query: true, annot: true },
+          });
+          setStatusMessage({ type: 'warning', text: `Sample dataset loaded, but its operation could not be applied. ${issue}` });
+        }
       } else {
-        setStatusMessage({ type: 'error', text: errorText(data, 'Failed to load sample dataset') });
+        const text = isJson
+          ? errorText(data, 'Failed to load sample dataset')
+          : res.ok
+            ? 'Failed to load the sample: the server returned an unreadable response. The previously loaded datasets (if any) were kept; you can retry.'
+            : `Failed to load the sample (HTTP ${res.status}). The previously loaded datasets (if any) were kept; you can retry.`;
+        setStatusMessage({ type: 'error', text });
       }
     } catch {
       if (!isCurrent()) {
@@ -730,21 +803,26 @@ export default function App() {
         method: 'POST',
         body: formData,
       });
-      const data = await res.json();
+      const { data, isJson } = await readJsonResponse(res);
       if (!isCurrent()) {
         // A newer request for this side (or a coordinate invalidation)
         // superseded this one. A superseded success may still have stored a
         // copy, so discard it (finding N2-R); a superseded conflict carries no
         // state this tab owns, so ignore it rather than tearing down the
         // dataset the newer request installed.
-        if (!isRevisionConflict(res, data)) {
-          await discardStaleDataset(role, res.ok ? data.revision : null);
+        if (!(isJson && isRevisionConflict(res, data))) {
+          // A superseded success with a JSON body names the revision it may
+          // have stored; a superseded HTTP refusal stored nothing; an
+          // unreadable success has an unknown outcome.
+          const revision = res.ok ? (isJson ? data.revision : undefined) : null;
+          await discardStaleDataset(role, revision);
         }
         return;
       }
-      if (isRevisionConflict(res, data)) {
+      if (isJson && isRevisionConflict(res, data)) {
         handleRevisionConflict(data.detail);
-      } else if (res.ok) {
+      } else if (res.ok && isJson) {
+        releaseSampleOperationSide(role);
         if (role === 'query') {
           setQueryData(data);
           if (data.needs_mapping) {
@@ -760,11 +838,18 @@ export default function App() {
         }
         setStatusMessage({ type: 'success', text: `Parsed ${file.name} as ${data.format.toUpperCase()} (${data.total_rows.toLocaleString()} records)` });
       } else {
-        // The upload was refused. The previously loaded dataset (if any)
-        // stays exactly as it was, and the picker is remounted so the user
-        // can select the very same file again to retry.
+        // The upload was refused -- including an HTTP error whose body is not
+        // JSON (a proxy HTML page, plain text, an empty body or malformed
+        // JSON). The previously loaded dataset (if any) stays exactly as it
+        // was, no destructive cleanup is sent, and the picker is remounted so
+        // the user can select the very same file again to retry.
         remountPicker(role);
-        setStatusMessage({ type: 'error', text: errorText(data, 'Upload parsing error') });
+        const text = isJson
+          ? errorText(data, 'Upload parsing error')
+          : res.ok
+            ? 'Upload failed: the server returned an unreadable response. The previously loaded file (if any) was kept; you can retry.'
+            : `Upload refused by the server (HTTP ${res.status}). The previously loaded ${role} file (if any) was kept; you can retry.`;
+        setStatusMessage({ type: 'error', text });
       }
     } catch {
       if (!isCurrent()) {
@@ -938,6 +1023,10 @@ export default function App() {
   // Execute Pipeline
   const handleExecute = async () => {
     if (!queryData || !annotData || datasetBusy) return;
+    if (sampleOperationIssue) {
+      setStatusMessage({ type: 'error', text: sampleOperationIssue.message });
+      return;
+    }
     if (chromosomeSourceUnavailable || registryBusy) {
       // The run button is disabled in this state, so this is the last line of
       // defence (a keyboard activation or a programmatic call still lands
@@ -1240,7 +1329,7 @@ export default function App() {
               <select
                 value={mode}
                 disabled={isExecuting}
-                onChange={(e) => { setMode(e.target.value); clearResults(); }}
+                onChange={(e) => { setMode(e.target.value); clearResults(); setSampleOperationIssue(null); }}
                 className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 font-medium text-slate-700 focus:outline-hidden focus:ring-1 focus:ring-blue-500 capitalize disabled:opacity-60 disabled:cursor-not-allowed"
               >
                 <option value="overlap">Overlap</option>
@@ -1693,9 +1782,9 @@ export default function App() {
             <div>
               <button
                 onClick={handleExecute}
-                disabled={!queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy}
+                disabled={!queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy || Boolean(sampleOperationIssue)}
                 className={`py-2 px-5 rounded-lg font-semibold text-xs transition-all cursor-pointer ${
-                  !queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy
+                  !queryData || !annotData || datasetBusy || isExecuting || chromosomeSourceUnavailable || registryBusy || sampleOperationIssue
                     ? 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
                     : 'bg-[#004e92] hover:bg-[#003768] text-white shadow-xs'
                 }`}
@@ -1705,13 +1794,15 @@ export default function App() {
               <p className="text-xs text-slate-500 mt-2">
                 {!queryData || !annotData
                   ? 'Upload both a query file and an annotation file to enable the annotation run.'
-                  : chromosomeSourceUnavailable
-                    ? (customRegistrySelected
-                      ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
-                      : 'Select a genome assembly, or keep the original chromosome names, before running.')
-                    : registryBusy
-                      ? 'Wait for the custom chromosome mapping request to finish before running.'
-                      : 'Files ready. Click Run annotation to execute the relational interval match.'}
+                  : sampleOperationIssue
+                    ? sampleOperationIssue.message
+                    : chromosomeSourceUnavailable
+                      ? (customRegistrySelected
+                        ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
+                        : 'Select a genome assembly, or keep the original chromosome names, before running.')
+                      : registryBusy
+                        ? 'Wait for the custom chromosome mapping request to finish before running.'
+                        : 'Files ready. Click Run annotation to execute the relational interval match.'}
               </p>
             </div>
           </section>

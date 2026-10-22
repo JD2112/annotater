@@ -36,6 +36,7 @@ afterEach(() => {
 const jsonResponse = (payload, { status = 200, ok = true } = {}) => ({
   ok,
   status,
+  text: async () => JSON.stringify(payload),
   json: async () => payload,
 });
 

@@ -26,6 +26,7 @@ const jsonResponse = (payload, { status = 200, ok = true, headers = {} } = {}) =
   ok,
   status,
   headers: { get: (name) => headers[name] ?? headers[name?.toLowerCase()] ?? null },
+  text: async () => JSON.stringify(payload),
   json: async () => payload,
 });
 
