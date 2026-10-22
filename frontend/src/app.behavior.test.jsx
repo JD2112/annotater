@@ -31,6 +31,12 @@ const META = {
   version: '9.9.9-test',
   default_engine: 'polars-bio',
   assemblies: [],
+  modes: [
+    { key: 'overlap', label: 'Overlap' },
+    { key: 'contains', label: 'Contains' },
+    { key: 'within', label: 'Within' },
+    { key: 'closest', label: 'Closest' },
+  ],
   naming_options: [
     { key: 'UCSC-style', label: 'UCSC-style (chr1, chrX, chrM)' },
     { key: 'Ensembl-style', label: 'Ensembl-style (1, X, MT)' },

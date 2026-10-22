@@ -501,7 +501,49 @@ describe('#83: a sample declares its operation, not /api/meta', () => {
     await waitFor(() => expect(b.calls.executes).toEqual([]));
   });
 
-  it('a stale sample response cannot overwrite a newer operation', async () => {
+  it('keeps the block while either sample side remains loaded', async () => {
+    const b = sampleBackend({
+      samples: [{ ...SAMPLE_CATALOG[1], mode: 'mystery' }],
+      loadSample: SAMPLE_PAYLOAD,
+    });
+    await renderApp();
+    await waitFor(() => expect(sampleSelect().value).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /load sample data/i }));
+    await waitFor(() => expect(screen.getByText('example_closest_variants.vcf')).toBeTruthy());
+    expect(runButton().disabled).toBe(true);
+
+    // Replacing only the query side leaves the sample annotation loaded, so
+    // the sample's unresolved operation still applies and the run stays
+    // blocked instead of silently falling back to overlap.
+    uploadQuery('replacement-query.bed');
+    await waitFor(() => expect(b.calls.uploads).toHaveLength(1));
+    await waitFor(() => expect(runButton().disabled).toBe(true));
+    expect(screen.getAllByText(/Run is disabled/i).length).toBeGreaterThan(0);
+    fireEvent.click(runButton());
+    await waitFor(() => expect(b.calls.executes).toEqual([]));
+
+    // Once both sample sides are gone there is no sample left to block.
+    chooseFile('annot', new File(['chr1\t10\t20\n'], 'replacement-annot.bed'));
+    await waitFor(() => expect(b.calls.uploads).toHaveLength(2));
+    await waitFor(() => expect(runButton().disabled).toBe(false));
+    fireEvent.click(runButton());
+    await waitFor(() => expect(b.calls.executes).toHaveLength(1));
+  });
+
+  it('fails closed when /api/meta loads without a modes list', async () => {
+    sampleBackend({ meta: { ...META, modes: undefined } });
+    await renderApp();
+    await waitFor(() => expect(sampleSelect().value).toBeTruthy());
+
+    await loadSample('closest_variants');
+    await waitFor(() => expect(screen.getByText('example_closest_variants.vcf')).toBeTruthy());
+
+    expect(runButton().disabled).toBe(true);
+    expect(screen.getAllByText(/Run is disabled/i).length).toBeGreaterThan(0);
+  });
+
+  it('a stale sample response cannot overwrite a newer dataset', async () => {
     const b = sampleBackend({ pendingSample: true });
     await renderApp();
     await waitFor(() => expect(sampleSelect().value).toBeTruthy());

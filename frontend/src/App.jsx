@@ -555,11 +555,21 @@ export default function App() {
     else setAnnotUploadKey((k) => k + 1);
   };
 
+  // A sample-operation block belongs to the sample sides still displayed. It
+  // survives replacing or resetting only one side, so a partly replaced sample
+  // pair cannot become runnable under the previous operation; it clears once
+  // no sample side remains, or when the user explicitly chooses an operation.
+  const releaseSampleOperationSide = (role) => {
+    setSampleOperationIssue((prev) => {
+      if (!prev?.sides?.[role]) return prev;
+      const sides = { ...prev.sides, [role]: false };
+      return sides.query || sides.annot ? { ...prev, sides } : null;
+    });
+  };
+
   // Drops one side's dataset locally and remounts its file picker.
   const resetSide = (role) => {
-    // The sample whose operation could not be established is no longer the
-    // loaded state once its data is gone.
-    setSampleOperationIssue(null);
+    releaseSampleOperationSide(role);
     if (role === 'query') {
       setQueryData(null);
       setMappingRequired(false);
@@ -720,9 +730,15 @@ export default function App() {
         const declaredMode = typeof sampleMode === 'string' && sampleMode.trim()
           ? sampleMode
           : null;
+        // `meta === null` means the metadata request has not succeeded (yet);
+        // only then is the interface's own list the fallback. A loaded meta
+        // object without a valid modes list is not evidence that an operation
+        // is supported, so it fails closed instead.
         const serverModes = Array.isArray(meta?.modes)
           ? meta.modes.map(m => m.key)
-          : null;
+          : meta == null
+            ? null
+            : [];
         const supportedModes = serverModes ?? UI_OPERATIONS;
         if (declaredMode && supportedModes.includes(declaredMode)) {
           setSampleOperationIssue(null);
@@ -732,7 +748,10 @@ export default function App() {
           const issue = declaredMode
             ? `This bundled sample declares the "${declaredMode}" operation, which ${serverModes ? 'this server does not offer' : 'this interface cannot run'}. Run is disabled; choose a supported operation or load another sample.`
             : 'This bundled sample does not declare an operation, so it cannot be run safely. Run is disabled; choose an operation explicitly or load another sample.';
-          setSampleOperationIssue(issue);
+          setSampleOperationIssue({
+            message: issue,
+            sides: { query: true, annot: true },
+          });
           setStatusMessage({ type: 'warning', text: `Sample dataset loaded, but its operation could not be applied. ${issue}` });
         }
       } else {
@@ -803,6 +822,7 @@ export default function App() {
       if (isJson && isRevisionConflict(res, data)) {
         handleRevisionConflict(data.detail);
       } else if (res.ok && isJson) {
+        releaseSampleOperationSide(role);
         if (role === 'query') {
           setQueryData(data);
           if (data.needs_mapping) {
@@ -816,7 +836,6 @@ export default function App() {
         } else {
           setAnnotData(data);
         }
-        setSampleOperationIssue(null);
         setStatusMessage({ type: 'success', text: `Parsed ${file.name} as ${data.format.toUpperCase()} (${data.total_rows.toLocaleString()} records)` });
       } else {
         // The upload was refused -- including an HTTP error whose body is not
@@ -1005,7 +1024,7 @@ export default function App() {
   const handleExecute = async () => {
     if (!queryData || !annotData || datasetBusy) return;
     if (sampleOperationIssue) {
-      setStatusMessage({ type: 'error', text: sampleOperationIssue });
+      setStatusMessage({ type: 'error', text: sampleOperationIssue.message });
       return;
     }
     if (chromosomeSourceUnavailable || registryBusy) {
@@ -1776,7 +1795,7 @@ export default function App() {
                 {!queryData || !annotData
                   ? 'Upload both a query file and an annotation file to enable the annotation run.'
                   : sampleOperationIssue
-                    ? sampleOperationIssue
+                    ? sampleOperationIssue.message
                     : chromosomeSourceUnavailable
                       ? (customRegistrySelected
                         ? 'Upload a custom chromosome mapping, or keep the original chromosome names, before running.'
