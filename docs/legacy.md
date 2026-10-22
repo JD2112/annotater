@@ -1,8 +1,10 @@
 # Legacy files (deleted)
 
 The original implementation of this project was an R/Shiny application.
-It has been fully superseded by the current Python/Streamlit product
-(`streamlit_app/`) and was **never** part of the production product:
+It has been fully superseded by the current Python application
+(React/FastAPI; the Streamlit generation is retained for the published
+RC1–RC3 images and lives under `streamlit_app/`) and was **never** part of
+the production product:
 it was excluded from the production Docker image (the `Dockerfile`
 white-lists only the Python entry point and modules; `.dockerignore`
 excluded the R files).

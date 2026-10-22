@@ -1,7 +1,10 @@
 # AnnotateR Architecture
 
-**Status:** target architecture for the Polars-Bio parity refactor  
-**Last updated:** 2026-10-20
+**Status:** current React/FastAPI architecture, with the original Polars-Bio
+parity refactor design retained; the Streamlit generation remains for the
+published RC1–RC3 images.
+
+**Last updated:** 2026-10-22
 
 ## 1. Current problem
 
@@ -53,7 +56,8 @@ uploaded/source file
                    |
                    v
 +--------------------------------+
-| Streamlit presentation/export  |
+| React/FastAPI presentation/    |
+| export                         |
 +--------------------------------+
 ```
 
@@ -392,7 +396,7 @@ parity tests
   Bedtools canonical result == Polars-Bio canonical result
         |
         v
-Streamlit integration tests
+React/FastAPI integration tests
   engine selection does not change scientific result
 ```
 

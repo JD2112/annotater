@@ -30,9 +30,11 @@ enforced by the test suite rather than assumed.
 
 AnnotateR is available as a hosted web deployment on SciLifeLab Serve
 (currently a project-restricted pre-release beta running the
-`0.1.0-rc2` image; the latest published image is `0.1.0-rc3`), as a
-containerized local application using the published Docker images, and
-from source for development.
+Streamlit-generation `0.1.0-rc2` image; the latest published image is
+`0.1.0-rc3`, also a Streamlit-generation image), as a containerized local
+application, and from source for development. The planned `0.1.0-rc4`
+image moves the application to a React/FastAPI interface; it is **not yet
+published or deployed**.
 
 ## Features
 
@@ -61,8 +63,9 @@ from source for development.
 - CSV, TSV, and Excel export of results; annotated VCF export for VCF
   queries (original record fields and `##` header lines are carried
   forward; `ANNOT_*` INFO fields are added).
-- Streamlit web application, containerized with Docker for local use
-  and deployment.
+- React web interface served by a FastAPI backend, containerized with
+  Docker for local use and deployment. The published `0.1.0-rc1`–`0.1.0-rc3`
+  images use the legacy Streamlit generation.
 
 ## Relation modes and modifiers
 
@@ -90,11 +93,11 @@ AnnotateR can be used in three ways: the hosted SciLifeLab Serve
 deployment (currently a project-restricted pre-release beta), a local
 Docker container on your own machine, or from source for development.
 
-### Local Docker container (no account or remote upload required)
+### Latest published container image (Streamlit generation)
 
 SciLifeLab Serve is **not required** to use AnnotateR. Users who prefer
 to keep their genomic files within their own computing environment can
-run the same AnnotateR application from the published container image:
+run the latest published image locally:
 
 ```bash
 docker pull ghcr.io/pyrevo/annotater:0.1.0-rc3
@@ -107,20 +110,46 @@ docker run --rm \
 `0.1.0-rc3` is the latest *published* pre-release image (source commit
 `7592b9de803ea19cc10042c2a10515c350d4fbfc`, digest
 `sha256:d4ea46ae879c60c34f98fcabd3545e04281dea40ab56f432c0aa2a10a021f661`;
-the same digest is also tagged `sha-7592b9d`). `main` may contain
-changes made after it, there is no `latest` tag, and the final `v0.1.0`
-release does not exist yet. The earlier `0.1.0-rc1` and `0.1.0-rc2`
-remain published as historical release candidates. Always use an
-explicit tag.
+the same digest is also tagged `sha-7592b9d`). It is the **Streamlit**
+generation, not the React/FastAPI application described on this branch.
+`main` may contain changes made after it, there is no `latest` tag, and
+the final `v0.1.0` release does not exist yet. The earlier `0.1.0-rc1`
+and `0.1.0-rc2` remain published as historical release candidates.
+Always use an explicit tag.
 
 Then open <http://localhost:8501>. For local Docker execution, uploaded
 files are processed by the AnnotateR container running on the user's own
-machine; SciLifeLab Serve is not involved. The image is
-`linux/amd64`; at the final `v0.1.0` release the immutable `0.1.0`
-image tag replaces the release-candidate tag (image tags and container
-deployment are documented in [docs/deployment.md](docs/deployment.md)).
+machine; SciLifeLab Serve is not involved. The image is `linux/amd64`;
+at the final `v0.1.0` release the immutable `0.1.0` image tag replaces
+the release-candidate tag (image tags and container deployment are
+documented in [docs/deployment.md](docs/deployment.md)).
+
+### Current source build (React/FastAPI; planned RC4)
+
+The `main` branch builds the React/FastAPI application. No image for
+this generation is published yet. Build and run it locally with Docker
+Compose:
+
+```bash
+docker compose up --build
+# -> http://localhost:8000
+#    health: http://localhost:8000/health
+```
+
+Or build the production image directly:
+
+```bash
+docker build --platform linux/amd64 -t annotater:dev .
+docker run --rm -p 8000:8000 annotater:dev
+```
+
+This is the planned `0.1.0-rc4` generation and is not yet available from
+GHCR or deployed to SciLifeLab Serve.
 
 ### From source (development)
+
+Python 3.12 and Node.js 22 are required. The Bedtools backend additionally
+requires the `bedtools` system binary; the Polars-Bio backend does not.
 
 ```bash
 git clone https://github.com/pyrevo/annotater.git
@@ -129,16 +158,33 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt   # fully pinned, generated from uv.lock
 # or, to install exactly uv.lock: uv sync --frozen
+(cd frontend && npm ci && npm run build)
+uvicorn streamlit_app.api_server:app --host 0.0.0.0 --port 8000
+# -> http://localhost:8000
+```
+
+For frontend hot reload, keep the API running and start Vite in a second
+terminal; Vite serves the interface on port 3000 and proxies `/api` to
+port 8000:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+# -> http://localhost:3000
+```
+
+The legacy Streamlit generation (the published RC1–RC3 images) can still
+be run from source:
+
+```bash
 streamlit run streamlit_app/streamlit_app.py
 # -> http://localhost:8501
 ```
 
-Python 3.12; the Bedtools backend additionally requires the `bedtools`
-system binary, the Polars-Bio backend does not. A clone-based container
-workflow (`docker-compose up --build`) is also provided. Then upload a
-query file and an annotation file, choose an operation and options, run
-the annotation, and export the result. Full local-installation and
-container instructions: [QUICKSTART.md](QUICKSTART.md) (developers) and
+Then upload a query file and an annotation file, choose an operation and
+options, run the annotation, and export the result. Full local-installation
+and container instructions: [QUICKSTART.md](QUICKSTART.md) (developers) and
 the manual ([quick start](docs/getting-started/quick-start.md)).
 
 ## Documentation
@@ -205,9 +251,11 @@ To cite the current release candidate specifically, use the version DOI
 > <https://doi.org/10.5281/zenodo.23415802>
 
 The in-app **Cite AnnotateR** button copies the Concept DOI form.
-Machine-readable metadata is maintained in [CITATION.cff](CITATION.cff);
-it stays version-independent, and the `version` and `date-released`
-fields are recorded when the final `v0.1.0` release is made.
+The built-in citation continues to identify RC3 until a version DOI is
+assigned to RC4; the Concept DOI is unaffected. Machine-readable metadata
+is maintained in [CITATION.cff](CITATION.cff); it stays
+version-independent, and the `version` and `date-released` fields are
+recorded when the final `v0.1.0` release is made.
 
 ## License
 

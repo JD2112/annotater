@@ -32,9 +32,11 @@ publishes the limit it enforces in `GET /api/meta`, and the uploader hint in
 the interface shows that same number, so the two can never disagree. The
 older Streamlit generation has its own, separate limit of 200 MB
 (`STREAMLIT_SERVER_MAX_UPLOAD_SIZE`), which does not apply to the current
-application. On SciLifeLab Serve the platform documents a lower limit of
-**100 MB** for Streamlit apps, which then applies instead; the platform
-limit for the current application depends on its Serve app type.
+application. On SciLifeLab Serve, the platform documents a **100 MB upload
+limit** for both Streamlit and other/custom app types, but does not state
+whether it is per file or per request. Setting `MAX_FILE_SIZE_MB=100` is a
+recommended validation setting, not a verified Serve requirement. A platform
+or proxy rejection may happen before AnnotateR's own error can be shown.
 
 Uploaded files are processed by the running AnnotateR server; a
 temporary copy used for parsing is deleted immediately afterwards

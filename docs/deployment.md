@@ -41,21 +41,22 @@ locally should read [QUICKSTART.md](https://github.com/pyrevo/annotater/blob/mai
 
 AnnotateR's container has two generations, and this document covers both:
 
-| | **Streamlit image** — published | **React/FastAPI image** — this branch |
+| | **Streamlit image** — published | **React/FastAPI image** — planned RC4 |
 |---|---|---|
 | Web layer | Streamlit, script `app.py` | React SPA (`frontend/dist`) + FastAPI (`streamlit_app/api_server.py`) |
 | Entry point | Streamlit server, port **8501** | `start-script.sh` → Uvicorn, port **8000** |
 | Health path | `GET /_stcore/health` | `GET /health` |
 | State | Streamlit session state | in-memory API session store (single worker; see [Single-worker requirement](#single-worker-requirement)) |
-| Published tags | `0.1.0-rc3` (and `0.1.0-rc2`, running on the public beta) | **none yet** |
+| Published tags | `0.1.0-rc3` (and `0.1.0-rc2`, running on the public beta) | **none yet**; `0.1.0-rc4` is planned, not published |
 
 The **Streamlit** generation is what the published GHCR images and the current
 public beta deployment run, and the sections below that describe it remain the
 reference for those images. The **React/FastAPI** generation is what the
-`Dockerfile` on this branch builds. It is **not yet published to GHCR and not
-yet deployed to SciLifeLab Serve**: its deployment steps below are the
-documented plan, not a completed publication. Do not read this document as a
-claim that the React/FastAPI image is live anywhere.
+`Dockerfile` on this branch builds and what the planned `0.1.0-rc4` image will
+contain. It is **not yet published to GHCR and not yet deployed to SciLifeLab
+Serve**: its deployment steps below are the documented plan, not a completed
+publication. Do not read this document as a claim that the React/FastAPI image
+is live anywhere.
 
 ## Architecture / platform
 
@@ -69,7 +70,7 @@ claim that the React/FastAPI image is live anywhere.
 - The `Dockerfile` pins the platform at the `FROM` level
   (`ARG PLATFORM=linux/amd64` + `FROM --platform=${PLATFORM}
   python:3.12-slim`), so `docker build` produces an amd64 image regardless
-  of the host architecture. The build is multi-stage: a Node 20 stage
+  of the host architecture. The build is multi-stage: a Node 22 stage
   builds the React frontend, and only the built assets (`frontend/dist`)
   are copied into the runtime image.
 - SciLifeLab Serve's own build guidance likewise uses
@@ -157,7 +158,10 @@ FastAPI/React application (`scripts/docker_smoke_api.sh`), and the
 network-disabled scientific runtime (`scripts/offline_smoke.py`).
 
 The published tags so far (`0.1.0-rc1`…`0.1.0-rc3`) are **Streamlit**
-images. The React/FastAPI image this branch builds has not been published.
+images. The React/FastAPI image built from this branch is planned for
+`0.1.0-rc4`; that image has **not** been published, tagged, released, or
+deployed. Keep using the explicit published RC tag for any current local or
+Serve deployment.
 
 Every published image is immutable and is tagged twice with the **same
 digest**:
@@ -374,26 +378,67 @@ This job does not change the existing pytest, frontend-lint or Docker jobs.
 
   (`GET /health` returns `{"status": "ok", "version": "0.1.0"}`.) The
   Dockerfile `HEALTHCHECK` uses interval 30 s, timeout 10 s, start period
-  30 s, 3 retries; `docker-compose.yml` matches. Serve additionally monitors
-  the container itself; the in-image health check is used by Docker and by
+  30 s, 3 retries; `docker-compose.yml` matches. Serve's own deployment
+  status is separate; the in-image health check is used by Docker and by
   the smoke tests.
 - For reference, the **published Streamlit** images listen on **8501** and
   are healthy at `curl --fail http://localhost:8501/_stcore/health`.
 
 ## SciLifeLab Serve setup
 
-Verified against the current Serve documentation (see
-[References](#references) and [references.md](references.md)). Summary of
-the platform requirements this deployment satisfies:
+This section separates what the repository verifies from what Serve
+documents and what can only be confirmed in the Serve UI. The Serve pages
+were re-checked on **2026-10-22**; their stated version date is
+**2026-09-23** (docs v5.3.0-beta). Links are in
+[references.md](references.md).
 
-| Requirement | AnnotateR |
+**Verified in this repository**
+
+| Fact | Evidence |
 |---|---|
-| App packaged as a Docker image | yes (above) |
-| Main file named `app.py` in the working directory | Streamlit generation only (shim). The React/FastAPI generation needs no `app.py`: its `ENTRYPOINT` is `start-script.sh` |
-| Web app listening on the configured port | Streamlit generation: 8501. React/FastAPI generation: **8000**, health at `/health` |
-| `linux/amd64` image | yes (pinned in `Dockerfile`) |
-| Code publicly available, no sensitive data | code is public; uploaded files are processed by the running app, which deletes its temporary parsing copy immediately after parsing and keeps parsed data and results only in memory for the active session (see [Data handling](#data-handling)) |
-| Upload size limit | the Serve platform documents **100 MB per file** for its Streamlit app type ([references.md](references.md)); this applies to the published Streamlit generation. The React/FastAPI generation's platform limit depends on its Serve app type and must be confirmed against the current Serve documentation at deployment time |
+| Image is `linux/amd64` | `Dockerfile` pins `PLATFORM=linux/amd64` |
+| Container runs as non-root UID 1000 | `Dockerfile` creates `appuser` with UID 1000 and ends with `USER appuser` |
+| Startup script is in the image working directory | `Dockerfile` sets `WORKDIR /app`, copies `start-script.sh` to `/app/start-script.sh`, makes it executable, and uses `ENTRYPOINT ["./start-script.sh"]` |
+| Web service listens on 8000 with `GET /health` | `start-script.sh` and the FastAPI health route; the Dockerfile health check uses the same endpoint |
+| FastAPI runs one Uvicorn worker | `start-script.sh` deliberately omits `--workers` |
+| No mount path or database is required | AnnotateR keeps session state in process memory and writes only temporary parsing files |
+
+**Documented by Serve**
+
+- Other/custom apps are Docker images and must use a startup script placed
+  in the container working directory; Streamlit apps additionally require
+  `app.py` in the working directory.
+- Images must run as non-root UID 1000 and listen on a port in
+  **3000–9999**. Streamlit apps use 8501; the React/FastAPI image uses 8000.
+- Each deployed version needs a unique tag, and the image must remain
+  publicly available.
+- Code and data must be public, sensitive data is not supported, and apps
+  must eventually become public.
+- Default resources are 2 vCPU / 4 GB RAM.
+- Serve documents a **100 MB upload limit** for Streamlit apps and a
+  **100 MB upload limit** for other/custom apps. The documentation does
+  **not** establish whether either limit is per file, per request, or
+  another scope.
+
+**Deployment-time assumptions to confirm in Serve**
+
+- The Other/Custom app form accepts the exact GHCR reference and exposes
+  the environment variables used below.
+- The proxy forwards `X-Forwarded-Proto`, and `FORWARDED_ALLOW_IPS` can be
+  set to the actual proxy addresses or safely left at `*` only when the
+  container is reachable solely through Serve.
+- One replica is sufficient for the in-memory session store, and Serve
+  does not route one browser session across replicas without affinity.
+- The rejection response for an upload above Serve's platform limit,
+  including whether the request reaches AnnotateR at all. Confirm this in
+  the Serve UI and with a test upload after deployment.
+
+`MAX_FILE_SIZE_MB=100` is therefore a **recommended validation setting**,
+not a verified Serve requirement. It lets AnnotateR enforce its own
+per-file limit while streaming the upload to private temporary storage,
+before parsing its contents, but a platform or proxy may reject an upload
+before the request reaches the application. Such a rejection is not
+guaranteed to display AnnotateR's own error message.
 
 ### Step-by-step
 
@@ -424,8 +469,8 @@ the platform requirements this deployment satisfies:
 2. **Create (or sign in to) a Serve account**, then create a **project**
    (Default project template) on the *My projects* page.
 
-3. **Create the app**: click **Create** on the *Streamlit App* card and
-   fill in:
+3. **Create the Streamlit app** (for the published RC1–RC3 generation):
+   click **Create** on the *Streamlit App* card and fill in:
 
    | Field | Value |
    |---|---|
@@ -442,29 +487,61 @@ the platform requirements this deployment satisfies:
 4. **Update**: publish a new image tag, then in the app *Settings* change
    the Image tag and press *Update*.
 
-#### Deploying the React/FastAPI image (planned)
+#### Deploying the React/FastAPI image (planned RC4)
 
 The steps above use Serve's *Streamlit App* type, which is what the published
-`0.1.0-rc*` images use. The React/FastAPI image is a plain web service
-(`start-script.sh` → Uvicorn), so when it is published it should be deployed
-as a Docker-image web app rather than the Streamlit type. Differences to
-apply at that point:
+`0.1.0-rc1`–`0.1.0-rc3` images use. The planned RC4 React/FastAPI image is a
+plain Docker web service (`start-script.sh` → Uvicorn), so it should be
+created as a **separate Other/Custom app**, not by changing the existing
+Streamlit beta app. The existing beta remains on RC2 until an RC4 deployment
+has been validated.
 
+Deployment settings for the planned image:
+
+- **App type:** Other/Custom app (Docker image), not Streamlit.
 - **Port:** `8000` (the Streamlit type's `8501` does not apply).
 - **Health:** `GET /health` (not `/_stcore/health`).
-- **No `app.py` requirement:** the image `ENTRYPOINT` starts the server.
-- **Single worker:** the image already runs exactly one Uvicorn worker; do
-  not add a worker flag (see [Single-worker requirement](#single-worker-requirement)).
+- **Startup script:** Serve requires the script in the image working
+  directory. The image satisfies this: `WORKDIR` is `/app`, the executable
+  `start-script.sh` is copied to `/app/start-script.sh`, and it is the
+  `ENTRYPOINT`. No `app.py` is needed for this app type.
+- **Image:** public GHCR image with an explicit, immutable tag; the image
+  runs as UID 1000 and is `linux/amd64`.
+- **Upload limit:** Serve documents a **100 MB upload limit** for
+  other/custom apps but does not establish whether it is per file or per
+  request. The image defaults to `MAX_FILE_SIZE_MB=500`; setting
+  `MAX_FILE_SIZE_MB=100` is a **recommended validation setting**, not a
+  verified Serve requirement. It applies AnnotateR's own per-file limit
+  before the upload is parsed. A platform or proxy rejection may happen
+  before the request reaches AnnotateR and is not guaranteed to show
+  AnnotateR's upload error.
+- **Single worker / replicas:** the image already runs exactly one Uvicorn
+  worker. Keep one replica; do not scale horizontally unless Serve provides
+  verified session affinity for the in-memory session store (see
+  [Single-worker requirement](#single-worker-requirement)).
+- **Proxy and cookie:** keep `FORWARDED_ALLOW_IPS` at `*` only if the
+  container is reachable solely through Serve's trusted TLS-terminating
+  proxy. Confirm that the proxy forwards `X-Forwarded-Proto`; over HTTPS the
+  app then issues the `Secure`, `HttpOnly`, `SameSite=Lax` `__Host-` session
+  cookie. If the proxy topology differs, set `FORWARDED_ALLOW_IPS` to the
+  proxy addresses instead.
+- **No mount path / no database:** AnnotateR uses neither.
+- **Visibility:** Project/Link during testing; Public at release (Serve
+  requires apps to become public eventually).
 
-This deployment has **not been performed**: the image is not yet published
-and the exact Serve app type and platform limits must be confirmed against
-the current Serve documentation (see [References](#references)) at that time.
-Until then, the only live Serve deployment remains the Streamlit-generation
-public beta described below.
+After deployment, verify `GET /health`, an upload/run/export with both
+engines, the application-level upload limit, the HTTPS session cookie, and
+what Serve itself returns for an upload above its platform limit. That
+platform response may come from Serve rather than AnnotateR. This
+deployment has **not been performed**: no RC4 image is published and no RC4
+Serve app exists. Confirm the exact Serve app type, platform limit scope,
+and proxy/replica behavior against the current Serve documentation and the
+authenticated Serve UI at deployment time (see [References](#references)).
 
-No secrets or credentials are used by AnnotateR at runtime; there is
-nothing to configure in Serve's environment-variable settings beyond the
-defaults in [Environment / configuration](#environment-configuration).
+No secrets or credentials are used by AnnotateR at runtime.
+`MAX_FILE_SIZE_MB=100` is the only deployment-specific value recommended
+as a validation setting; the other variables have safe defaults in
+[Environment / configuration](#environment-configuration).
 
 ## Environment / configuration
 
@@ -542,14 +619,24 @@ the available cores.
 **React/FastAPI image:** the API enforces its own per-file limit,
 `MAX_FILE_SIZE_MB` (default **500 MB**): an upload over the limit is rejected
 by `/api/upload` with an explicit error rather than being silently truncated.
-Change it by setting `MAX_FILE_SIZE_MB`.
+Change it by setting `MAX_FILE_SIZE_MB`. On SciLifeLab Serve, setting
+`MAX_FILE_SIZE_MB=100` is a **recommended validation setting**, not a
+verified Serve requirement. Serve documents a **100 MB upload limit** for
+other/custom apps but does not say whether that limit is per file or per
+request. The application-level check covers only requests that reach
+AnnotateR; a platform or proxy may reject an upload earlier, and that
+response is not guaranteed to be AnnotateR's own error message.
 
 **Streamlit generation:** the effective per-file upload limit is Streamlit's
 `server.maxUploadSize`, which defaults to **200 MB** in the pinned Streamlit
 release (1.64.0); an operator can change it with
-`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (in MB). On SciLifeLab Serve, the platform
-documents a limit of **100 MB** for its Streamlit app type, which applies to
-that generation there.
+`STREAMLIT_SERVER_MAX_UPLOAD_SIZE` (in MB). Serve also documents a **100 MB
+upload limit** for its Streamlit app type, without stating whether it is per
+file or per request.
+
+Serve's 100 MB upload limit is a platform limit, not an AnnotateR default:
+when you run the image yourself, the application limit remains
+`MAX_FILE_SIZE_MB` (500 MB unless changed).
 
 ### Data handling
 
@@ -626,9 +713,9 @@ process's memory, the app **must run exactly one Uvicorn worker**:
   after *Running* before the app answers (stated by Serve). The Streamlit
   generation's cold start is comparable.
 - Default allocation (2 vCPU / 4 GB RAM) is sufficient for interactive
-  use with files below the 100 MB platform upload cap; the in-container
-  smoke test passes within these limits. Very large inputs (hundreds of
-  MB) need headroom for canonical frames held in memory — see
+  use with files below Serve's documented 100 MB upload limit; the
+  in-container smoke test passes within these limits. Very large inputs
+  (hundreds of MB) need headroom for canonical frames held in memory — see
   [Limitations](limitations.md). Concurrent upload parses multiply that
   peak; see [Parsing concurrency](#parsing-concurrency).
 - The filesystem is ephemeral except for the project *Mount path* (not
@@ -683,18 +770,22 @@ the React/FastAPI image has not been deployed.
 | `docker build` fails in `pip install` on an Apple Silicon host | Building arm64-native. Build with `--platform linux/amd64` (the `Dockerfile` already pins amd64; on Apple Silicon enable amd64 emulation in Docker Desktop — Rosetta when available — for the faster path). |
 | Serve keeps serving an old version | Reused an image tag. Publish a **new unique tag** and update the Image field. |
 | Serve app never becomes available | Image tag not pulled (private GHCR package, image deleted, or typo in the Image field). The image must stay publicly available at all times. |
-| Uploads above the platform limit are rejected on Serve | Platform upload limit. The platform documents 100 MB for its Streamlit app type; the React/FastAPI generation's platform limit depends on the Serve app type and must be confirmed at deployment time (see [Upload size](#upload-size)). When running the image yourself, the React/FastAPI limit is `MAX_FILE_SIZE_MB` (default 500 MB). |
+| Uploads are rejected on Serve | Serve documents a 100 MB upload limit for Streamlit and other/custom apps but does not state whether it is per file or per request. The platform or proxy may reject before AnnotateR, so the response is not guaranteed to be AnnotateR's own error. Setting `MAX_FILE_SIZE_MB=100` is a recommended app-level validation setting, not a verified Serve requirement (see [Upload size](#upload-size)). When running the image yourself, the React/FastAPI limit is `MAX_FILE_SIZE_MB` (default 500 MB). |
 | bedtools engine errors only in the container | `bedtools` not on `PATH` inside the image — run `scripts/docker_smoke.sh`; it asserts version 2.31.x. |
 | App is slow on Serve | Default 2 vCPU/4 GB allocation. Request more resources via serve@scilifelab.se with a concrete workload example. |
 | Positions ≥ 2³¹ error from the Bedtools engine | pybedtools packs coordinates into a 32-bit field (see [benchmark docs](benchmark.md) / Limitations). Not reachable with natural chromosomes. |
 
 ## References
 
-Current official documentation (retrieved 2026-09-25; exact links are
-kept in [references.md](references.md)):
+Current official documentation (SciLifeLab Serve docs v5.3.0-beta, page
+version 2026-09-23, re-checked 2026-10-22; exact links are kept in
+[references.md](references.md)):
 
 - SciLifeLab Serve — Streamlit app hosting guide (step-by-step, resource
   defaults, upload limit, image/tag rules)
+- SciLifeLab Serve — other/custom app hosting guide (Docker images,
+  working-directory startup script, port range, UID 1000, upload limit,
+  visibility)
 - SciLifeLab Serve — application hosting overview (port range, public
   code/data, no databases)
 - Docker build reference (`--platform`)

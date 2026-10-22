@@ -26,9 +26,17 @@
   <https://annotater.serve.scilifelab.se> was updated from RC1 to RC2 by
   changing only the container image reference; the deployment is healthy.
   RC3 has **not** been deployed to Serve.
+- **RC4 is planned, not published:** the next candidate is `0.1.0-rc4`,
+  the first React/FastAPI generation image (`linux/amd64`, port **8000**,
+  health at `/health`). No RC4 image, `sha-<sha>` tag, Git tag, GitHub
+  Release, Zenodo DOI, or Serve deployment exists yet. The source commit,
+  publication date, digest and workflow run must be recorded here only
+  after an approved `release-ghcr` run.
 - **`main` may be ahead of RC3:** RC2 contains only the source at
   `4edb362`, which predates the assembly-aware chromosome normalization
-  that first shipped in RC3 (`7592b9d`).
+  that first shipped in RC3 (`7592b9d`). Current `main` also contains the
+  React/FastAPI interface and the RC4 documentation preparation, none of
+  which is in a published image.
 - **A pre-release is tagged, released and archived on Zenodo; final
   `v0.1.0` has not been released:** the `v0.1.0-rc3` git tag, its GitHub
   Release and the Zenodo archive exist (Zenodo version DOI
@@ -52,12 +60,16 @@ Remaining release gate (in order):
 2. Apply any final approved GUI polish from the acceptance review
    (separate, small change; re-verify tests).
 3. Run the full test suite: `.venv/bin/python -m pytest` (expected: all
-   tests pass, 0 failed, 0 skipped; the test count grows with the suite,
-   so record the exact count at release time. At the time of this
-   cleanup `main` measured 1462 passed.)
+   runnable tests pass, 0 failed; record the exact pass/skip count at
+   release time. On 2026-10-22 the CI baseline at `71b679b` was **4901
+   passed, 17 skipped, 0 failed**; the skips are environment-gated (for
+   example opt-in browser and Docker tests), not permission to ignore
+   failures.)
 4. Docker smoke: `docker build --platform linux/amd64 -t annotater . &&
-   docker run --rm -p 8501:8501 annotater` and confirm `/_stcore/health`
-   plus the manual GUI checks.
+   docker run --rm -p 8000:8000 annotater` and confirm `GET /health`, the
+   in-container smoke scripts, and the manual GUI checks. For the
+   historical Streamlit RC images, use `-p 8501:8501` and
+   `/_stcore/health` instead.
 5. Align final release metadata:
    - confirm `pyproject.toml` version == `Settings.VERSION` == footer ==
      `0.1.0`; confirm all license declarations remain BSD-3-Clause;
@@ -86,12 +98,23 @@ Remaining release gate (in order):
     Zenodo (version DOI `10.5281/zenodo.23415802`; Concept DOI
     `10.5281/zenodo.23415801`). RC3 has not been deployed to Serve. The
     final-release steps below (6-9) remain pending.
+5d. **RC4 (planned, not published):** build the first React/FastAPI
+    release candidate from the approved commit, verify it with the full
+    suite, the container smokes and a separate Serve Other/Custom app, then
+    publish `0.1.0-rc4` plus its `sha-<sha>` tag through `release-ghcr`.
+    Setting the Serve app's `MAX_FILE_SIZE_MB=100` is recommended for
+    validation, not a verified Serve requirement, and the app should keep
+    one replica. Only after the image is published should this section
+    record the source commit, digest, workflow run, publication date, and
+    Serve verification. RC4 has no Git tag, GitHub Release, Zenodo DOI, or
+    Serve deployment yet.
 6. Tag `v0.1.0` on the release commit.
 7. Create the GitHub Release from the tag, including the first-release
    summary (canonical coordinate contract; Bedtools and Polars-Bio
    parity; overlap / left / min_overlap / strand / contains / within /
-   closest; Streamlit integration; reproducible Docker deployment;
-   benchmark infrastructure).
+   closest; React/FastAPI interface and API; reproducible Docker
+   deployment; benchmark infrastructure). The Streamlit generation
+   remains the reference for the published RC1–RC3 images.
 8. Deploy the approved image (SciLifeLab Serve or other target) with the
    `v0.1.0` tag.
 9. Post-deployment smoke test: health endpoint, one real run per engine
@@ -107,6 +130,7 @@ Immutable GHCR images published before the final `v0.1.0` release
 | 0.1.0-rc1 (historical) | `7269b47cdade3511cd317634c304ebadf3d10345` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc1`, `ghcr.io/pyrevo/annotater:sha-7269b47` | `sha256:76b5574bb506abfa2d9a0fdeea51f0d5bca941e155d8e26e62cb1fcd73f10d91` (both tags, verified from the GHCR push receipts) | 2026-09-29 (release-ghcr workflow run #1: [actions/runs/36564727227](https://github.com/pyrevo/annotater/actions/runs/36564727227), platform `linux/amd64`) |
 | 0.1.0-rc2 (historical) | `4edb362e9143286754a41dabeb81f58034f2debc` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc2`, `ghcr.io/pyrevo/annotater:sha-4edb362` | `sha256:a0b1b7e8941f0660208d90876a6e0aa3cd73ca9ec5e9704fdb2746c659d1f3f9` (both tags verified to resolve to it) | 2026-10-01 (release-ghcr workflow run: [actions/runs/36862770914](https://github.com/pyrevo/annotater/actions/runs/36862770914), platform `linux/amd64`) |
 | 0.1.0-rc3 (latest published pre-release) | `7592b9de803ea19cc10042c2a10515c350d4fbfc` (main) | `ghcr.io/pyrevo/annotater:0.1.0-rc3`, `ghcr.io/pyrevo/annotater:sha-7592b9d` | `sha256:d4ea46ae879c60c34f98fcabd3545e04281dea40ab56f432c0aa2a10a021f661` (both tags verified to resolve to it) | 2026-10-03 (release-ghcr workflow run: [actions/runs/37112430397](https://github.com/pyrevo/annotater/actions/runs/37112430397), platform `linux/amd64`) |
+| 0.1.0-rc4 (planned — not published) | pending approved React/FastAPI commit | `ghcr.io/pyrevo/annotater:0.1.0-rc4`, `ghcr.io/pyrevo/annotater:sha-<sha>` (planned) | pending | not published |
 
 Serve deployment history: the project-restricted beta app at
 <https://annotater.serve.scilifelab.se> ran RC1 first and now runs RC2
@@ -131,16 +155,45 @@ archived on Zenodo:
 This is a pre-release archive: the final `v0.1.0` release has not been
 published.
 
-Package visibility note (2026-09-29): the `annotater` container package was
-created by the workflow as **private** (default for a private repository)
-and the automated token could not change it (no `packages` scope). The
-maintainer must set it to **public** under the repository's Package
-settings (or make the repository public) before Serve can pull it
-anonymously — the agent token of this session only has
-`gist, read:org, repo, workflow`.
+Package visibility note (2026-09-29; **resolved 2026-10-22**): the
+`annotater` container package was initially created **private**, and the
+automated token could not change it. The package is now public, as required
+for Serve to pull images anonymously. Package visibility remains independent
+of the Serve app's own visibility.
 
 Final-release images (`0.1.0`) are published only after step 5/6/7 above
 have been approved.
+
+### Post-publication citation and release-metadata updates
+
+RC4 is not published, so the citation and release facts remain RC3 until it
+is. The built-in citation may continue to identify RC3 after the RC4 image
+is published, until a new RC4 version DOI exists. That is expected and is
+not a release blocker. The Concept DOI (`10.5281/zenodo.23415801`) stays
+unchanged and remains the general, version-independent citation.
+
+After the RC4 image and its immutable Git tag/GitHub Release/Zenodo record
+actually exist, verify and update in one reviewed change:
+
+1. Open the RC4 Zenodo record and confirm the new version DOI. Do not invent
+   one.
+2. Confirm the Concept DOI still resolves to the latest archived version,
+   now RC4.
+3. Update `frontend/src/citation.js` `CITATION.version` and `versionDoi` to
+   the verified RC4 identifiers, and update the README version-specific
+   citation. Keep the Concept DOI unchanged.
+4. Update `docs/index.md` and `docs/technical/scientific-contract.md` to
+   identify the new latest published pre-release.
+5. Record the RC4 source commit, digest, workflow run, release/tag date,
+   Zenodo DOI, and Serve verification in this plan's RC4 table row and
+   step 5d.
+6. Date the `CHANGELOG.md` RC4 section and mark it released.
+7. Run the citation metadata tests and the documentation build.
+
+Do not change `CITATION.cff` to a versioned RC4 form until the release
+metadata exists; it remains version-independent for the final `v0.1.0`.
+Do not change `frontend/src/citation.js` or `CITATION.cff` before the RC4
+publication identifiers exist.
 
 Follow-up cleanup (not part of the release gate): final disposition of
 the legacy R files per `docs/legacy.md` (delete vs. move to `legacy/`).

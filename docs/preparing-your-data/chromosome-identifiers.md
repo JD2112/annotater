@@ -334,7 +334,11 @@ chosen naming are reported, not dropped.
   mappings with hundreds to thousands of rows are tiny.
 - Uploads are also subject to the deployment's own per-file upload limit
   (`MAX_FILE_SIZE_MB`, 500 MB by default in the current React/FastAPI
-  application; the older Streamlit generation allows 200 MB).
+  application; the older Streamlit generation allows 200 MB). On SciLifeLab
+  Serve, setting `MAX_FILE_SIZE_MB=100` is a recommended validation setting
+  for the documented 100 MB upload limit, not a verified Serve requirement;
+  the documentation does not state whether that limit is per file or per
+  request.
 
 If you selected **Custom chromosome mapping…** and leave the naming on
 **Keep original names**, no file is needed and an uploaded file is not

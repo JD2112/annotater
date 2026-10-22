@@ -524,8 +524,9 @@ link here, they do not re-explain).
 ### Using AnnotateR
 
 **Uploading files.** Both uploaders, accepted extensions, size limits
-(app default 500 MB; SciLifeLab Serve platform cap 100 MB — link
-Limitations), the preview panels (first 10 rows, canonical coordinates,
+(app default 500 MB; SciLifeLab Serve documents a 100 MB upload limit
+without stating per-file vs per-request scope — link Limitations),
+the preview panels (first 10 rows, canonical coordinates,
 row count, detected format), and the **custom column mapping** flow
 (chrom/start/end selectboxes, "None (single positions)" → end =
 start + 1, declared coordinate system). Screenshot S1 lives on this
@@ -762,7 +763,9 @@ One page, organized as **symptom → likely cause → fix**, grouped:
 - Custom file: "map the columns" expander is blocking the run → apply
   the mapping (or choose "None (single positions)").
 - Upload rejected as too large → app `MAX_FILE_SIZE_MB` (500) vs SciLifeLab
-  Serve platform cap (100 MB) → split the file or run locally.
+  Serve's documented 100 MB upload limit (scope not stated) → split the file
+  or run locally. On Serve, `MAX_FILE_SIZE_MB=100` is a recommended
+  validation setting; the rejection may come from Serve before AnnotateR.
 
 **2. Coordinate and chromosome problems (the zero-matches zone)**
 - Wrong coordinate system declared for a custom file (1-based data

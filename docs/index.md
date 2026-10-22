@@ -50,7 +50,9 @@ deterministic walkthroughs.
 This site is the user manual for the upcoming AnnotateR v0.1.0 release
 (currently in beta testing; the latest published pre-release image is
 `0.1.0-rc3`, and these pages describe the current `main`, which may be
-ahead of it).
+ahead of it). The planned `0.1.0-rc4` image is the React/FastAPI
+generation and has **not** been published or deployed; the latest
+published image remains `0.1.0-rc3`.
 Technical and developer material (architecture, engine contract,
 benchmark, deployment) lives in the
 [Technical Reference](technical/scientific-contract.md) section and in
@@ -68,6 +70,7 @@ release:
 To cite the current release candidate specifically, use the version DOI
 `10.5281/zenodo.23415802`
 (<https://doi.org/10.5281/zenodo.23415802>). The in-app **Cite
-AnnotateR** button copies the Concept DOI form. Machine-readable metadata
-is maintained in
+AnnotateR** button copies the Concept DOI form. The built-in citation
+continues to identify RC3 until a version DOI is assigned to RC4; the
+Concept DOI is unaffected. Machine-readable metadata is maintained in
 [`CITATION.cff`](https://github.com/pyrevo/annotater/blob/main/CITATION.cff).

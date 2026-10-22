@@ -15,39 +15,66 @@
 # 1. Navigate to the repository root
 cd /path/to/annotater
 
-# 2. Build and start the application
-docker-compose up --build
+# 2. Build and start the React/FastAPI application
+docker compose up --build
 
 # 3. Open your browser
-# Go to: http://localhost:8501
+# Go to: http://localhost:8000
+# Health: http://localhost:8000/health
 
 # 4. Stop the application
 # Press Ctrl+C
 ```
 
-Note: `docker-compose.yml` mounts your local `streamlit_app/` and `data/`
-directories into the container, so local edits are picked up without
-rebuilding. (For an exact production-like run, build and run the image
-instead — see [docs/deployment.md](docs/deployment.md).)
+This builds the current React/FastAPI application from this checkout. Its
+planned `0.1.0-rc4` image is **not yet published**; the published
+`0.1.0-rc1`–`0.1.0-rc3` images are the legacy Streamlit generation.
 
-### Option 2: Local Installation
+Note: `docker-compose.yml` maps port `8000` and mounts your local
+`streamlit_app/` and `data/` directories into the container. Python changes
+require a container restart to be re-read (`docker compose restart
+annotater`); reload is not enabled by default. Frontend assets are built into
+the image, so frontend changes need a rebuild (`docker compose up --build`).
+(For an exact production-like run, build and run the image instead — see
+[docs/deployment.md](docs/deployment.md).)
+
+### Option 2: Local Installation (React/FastAPI)
 
 ```bash
 # 1. Install bedtools (only if you want the Bedtools backend)
 brew install bedtools
 
-# 2. Create virtual environment (recommended)
+# 2. Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
 # 3. Install Python dependencies
 pip install -r requirements.txt
 
-# 4. Run the application
-streamlit run streamlit_app/streamlit_app.py
+# 4. Build the React frontend (requires Node.js 22)
+(cd frontend && npm ci && npm run build)
 
-# 5. Open your browser
-# Go to: http://localhost:8501
+# 5. Run the FastAPI application
+uvicorn streamlit_app.api_server:app --host 0.0.0.0 --port 8000
+
+# 6. Open your browser
+# Go to: http://localhost:8000
+# Health: http://localhost:8000/health
+```
+
+For frontend hot reload, run the API as above and, in a second terminal,
+start Vite from `frontend/` with `npm ci && npm run dev`; open
+<http://localhost:3000>. Vite proxies `/api` to port 8000.
+
+### Option 3: Legacy Streamlit generation (published RC1–RC3)
+
+The latest published image and the hosted beta use the Streamlit
+generation. To run that generation from source:
+
+```bash
+pip install -r requirements.txt
+streamlit run streamlit_app/streamlit_app.py
+# -> http://localhost:8501
 ```
 
 ---
@@ -61,10 +88,10 @@ The project includes example files in `data/examples/`:
 - `example_annotations.gff3` - Gene and exon annotations
 
 **Steps:**
-1. Open the app (http://localhost:8501)
-2. Upload `example_coordinates.bed` as **Coordinate File**
-3. Upload `example_annotations.gff3` as **Annotation File**
-4. Click **"Run Annotation"**
+1. Open the app (http://localhost:8000; use 8501 only for the legacy Streamlit generation)
+2. In **1. Upload**, choose `example_coordinates.bed` under **Query coordinates**
+3. Choose `example_annotations.gff3` under **Annotation features**
+4. In **2. Run annotation**, click **Run annotation**
 5. View and download results!
 
 ---
@@ -108,19 +135,20 @@ pytest
 - Verbose: `pytest tests/ -v`
 - Coverage: `pytest --cov=streamlit_app --cov-report=html` (report in `htmlcov/index.html`)
 - Smoke tests (core imports + engine construction, no interval operations): `pytest tests/test_smoke.py -v`
+- Frontend lint, unit tests and production build: `(cd frontend && npm ci && npm test)`
 
 ---
 
 ## 📂 Using Your Own Files
 
-### Coordinate File (Required)
+### Query coordinates (required)
 Upload one of:
 - BED file (`.bed`)
 - VCF file (`.vcf`)
 - Custom CSV/TSV table: after upload you map the chromosome, start and
   (optionally) end columns in the app
 
-### Annotation File (Required)
+### Annotation features (required)
 Upload one of:
 - GFF/GTF file (`.gff`, `.gtf`, `.gff3`)
 - BED file as annotations
@@ -171,10 +199,14 @@ Both engines are interchangeable execution backends: the same input and options 
 
 ### Port Already in Use
 ```bash
-# Kill process on port 8501
-lsof -ti:8501 | xargs kill -9
+# Kill process on port 8000 (React/FastAPI application)
+lsof -ti:8000 | xargs kill -9
 
-# Or use different port
+# Or use a different port
+uvicorn streamlit_app.api_server:app --host 0.0.0.0 --port 8001
+
+# Legacy Streamlit generation
+lsof -ti:8501 | xargs kill -9
 streamlit run streamlit_app/streamlit_app.py --server.port=8502
 ```
 
@@ -187,20 +219,23 @@ streamlit run streamlit_app/streamlit_app.py --server.port=8502
 pip install -r requirements.txt
 
 # Run from the repository root
+uvicorn streamlit_app.api_server:app --host 0.0.0.0 --port 8000
+
+# Legacy Streamlit generation
 streamlit run streamlit_app/streamlit_app.py
 ```
 
 ### Docker Issues
 ```bash
 # Rebuild without cache
-docker-compose build --no-cache
+docker compose build --no-cache
 
 # Check logs
-docker-compose logs
+docker compose logs
 
 # Remove all containers and rebuild
-docker-compose down
-docker-compose up --build
+docker compose down
+docker compose up --build
 ```
 
 ---

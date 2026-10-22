@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0-rc4] - Unreleased (not published)
+
+> **Draft release notes — `0.1.0-rc4` is not published.** No RC4 image,
+> Git tag, GitHub Release, Zenodo DOI, or Serve deployment exists yet. Do
+> not treat this section as a publication announcement; recorded dates and
+> identifiers must come from the actual publication.
 
 ### Added
 - All three bundled sample datasets are now reachable from the React interface. The sample selector is populated from `GET /api/sample-datasets`, so the ids, names and declared operations have exactly one source (the server's catalog) and the frontend no longer hard-codes one of them. Loading a sample also applies the operation the catalog declares for it, so the closest-proximity sample is run as a closest search.
@@ -25,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The execute response and the stored result carry the run's chromosome provenance (`registry`): the custom mapping's revision, content digest, display name and sequence count; the canonical assembly id of a bundled run; or nothing at all for a run that kept the names as provided.
 
 ### Changed
+- Repository documentation now describes the React/FastAPI application as the current generation and the `0.1.0-rc4` image as planned and unpublished, while keeping `0.1.0-rc3` as the latest published pre-release. Local instructions use port 8000 and `/health`; the legacy Streamlit instructions remain for the published RC1–RC3 images. The Serve guide records the documented 100 MB other/custom app upload limit without asserting whether it is per file or per request, treats `MAX_FILE_SIZE_MB=100` as a recommended validation setting, and keeps one replica because sessions are in memory.
 - The React genome-assembly selector no longer calls its no-assembly option "Auto-detect": AnnotateR never detects or guesses an assembly, and the option now states what it does — "No assembly (keep chromosome names as provided)". Choosing a chromosome naming without a bundled assembly or a custom mapping now disables the Run button and explains why, instead of failing at run time with `assembly_required`. The backend check is unchanged and still refuses the same combination.
 - The results panel now states that the table is a preview of the first 100 rows, that the downloaded CSV, TSV, Excel and VCF files contain the complete result, and that the display filter applies to the preview while an export applies the same filter to the complete result. The preview itself is unchanged.
 - The manual pages now state the upload limit the current React/FastAPI application enforces (`MAX_FILE_SIZE_MB`, 500 MB by default) instead of Streamlit's 200 MB default, which belongs to the older Streamlit generation and is preserved as such in `docs/deployment.md`. The enforced limit is unchanged.
@@ -64,6 +70,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The session cookie is now read byte-exactly from the raw `Cookie` header instead of Starlette's parsed cookies, which strip Unicode whitespace from names: a sibling-settable `\xa0__Host-annotater_session` (or `\x85…`) cookie was being honoured as the `__Host-` cookie and could fixate a victim's session and expose their data. A cookie name that is not the byte-exact `__Host-annotater_session` (or, over plain HTTP, `annotater_session`) is ignored; only the byte-exact session cookie presented more than once is rejected with HTTP 400 as genuinely ambiguous (final-gate finding N1-R).
 - Alias cookie names that AnnotateR can never issue are ignored rather than rejected: the previous fail-closed 400 closed the N1-R fixation path but let a sibling subdomain plant the alias on the parent domain and deny service to the whole browser until its cookies were cleared. Honouring only the byte-exact name closes fixation without that availability regression; a genuinely ambiguous duplicate session cookie is still refused (#53).
 - CORS no longer reflects arbitrary request origins; cross-origin access requires an explicit allowlist via the `ANNOTATER_CORS_ORIGINS` environment variable (default: none). A bare `*` entry is rejected because, with credentialed CORS, it would reflect every request origin (final-gate finding N6).
+
+## [0.1.0-rc3] - 2026-10-16
+
+> The `0.1.0-rc3` image was published on 2026-10-03; the `v0.1.0-rc3` tag
+> and GitHub Release followed on 2026-10-16. This is a pre-release, not the
+> final `v0.1.0` release.
+
+### Added
+- Assembly-aware chromosome normalization: identifiers are resolved against the selected assembly's bundled registry and renamed only to a verified target name. Unknown identifiers and sequences without a verified target alias are reported and kept as provided, never guessed; coordinates are unchanged.
+- 64 genome assemblies across 46 species are bundled offline from pinned UCSC PASS registries, so chromosome normalization needs no runtime network access.
+- Custom chromosome mappings as a runtime registry. A mapping is structurally validated without repair, scoped to the workflow or session that supplied it, and never persisted or shared between sessions.
+- Normalization of every VCF `##contig` declaration through the selected registry, including contigs that no row uses. Declarations that resolve to the same identifier merge only when their remaining attributes are equivalent; otherwise export fails explicitly.
+- Chromosome-registry audit tooling, an upstream-data oracle, parity coverage, and executable semantic examples.
+
+### Changed
+- The Streamlit interface uses the bundled assembly catalog for genome-assembly and chromosome-naming selection, and offers custom chromosome mappings for assemblies outside the bundle.
+- The obsolete `ChromosomeMapper` path and unused chromosome-style settings were retired, and the chromosome-normalization documentation was rewritten for the assembly-aware model.
+
+### Fixed
+- VCF `##contig` identifier parsing is quote-aware, malformed contig declarations are handled tolerantly, and text uploads are byte-limited.
+- Registry loading rejects all Unicode control characters, renders chromosome identifiers literally, bounds mapping-error messages, and keeps loaded registries immutable.
 
 ## [0.1.0-rc2] - 2026-10-02
 

@@ -21,9 +21,11 @@ of these, plan around them.
   [Deployment](deployment.md#environment-configuration)). The older
   Streamlit generation has its own, separate limit of 200 MB (Streamlit's
   `server.maxUploadSize`), which does not apply to the current application.
-  SciLifeLab Serve documents a lower platform limit for Streamlit apps; the
-  platform limit for the current application depends on its Serve app type
-  and must be confirmed at deployment time.
+  SciLifeLab Serve documents a **100 MB upload limit** for both Streamlit
+  and other/custom app types, but does not state whether it is per file or
+  per request. Setting `MAX_FILE_SIZE_MB=100` is a recommended validation
+  setting, not a verified Serve requirement; a platform or proxy rejection
+  may occur before AnnotateR's own error can be shown.
 - **In-memory, single-session processing** — there is no job queue;
   very large runs are bounded by the deployment's resources and any
   deployment timeout. In the [AnnotateR benchmark](benchmark.md),
